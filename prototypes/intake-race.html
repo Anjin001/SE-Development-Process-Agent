@@ -9,30 +9,57 @@ body{margin:0;background:#f1f4f9;color:#18253d;font:15px/1.55 Inter,"Microsoft Y
 header{background:#15243d;color:#fff;padding:18px max(4vw,18px);display:flex;justify-content:space-between;align-items:center}
 h1,h2,h3,p{margin:0 0 .55em}h1{font-size:23px;margin:0}h2{font-size:19px}h3{font-size:15px}
 header span,small{font-size:12px;color:#546581}header span{color:#c9d8f5}
-main{max-width:1230px;margin:22px auto;padding:0 18px}
-nav{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
-nav span{border:1px solid #d9e2f0;border-radius:6px;padding:5px 10px;color:#526580;background:#fff}
-nav span[aria-current=step]{background:#e6eeff;color:#294da8;border-color:#9fb7ef;font-weight:700}
-.layout{display:grid;grid-template-columns:minmax(0,3fr) minmax(230px,1fr);gap:12px;align-items:start}
+main{max-width:1440px;margin:22px auto;padding:0 18px}
+.layout{display:grid;grid-template-columns:190px minmax(0,1fr) minmax(190px,220px);gap:14px;align-items:start}
+nav{position:sticky;top:16px;background:#fff;border:1px solid #dbe3ee;border-radius:10px;padding:10px}
+nav ul{margin:0;padding:0;list-style:none}
+nav>ul>li+li{margin-top:7px}
+nav .stage{display:block;padding:6px 8px;border-radius:5px;color:#526580;font-weight:600}
+nav .stage[aria-current=step]{background:#e6eeff;color:#294da8}
+nav li ul{margin:3px 0 3px 16px;padding-left:10px;border-left:1px solid #d9e2f0}
+nav a{display:block;color:#496188;text-decoration:none;font-size:13px;padding:4px 0}
+nav a:hover{text-decoration:underline}
+nav a[aria-disabled=true]{opacity:.48;cursor:default;text-decoration:none}
+[id]{scroll-margin-top:18px}
+.config-card label{margin-bottom:0}
+.config-card textarea{font-size:13px;margin-top:4px}
+.prompt-record{white-space:pre-wrap;color:#465b7b}
 section,aside{border:1px solid #dbe3ee;background:#fff;border-radius:10px;padding:16px}
 main section+section{margin-top:12px}
 aside{background:#f8faff}
 label{display:block;margin:5px 0}textarea{font:inherit;display:block;width:100%;resize:vertical;border:1px solid #b9c9e0;border-radius:7px;padding:10px}
 button{font:inherit;border:1px solid #a8bde6;padding:7px 11px;background:#eef3ff;color:#274991;border-radius:6px;cursor:pointer;margin-top:8px;margin-right:6px}
 button.primary{background:#294dbe;color:#fff}button:disabled{opacity:.45;cursor:default}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.toolbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:8px}
+.toolbar button{margin:0}
+#progress,#comparison,#handoff{margin-top:14px}
 .card{padding:12px;border:1px solid #dbe3ef;border-radius:8px;background:#f5f8fe;overflow-wrap:anywhere}
 .evidence{border-left:3px solid #8aa5de;padding:4px 9px;margin:8px 0;white-space:pre-wrap}
 .badge{display:inline-block;padding:2px 6px;margin:2px 0 7px;background:#e7eefb;color:#304d83;border-radius:4px;font-size:12px}
 .warn{color:#973e2a}.audit{margin-top:10px}
 [hidden]{display:none}
-@media(max-width:720px){.layout,.grid{grid-template-columns:1fr}}
+@media(max-width:1050px){.layout{grid-template-columns:165px minmax(0,1fr)}aside{grid-column:2}}
+@media(max-width:650px){.layout,.grid{grid-template-columns:1fr}aside{grid-column:1}nav{position:static}nav>ul{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}nav>ul>li+li{margin-top:0}nav li ul{margin-left:5px;padding-left:6px}}
 </style>
 <header><h1>开发流程工作台</h1><span>需求与赛马 · 本地模拟</span></header>
 <main>
-<nav aria-label="流程阶段"><span id="step-input" aria-current="step">1 需求录入</span><span id="step-race">2 赛马出案</span><span id="step-review">3 评审交接</span></nav>
-<div class="layout"><div>
-<section>
+<div class="layout">
+<nav aria-label="流程阶段"><ul>
+<li><span class="stage" id="step-input" aria-current="step">1 需求录入</span><ul>
+  <li><a href="#requirements">原文与快照</a></li>
+</ul></li>
+<li><span class="stage" id="step-race">2 赛马出案</span><ul>
+  <li><a href="#race" aria-disabled="true">提示词与分组</a></li>
+  <li><a href="#progress" aria-disabled="true">小组进度</a></li>
+</ul></li>
+<li><span class="stage" id="step-review">3 评审交接</span><ul>
+  <li><a href="#comparison" aria-disabled="true">草案对照</a></li>
+  <li><a href="#handoff" aria-disabled="true">下载交接材料</a></li>
+</ul></li>
+</ul></nav>
+<div>
+<section id="requirements">
 <h2>需求原文</h2>
 <div id="editor"><label for="markdown">Markdown 输入</label>
 <textarea id="markdown" rows="7"># 实验室设备预约
@@ -48,24 +75,39 @@ button.primary{background:#294dbe;color:#fff}button:disabled{opacity:.45;cursor:
 <div id="snapshot" aria-live="polite"></div>
 </section>
 <section id="race" hidden>
-<h2>A/B 分组出案</h2>
-<small>每组两个角色先独立写想法，再在本组质疑、收敛。双方使用同一个需求版本。</small>
+<h2>提示词与分组</h2>
+<p>所有小组共用同一份需求。各组先独立构思，再按本组提示词讨论、出案。</p>
+<div id="settings">
+<div id="group-config" class="grid"></div>
 <label><input id="fail" type="checkbox"> 模拟 B 组首次中断</label>
-<button id="start" class="primary">启动两组赛马</button>
-<div id="groups" class="grid audit" aria-live="polite"></div>
+<div class="toolbar">
+  <button id="add-group">添加讨论组</button>
+  <button id="start" class="primary">启动赛马</button>
+</div>
+</div>
+<button id="reconfigure" hidden>调整分组并重新开始</button>
+<div id="progress" hidden>
+<h3>小组进度</h3>
+<div id="groups" class="grid" aria-live="polite"></div>
+</div>
+</section>
+<section id="comparison" hidden>
+<h2>草案对照</h2>
+<div id="drafts" class="grid"></div>
 <div id="handoff"></div>
 </section>
 </div>
 <aside>
 <h2>阶段主理</h2>
-<p id="guidance" aria-live="polite">先检查需求原文。确认后，两个小组会读取同一版快照。</p>
+<p id="guidance" aria-live="polite">先检查需求原文。确认后，为各组设置提示词，各组都会读取同一版快照。</p>
 <p class="warn" id="error" role="alert"></p>
 </aside></div>
 </main>
 <script>
 const q = id => document.getElementById(id);
-const groups = {A:{}, B:{}};
-let frozen, version = 0, revision = 0;
+const profiles = new Map();
+const results = new Map();
+let frozen, extraPrompt, version = 0, revision = 0, nextGroup = 3;
 const labels = {idle:'待启动',running:'组内生成中',done:'已提交',failed:'失败'};
 function add(parent, tag, text, css) {
   const el = document.createElement(tag);
@@ -86,13 +128,29 @@ function setStage(stage) {
     if (name === stage) step.setAttribute('aria-current','step');
     else step.removeAttribute('aria-current');
   }
+  for (const link of document.querySelectorAll('nav a')) {
+    const available = !document.querySelector(link.hash).closest('[hidden]');
+    link.setAttribute('aria-disabled', String(!available));
+    link.tabIndex = available ? 0 : -1;
+  }
 }
+document.querySelector('nav').onclick = event => {
+  if (event.target.getAttribute('aria-disabled') === 'true') event.preventDefault();
+};
 q('freeze').onclick = async () => {
   const editor = q('markdown');
   q('freeze').disabled = true;
   editor.readOnly = true;
   q('error').textContent = '';
   try {
+    if (!profiles.size) {
+      const response = await fetch('/preview/config');
+      if (!response.ok) throw new Error('无法读取分组默认设置');
+      const config = await response.json();
+      for (const [id, prompt] of Object.entries(config.prompts)) profiles.set(id, {prompt});
+      extraPrompt = config.extra_prompt;
+      renderConfig();
+    }
     frozen = await post('snapshot',{markdown:editor.value,version:version+1});
     version = frozen.version;
     revision++;
@@ -113,79 +171,162 @@ q('freeze').onclick = async () => {
   } finally { q('freeze').disabled=false; }
 };
 q('edit').onclick = () => {
-  revision++;
+  resetRace();
   frozen = undefined;
-  groups.A = {};
-  groups.B = {};
   q('markdown').readOnly = false;
   q('edit').hidden = q('race').hidden = true;
   q('editor').hidden = false;
   q('snapshot').replaceChildren();
-  q('groups').replaceChildren();
-  q('handoff').replaceChildren();
   q('guidance').textContent = '修改后重新确认。新赛马使用新快照。';
   setStage('input');
   q('markdown').focus();
 };
+function renderConfig() {
+  const container = q('group-config');
+  container.replaceChildren();
+  for (const [id, profile] of profiles) {
+    const box = add(container,'article',undefined,'card config-card');
+    const inputId = 'prompt-'+id;
+    add(box,'h3',id+' 组');
+    const label = add(box,'label',id+' 组提示词');
+    label.htmlFor = inputId;
+    const input = add(box,'textarea');
+    input.id = inputId;
+    input.rows = 4;
+    input.required = true;
+    input.value = profile.prompt;
+    input.oninput = () => {
+      input.setCustomValidity('');
+      profile.prompt = input.value;
+    };
+    if (id!=='A' && id!=='B') {
+      add(box,'button','移除 '+id+' 组').onclick = () => {
+        profiles.delete(id);
+        renderConfig();
+        q('add-group').focus();
+      };
+    }
+  }
+}
+
+q('add-group').onclick = () => {
+  let number = nextGroup++, id = '';
+  do {
+    number--;
+    id = String.fromCharCode(65+number%26)+id;
+    number = Math.floor(number/26);
+  } while (number>0);
+  profiles.set(id,{prompt:extraPrompt});
+  renderConfig();
+  q('prompt-'+id).focus();
+};
+function resetRace() {
+  revision++;
+  results.clear();
+}
+
+q('reconfigure').onclick = () => {
+  resetRace();
+  render();
+  q('prompt-A').focus();
+};
 q('start').onclick = () => {
+  for (const [id, profile] of profiles) {
+    if (!profile.prompt.trim()) {
+      const input = q('prompt-'+id);
+      input.setCustomValidity('请输入本组提示词');
+      input.reportValidity();
+      return;
+    }
+  }
   const fail = q('fail').checked;
   q('fail').checked = false;
-  for (const id of ['A','B']) run(id, id==='B' && fail);
+  for (const [id, profile] of profiles) results.set(id,{state:'running',prompt:profile.prompt.trim()});
+  render();
+  for (const id of profiles.keys()) run(id, id==='B' && fail);
 };
 async function run(id, fail=false) {
   const epoch = revision;
-  groups[id] = {state:'running'};
+  const {prompt} = results.get(id);
+  results.set(id,{state:'running',prompt});
   render();
   try {
-    const data = await post('group',{markdown:frozen.markdown,version:frozen.version,group_id:id,simulate_failure:fail});
+    const data = await post('group',{
+      markdown:frozen.markdown,version:frozen.version,group_id:id,prompt,simulate_failure:fail
+    });
     if (epoch !== revision) return;
     if (data.draft.id!==id || data.draft.requirement_ref.id!==frozen.id || data.draft.requirement_ref.version!==frozen.version)
       throw new Error('草案与当前需求快照不匹配，请重试。');
-    groups[id] = {state:'done',data};
+    results.set(id,{state:'done',data,prompt});
   } catch (error) {
     if (epoch !== revision) return;
-    groups[id] = {state:'failed',error:error.message};
+    results.set(id,{state:'failed',error:error.message,prompt});
   }
   render();
 }
+function exportJSON(payload, filename) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
 function render() {
-  const all = ['A','B'].every(id=>groups[id].state==='done');
-  const started = ['A','B'].some(id=>groups[id].state);
-  q('start').hidden = q('fail').parentElement.hidden = started;
-  setStage(all?'review':'race');
-  q('guidance').textContent = all
-    ? '双方已提交，检查草案依据后，将同版需求和两份草案一起交给评审。'
-    : '双方必须使用 v'+version+'。一组中断时可以单独重试，两份草案齐备后统一公开。';
+  const started = results.size>0;
+  const completed = [...results.values()].filter(group=>group.state==='done').length;
+  const all = started && completed===profiles.size;
+  q('settings').hidden = started;
+  q('reconfigure').hidden = !started;
+  q('progress').hidden = !started;
+  q('comparison').hidden = !all;
   q('groups').replaceChildren();
-  for (const id of ['A','B']) {
-    const group = groups[id], box = add(q('groups'),'article',undefined,'card');
-    add(box,'h3',id+' 组 · '+(id==='A'?'核心路径':'体验与异常'));
-    add(box,'span',labels[group.state||'idle'],'badge');
+  q('drafts').replaceChildren();
+  q('handoff').replaceChildren();
+  setStage(all?'review':'race');
+  if (!started) {
+    q('guidance').textContent = '需求 v'+version+' 已确认。为各组设置不同的探索重点，再启动赛马。';
+    return;
+  }
+  q('guidance').textContent = all
+    ? profiles.size+' 组已提交。检查草案依据后下载交接材料。'
+    : completed+' / '+profiles.size+' 组已提交。失败组可以单独重试，全部齐备后统一公开。';
+  for (const [id, group] of results) {
+    const progress = add(q('groups'),'article',undefined,'card');
+    add(progress,'h3',id+' 组');
+    add(progress,'span',labels[group.state],'badge');
     if (group.state==='failed') {
-      add(box,'p',group.error,'warn');
-      add(box,'button','重试 '+id+' 组').onclick=()=>run(id);
+      add(progress,'p',group.error,'warn');
+      add(progress,'button','重试 '+id+' 组').onclick = () => run(id);
     }
     if (!all) continue;
     const {draft,ideas,challenge} = group.data;
-    add(box,'h3',draft.title);
+    const box = add(q('drafts'),'article',undefined,'card');
+    add(box,'h3',id+' 组 · '+draft.title);
     add(box,'p',draft.summary);
     for (const claim of draft.claims) add(box,'p',claim.requirement_ids.join('、')+' · '+claim.text,'evidence');
     const audit = add(box,'details');
-    add(audit,'summary','查看独立想法与组内质疑');
+    add(audit,'summary','查看提示词与讨论记录');
+    add(audit,'p',group.prompt,'prompt-record');
     for (const idea of ideas) add(audit,'p',idea.role+' · '+idea.proposal+' '+idea.risk);
     add(audit,'p','组内质疑 · '+challenge);
   }
-  q('handoff').replaceChildren();
   if (!all) return;
-  add(q('handoff'),'button','下载评审交接 JSON','primary').onclick=()=>{
-    const payload = {requirement:frozen,drafts:[groups.A.data.draft,groups.B.data.draft]};
-    const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));
-    const link=document.createElement('a');
-    link.href=url;
-    link.download='race-handoff-v'+version+'.json';
-    link.click();
-    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  const handoff = q('handoff');
+  add(handoff,'h3','下载交接材料');
+  add(handoff,'button','下载 A/B 评审交接 JSON','primary').onclick = () => {
+    const drafts = ['A','B'].map(id=>results.get(id).data.draft);
+    exportJSON({requirement:frozen,drafts},'race-handoff-v'+version+'.json');
   };
+  if (profiles.size>2) {
+    add(handoff,'button','下载全部草案 JSON').onclick = () => {
+      const drafts = [...results.values()].map(group=>group.data.draft);
+      const groups = [...results].map(([id, group])=>({id,prompt:group.prompt}));
+      exportJSON({requirement:frozen,drafts,groups},'race-all-groups-v'+version+'.json');
+    };
+    add(handoff,'p','额外小组可随全部草案下载。正式评审接口目前接收 A/B 两组。');
+  }
 }
+
 </script>
 </html>

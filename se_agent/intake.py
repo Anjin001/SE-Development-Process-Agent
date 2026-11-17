@@ -14,6 +14,15 @@ _ROUTE = {
     "A": ("核心路径", "收紧范围，先交付最小可用链路", "以核心规则为起点", "先把约束做成可验收的规则"),
     "B": ("体验替代", "围绕关键场景优化体验与异常处置", "以用户任务为起点", "先比较用户可见的处理方式"),
 }
+_DEFAULT_PROMPTS = {
+    "A": "以最小可交付版本为目标。优先覆盖明确的核心规则，说明首版范围、实现顺序和验收点。把新增功能标为可选。",
+    "B": "沿用户使用流程设计方案。优先说明状态提示、异常处理和替代路径，同时保留原有业务约束。",
+}
+EXTRA_GROUP_PROMPT = "从成本与交付风险出发，提出一条不同的路线。说明取舍、依赖和待验证假设，并引用需求编号。"
+
+
+def default_group_prompts():
+    return _DEFAULT_PROMPTS.copy()
 
 
 def intake(markdown):
@@ -100,6 +109,8 @@ def _mock_claim(item, group_id, pending):
     text = item["text"]
     if item["id"] in pending:
         return f"待确认，保留原问题：{text}"
+    if group_id not in _ROUTE:
+        return f"结合本组提示词评估实施选项，保留原需求约束：{text}"
     if "停用设备" in text and "预约" in text:
         if group_id == "A":
             return "预约接口校验设备状态。遇到停用设备直接拒绝创建预约。"
@@ -114,7 +125,9 @@ def _mock_claim(item, group_id, pending):
 
 def _mock_agent(stage, context):
     group = context["group_id"]
-    _, direction, opening, method = _ROUTE[group]
+    _, direction, opening, method = _ROUTE.get(group, (
+        "自定义路线", f"{group} 组自定义路线", "根据本组提示词比较实施选项", "列出取舍及待验证假设"
+    ))
     if stage == "idea":
         role = context["role"]
         focus = {
@@ -122,6 +135,8 @@ def _mock_agent(stage, context):
             "工程实现": "把以下条目转成能验证的实现规则",
             "使用体验": "把以下条目放进用户主路径，明确反馈",
             "风险与运维": "对以下条目列异常分支与处理责任",
+            "方案探索": "围绕本组提示词为以下条目提出候选方向",
+            "可行性复核": "检查候选方向对以下条目的约束和验证方式",
         }[role]
         questions = open_questions(context["requirement"])
         refs = "、".join(item["id"] for item in context["requirement"]["items"])
@@ -130,6 +145,8 @@ def _mock_agent(stage, context):
     if stage == "challenge":
         return "核对方案是否覆盖全部已确认条目，并把未说明的例外列为问题。"
     pending = {item["id"] for item in open_questions(context["requirement"])}
+    if group not in _DEFAULT_PROMPTS or context["group_prompt"] != _DEFAULT_PROMPTS[group]:
+        method += "。本组自定义提示词：" + context["group_prompt"]
     return {
         "title": direction,
         "summary": f"{opening}。{method}。方案以同一需求快照为依据。",
@@ -141,20 +158,25 @@ def _mock_agent(stage, context):
     }
 
 
-def run_group(requirement, group_id, *, agent=_mock_agent):
+def run_group(requirement, group_id, *, prompt=None, agent=_mock_agent):
     """Run isolated ideas, one group challenge, then a contract-ready draft.
 
     The optional adapter receives (stage, context) and returns the same shapes
     as the local mock. Each call receives a fresh copy of its allowed context.
     """
-    if group_id not in _ROLES:
-        raise ValueError("组别须为 A 或 B")
+    if not isinstance(group_id, str) or not re.fullmatch(r"[A-Z]+", group_id):
+        raise ValueError("组别须为大写字母编号")
+    if prompt is None:
+        prompt = _DEFAULT_PROMPTS.get(group_id)
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError(f"请输入 {group_id} 组提示词")
+    prompt = prompt.strip()
     known = {item["id"] for item in requirement["items"]}
     if not known:
         raise ValueError("需求快照为空")
-    context = {"group_id": group_id, "requirement": requirement}
+    context = {"group_id": group_id, "group_prompt": prompt, "requirement": requirement}
     ideas = []
-    for role in _ROLES[group_id]:
+    for role in _ROLES.get(group_id, ("方案探索", "可行性复核")):
         result = agent("idea", deepcopy({**context, "role": role}))
         if not isinstance(result, dict) or not all(isinstance(result.get(k), str) and result[k].strip() for k in ("proposal", "risk")):
             raise ValueError("独立想法缺少主张或风险")
@@ -183,4 +205,6 @@ def run_group(requirement, group_id, *, agent=_mock_agent):
 
 def generate_draft(requirement, group_id):
     """Public v2 module entry point; read only the supplied snapshot."""
+    if group_id not in ("A", "B"):
+        raise ValueError("v2 正式交接仅接收 A 或 B 组")
     return run_group(requirement, group_id)["draft"]

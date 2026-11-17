@@ -42,3 +42,27 @@ class IntakeRaceTest(unittest.TestCase):
         self.assertEqual(calls, [("idea", "A", False), ("idea", "A", False),
                                  ("challenge", "A", True), ("draft", "A", True)])
         self.assertEqual(self.requirement["markdown"], self.markdown)
+
+    def test_group_prompts_are_isolated_and_extra_groups_are_supported(self):
+        seen = []
+
+        def agent(stage, context):
+            seen.append((context["group_id"], context["group_prompt"], stage))
+            if stage == "idea":
+                return {"proposal": "列出实施选项", "risk": "需要确认保留期限"}
+            if stage == "challenge":
+                return "确认成本和迁移风险"
+            return {"title": context["group_prompt"], "summary": "说明",
+                    "claims": [{"text": "保留设备状态", "requirement_ids": ["REQ-01"]}]}
+
+        a = run_group(self.requirement, "A", prompt="优先控制成本", agent=agent)
+        c = run_group(self.requirement, "C", prompt="优先保留迁移路径", agent=agent)
+        stages = ["idea", "idea", "challenge", "draft"]
+        self.assertEqual(seen, [("A", "优先控制成本", stage) for stage in stages]
+                         + [("C", "优先保留迁移路径", stage) for stage in stages])
+        self.assertEqual(c["draft"]["id"], "C")
+        self.assertEqual(c["draft"]["requirement_ref"], a["draft"]["requirement_ref"])
+        with self.assertRaisesRegex(ValueError, "提示词"):
+            run_group(self.requirement, "C", prompt=" ")
+        with self.assertRaisesRegex(ValueError, "正式交接"):
+            generate_draft(self.requirement, "C")

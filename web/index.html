@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SE 开发工作台</title>
+<style>
+*{box-sizing:border-box} body{margin:0;background:#f3f5f9;color:#18243b;font:15px/1.5 Inter,"Microsoft YaHei UI",sans-serif}
+header{background:#15243d;color:#fff;padding:20px max(5%,20px);font-size:22px;font-weight:700}
+main{width:min(1100px,94vw);margin:22px auto} section{background:white;padding:20px;border:1px solid #dce3ef;border-radius:10px;margin-bottom:14px}
+h2,h3,p{margin:0 0 10px} h2{font-size:19px} h3{font-size:15px} label{display:block;margin:5px 0}
+textarea,select,input,button{font:inherit} textarea{display:block;width:100%;padding:9px;border:1px solid #b5c3d9;border-radius:6px}
+button{background:#294dbe;color:#fff;border:0;border-radius:6px;padding:7px 12px;cursor:pointer;margin:5px 6px 0 0}
+button:disabled{opacity:.55;cursor:default} small{color:#52627a} pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 6px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,225px),1fr));gap:10px}
+.card{background:#f5f8fe;border:1px solid #d8e2f2;border-radius:7px;padding:12px}
+.status{font-weight:700;color:#3155ac} .warning{color:#a03524}
+</style>
+<header>SE 开发工作台</header>
+<main>
+<section id="intake"><h2>输入需求</h2><label for="req">Markdown 需求</label><textarea id="req" rows="4"># 实验室设备预约
+停用设备保留在列表中并显示状态。禁止对停用设备发起新预约。</textarea><button id="create">生成两份草案</button></section>
+<p id="error" class="warning" role="alert"></p>
+<div id="app" aria-live="polite"></div>
+</main>
+<script>
+let project, busy = false;
+const app = document.querySelector('#app');
+const error = document.querySelector('#error');
+const create = document.querySelector('#create');
+function node(tag, text, parent, cls) {
+  const item = document.createElement(tag);
+  if (text != null) item.textContent = text;
+  if (cls) item.className = cls;
+  if (parent) parent.append(item);
+  return item;
+}
+function button(parent, label, onClick, disabled=false) {
+  const item = node('button', label, parent);
+  item.onclick = onClick;
+  item.disabled = disabled;
+}
+async function call(action, payload={}) {
+  if (busy) return;
+  busy = true;
+  create.disabled = true;
+  error.textContent = '';
+  try {
+    const url = '/api/projects' + (action ? '/' + project.id + '/actions/' + action : '');
+    const res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    project = data;
+    render();
+  } catch (err) { error.textContent = err.message; }
+  finally { busy = false; create.disabled = false; }
+}
+create.onclick = () => call(null, {markdown:document.querySelector('#req').value});
+function render() {
+  app.replaceChildren();
+  const race = node('section',null,app);
+  node('h2','方案赛马与确认',race);
+  const cards = node('div',null,race,'grid');
+  for (const draft of project.drafts) {
+    const card = node('article',null,cards,'card');
+    const score = project.scores.find(s => s.draft_id === draft.id);
+    node('h3',draft.id+' · '+draft.title,card);
+    node('p',draft.summary,card);
+    node('small','价值 '+score.value+' / 可行性 '+score.feasibility+' / 成本友好度 '+score.cost+'。'+score.reason,card);
+  }
+  if (!project.spec) {
+    for (const [decision, title] of [['A','确认 A'],['B','确认 B'],['merge','确认融合方案']])
+      button(race,title,()=>call('confirm',{decision}));
+    return;
+  }
+  const spec = node('details',null,race);
+  node('summary','查看已确认的开发方案',spec);
+  node('pre',project.spec.markdown,spec);
+  const {plan, run} = project;
+  const schedule = node('section',null,app);
+  node('h2','任务编排 · v'+plan.version,schedule);
+  const controls = node('div',null,schedule);
+  if (!run) {
+    const label = node('label','计划并发上限 ',controls);
+    const concurrency = node('input',null,label);
+    Object.assign(concurrency,{type:'number',min:'1',value:plan.max_parallel});
+    button(controls,'保存配置',()=>call('configure',{version:plan.version,max_parallel:Number(concurrency.value)}));
+    button(controls,'确认并启动',()=>call('start',{version:plan.version}));
+  } else {
+    const rows = Object.values(run.tasks);
+    node('p',rows.filter(row=>row.status==='done').length+' / '+rows.length+' 项已交付',controls);
+    button(controls,'推进一轮',()=>call('step'),run.paused||!run.ready.length);
+    const action = run.paused?'resume':'pause';
+    button(controls,run.paused?'恢复派发':'暂停派发',()=>call(action),run.complete);
+  }
+  const grid = node('div',null,schedule,'grid');
+  for (const task of plan.tasks) {
+    const card = node('article',null,grid,'card');
+    const row = run?.tasks[task.id];
+    node('h3',task.id+' · '+task.title,card);
+    node('p','前置 '+(task.depends_on.join('、')||'无')+' · '+task.estimate_minutes+' 分钟',card);
+    node('small','交付 '+task.output+(task.review_required?' · 人工审核':''),card);
+    if (!row) continue;
+    const status = {waiting:run.ready.includes(task.id)?'已就绪':'等待前置',review:'待人工审核',failed:'失败或退回',done:'已交付'};
+    node('p',status[row.status],card,'status');
+    const artifact = row.artifacts.at(-1);
+    if (artifact) {
+      const details = node('details',null,card);
+      node('summary','查看产物历史 · v'+artifact.version,details);
+      for (const version of row.artifacts) {
+        node('small','v'+version.version+' · '+(version.origin==='human'?'人工审核':'Agent 原稿')+(version.note?' · '+version.note:''),details);
+        node('pre',version.content,details);
+      }
+    }
+    if (row.status==='review') {
+      const label = node('label','人工修订',card);
+      const editor = node('textarea',null,label);
+      editor.value = artifact.content;
+      const note = node('input',null,node('label','审核备注 ',card));
+      for (const [decision,title] of [['revise','批准修订版'],['approve','批准原稿'],['reject','退回']])
+        button(card,title,()=>call('review',{task_id:task.id,version:artifact.version,decision,content:editor.value,note:note.value}));
+    }
+    if (row.status==='failed') button(card,'重试',()=>call('retry',{task_id:task.id}));
+  }
+  if (run) {
+    const log = node('section',null,app);
+    node('h2','运行事件',log);
+    for (const e of [...run.events].reverse()) node('div','#'+e.seq+' '+e.kind+' '+(e.task_id||''),log);
+  }
+}
+</script>
+</html>

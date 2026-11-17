@@ -1,0 +1,37 @@
+{
+  "attempt_id": "T4.1",
+  "task": {
+    "id": "T4",
+    "title": "集成交付",
+    "depends_on": [
+      "T2",
+      "T3"
+    ],
+    "source": "SPEC-01@1",
+    "role": "integrate",
+    "output": "docs/delivery.md",
+    "write_paths": [
+      "docs/delivery.md"
+    ],
+    "estimate_minutes": 5,
+    "review_required": false
+  },
+  "inputs": [
+    {
+      "task_id": "T2",
+      "version": 2,
+      "origin": "human",
+      "content": "人工修订：停用设备保留在列表中，并隐藏新预约入口。",
+      "approved": true,
+      "note": "补齐停用设备展示规则"
+    },
+    {
+      "task_id": "T3",
+      "version": 1,
+      "origin": "agent",
+      "content": "整理使用说明\n规格 SPEC-01@1\n上游版本 T1@v1\n交付 docs/usage.md",
+      "approved": true,
+      "note": ""
+    }
+  ]
+}

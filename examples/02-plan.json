@@ -1,0 +1,116 @@
+{
+  "id": "example-project",
+  "requirement": {
+    "id": "REQ-01",
+    "version": 1,
+    "markdown": "# 实验室设备预约\n\n停用设备保留在列表中并显示停用状态。禁止对停用设备发起新预约。"
+  },
+  "drafts": [
+    {
+      "id": "A",
+      "source": "REQ-01",
+      "title": "先定义统一规则，再并行实现",
+      "summary": "先固定接口和业务边界，再并行开发功能，最后集成。"
+    },
+    {
+      "id": "B",
+      "source": "REQ-01",
+      "title": "先交付主链路，再补齐边界",
+      "summary": "先实现最短端到端链路，再处理异常和交付说明。"
+    }
+  ],
+  "scores": [
+    {
+      "draft_id": "A",
+      "value": 4,
+      "feasibility": 4,
+      "cost": 3,
+      "reason": "统一接口便于并行"
+    },
+    {
+      "draft_id": "B",
+      "value": 4,
+      "feasibility": 3,
+      "cost": 4,
+      "reason": "先交付主链路可以缩短反馈周期"
+    }
+  ],
+  "spec": {
+    "id": "SPEC-01",
+    "version": 1,
+    "requirement_id": "REQ-01",
+    "source_draft_ids": [
+      "A",
+      "B"
+    ],
+    "markdown": "# 实验室设备预约\n\n停用设备保留在列表中并显示停用状态。禁止对停用设备发起新预约。\n\n## 实施策略\n采用 A 的统一接口约定和 B 的主链路优先策略。"
+  },
+  "plan": {
+    "id": "PLAN-01",
+    "version": 1,
+    "spec": "SPEC-01@1",
+    "tasks": [
+      {
+        "id": "T1",
+        "title": "定义接口与业务规则",
+        "depends_on": [],
+        "source": "SPEC-01@1",
+        "role": "plan",
+        "output": "docs/rules.md",
+        "write_paths": [
+          "docs/rules.md"
+        ],
+        "estimate_minutes": 5,
+        "review_required": false
+      },
+      {
+        "id": "T2",
+        "title": "实现主功能",
+        "depends_on": [
+          "T1"
+        ],
+        "source": "SPEC-01@1",
+        "role": "develop",
+        "output": "app/service.py",
+        "write_paths": [
+          "app/service.py"
+        ],
+        "estimate_minutes": 10,
+        "review_required": true
+      },
+      {
+        "id": "T3",
+        "title": "整理使用说明",
+        "depends_on": [
+          "T1"
+        ],
+        "source": "SPEC-01@1",
+        "role": "docs",
+        "output": "docs/usage.md",
+        "write_paths": [
+          "docs/usage.md"
+        ],
+        "estimate_minutes": 5,
+        "review_required": false
+      },
+      {
+        "id": "T4",
+        "title": "集成交付",
+        "depends_on": [
+          "T2",
+          "T3"
+        ],
+        "source": "SPEC-01@1",
+        "role": "integrate",
+        "output": "docs/delivery.md",
+        "write_paths": [
+          "docs/delivery.md"
+        ],
+        "estimate_minutes": 5,
+        "review_required": false
+      }
+    ],
+    "max_parallel": 2
+  },
+  "run": null
+}

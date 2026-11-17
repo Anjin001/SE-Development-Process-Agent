@@ -233,6 +233,17 @@ def _find_cycle(tasks, order):
     return None
 
 
+def overlaps(first, second):
+    """True when two repository paths contend, comparing whole path segments.
+
+    ``app`` and ``app2`` differ because the prefix is compared per segment.
+    """
+    if first == second:
+        return True
+    return (first.startswith(second.rstrip("/") + "/")
+            or second.startswith(first.rstrip("/") + "/"))
+
+
 def validate_plan(plan, confirmed_spec):
     """Validate a v2 plan against its confirmed specification.
 

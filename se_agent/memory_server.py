@@ -7,7 +7,8 @@ import argparse
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
-from .domain_memory import DomainMemory, MemorySession
+from .domain_memory import MemorySession
+from .store import Store
 
 PAGE = '''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>SQLite 领域记忆</title>
 <style>body{font:16px system-ui;max-width:1100px;margin:40px auto;background:#f5f7fb;color:#182235}input,button{padding:10px;margin:5px}pre{white-space:pre-wrap;background:white;padding:24px;border-radius:12px}</style>
@@ -30,7 +31,8 @@ def make_server(path, project, agent, stage, port=8004):
             parsed=urlparse(self.path)
             if parsed.path == '/':
                 return self.respond(200,PAGE,'text/html; charset=utf-8')
-            db=DomainMemory(path)
+            store=Store(path)
+            db=store.memory
             try:
                 session=MemorySession(db,project,agent,stage)
                 query=parse_qs(parsed.query)
@@ -50,7 +52,7 @@ def make_server(path, project, agent, stage, port=8004):
             except (ValueError,TypeError) as exc:
                 self.respond(400,{'error':str(exc)})
             finally:
-                db.close()
+                store.close()
 
         def log_message(self,*args):
             pass

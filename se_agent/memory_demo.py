@@ -2,12 +2,14 @@
 import json
 import tempfile
 from pathlib import Path
-from se_agent.domain_memory import DomainMemory, MemorySession
+from se_agent.domain_memory import MemorySession
+from se_agent.store import Store
 
 
 def main():
     with tempfile.TemporaryDirectory() as directory:
-        db=DomainMemory(str(Path(directory)/'memory.sqlite'))
+        store=Store(str(Path(directory)/'memory.sqlite'))
+        db=store.memory
         try:
             db.bootstrap('seats','lead')
             db.grant('seats','lead','author','member','A')
@@ -28,7 +30,7 @@ def main():
             assert db.commit_stage('devices','RUN-1','agent','evaluation-1', [dict(id='EVAL-1',kind='artifact',body={'finding':'应补充已有预约处置'})],dict(stage='review',completed=['EVAL-1'],pending=['human-confirm']),0)==result
             print(json.dumps(dict(experience=approved,trigger=hits[0]['trigger_matched'],evidence=hits[0]['body']['evidence_state'],recovered=db.resume('devices','RUN-1','agent')),ensure_ascii=False,indent=2))
         finally:
-            db.close()
+            store.close()
 
 if __name__ == '__main__':
     main()

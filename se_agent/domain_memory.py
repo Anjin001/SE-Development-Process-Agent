@@ -6,8 +6,12 @@ from datetime import datetime, timezone
 
 
 class DomainMemory:
-    def __init__(self, path):
-        self.db = sqlite3.connect(path, isolation_level=None)
+    def __init__(self, path=None, *, store=None):
+        self.store = store
+        self._owns_connection = store is None
+        self.db = store.db if store is not None else sqlite3.connect(path, isolation_level=None)
+        if self.db.in_transaction:
+            raise RuntimeError('Initialize memory before entering business transactions')
         self.db.row_factory = sqlite3.Row
         self.db.execute('PRAGMA busy_timeout=5000')
         self.db.execute('PRAGMA journal_mode=WAL')
@@ -29,10 +33,15 @@ class DomainMemory:
         self._upgrade()
 
     def close(self):
-        self.db.close()
+        if self._owns_connection:
+            self.db.close()
 
     @contextmanager
     def transaction(self):
+        if self.store is not None:
+            with self.store.tx():
+                yield
+            return
         if self.db.in_transaction:
             yield
             return
@@ -358,3 +367,19 @@ class MemorySession:
         body.pop('reviewed_by',None)
         body.pop('review_note',None)
         return self._memory.save(id,kind,self._project,self._agent,body,'private',expected_version)
+
+# All shared-connection operations use Store's reentrant lock, including reads
+# and compatibility helpers which do not themselves open a transaction.
+def _store_locked(method):
+    from functools import wraps
+    @wraps(method)
+    def guarded(self, *args, **kwargs):
+        from contextlib import nullcontext
+        with self.store._lock if self.store is not None else nullcontext():
+            return method(self, *args, **kwargs)
+    return guarded
+
+for _name in ('join','save','read','freeze_baseline','alias','search','checkpoint',
+              'resume','usage','bootstrap','grant','publish','set_state','revoke',
+              'commit_stage','context','history','checklist','audit','backup','list_records'):
+    setattr(DomainMemory, _name, _store_locked(getattr(DomainMemory, _name)))

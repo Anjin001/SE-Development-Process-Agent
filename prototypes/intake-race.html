@@ -145,7 +145,8 @@ q('freeze').onclick = async () => {
   try {
     if (!profiles.size) {
       const response = await fetch('/preview/config');
-      if (!response.ok) throw new Error('无法读取分组默认设置');
+      if (response.status === 404) throw new Error('当前运行的是旧版预览服务。请重启服务，再点「确认需求快照」。');
+      if (!response.ok) throw new Error('无法读取分组默认设置，请重试。');
       const config = await response.json();
       for (const [id, prompt] of Object.entries(config.prompts)) profiles.set(id, {prompt});
       extraPrompt = config.extra_prompt;

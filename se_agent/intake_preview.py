@@ -10,10 +10,16 @@ from .server import Handler
 PAGE = Path(__file__).resolve().parent.parent / "prototypes" / "intake-race.html"
 
 
+class PreviewServer(ThreadingHTTPServer):
+    def __init__(self, port):
+        self.page = PAGE.read_bytes()
+        super().__init__(("127.0.0.1", port), PreviewHandler)
+
+
 class PreviewHandler(Handler):
     def route(self):
         if self.command == "GET" and self.path == "/":
-            self.respond(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+            self.respond(200, self.server.page, "text/html; charset=utf-8")
             return
         if self.command == "GET" and self.path == "/preview/config":
             self.send_json(200, {"prompts": default_group_prompts(), "extra_prompt": EXTRA_GROUP_PROMPT})
@@ -41,7 +47,7 @@ class PreviewHandler(Handler):
 
 
 def make_preview_server(port=8001):
-    return ThreadingHTTPServer(("127.0.0.1", port), PreviewHandler)
+    return PreviewServer(port)
 
 
 def main():

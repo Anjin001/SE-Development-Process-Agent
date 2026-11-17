@@ -20,3 +20,5 @@ python -m unittest discover -s tests -v
 [开发流程工作台原型](prototypes/se-development-process-agent-ui.html)（乔璐脉提供）。下载仓库后直接用浏览器打开该 HTML 文件。页面使用 Tailwind CDN 和 Google Fonts，完整样式需要联网加载。
 
 该文件为独立交互演示原型，使用页面内的模拟数据，尚未接入后端 v2 API。正式工作台入口仍按上方启动方式访问。此原型供任务配置、依赖图、甘特图与人工审阅交互对照。
+
+- [SQLite 领域记忆服务与接入说明](docs/SQLite领域记忆模块.md)

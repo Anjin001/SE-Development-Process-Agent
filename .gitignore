@@ -3,3 +3,4 @@ __pycache__/
 .env
 .venv/
 *.db
+.se_agent_worktrees/

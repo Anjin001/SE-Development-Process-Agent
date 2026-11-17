@@ -1,0 +1,42 @@
+{
+  "tiers": {
+    "low_cost": {
+      "provider": "openai_compatible",
+      "model": "gpt-4o-mini",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "SE_AGENT_API_KEY",
+      "max_output_tokens": 2048
+    },
+    "high_capability": {
+      "provider": "openai_compatible",
+      "model": "gpt-4o",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "SE_AGENT_API_KEY",
+      "max_output_tokens": 4096
+    }
+  },
+  "routing": {
+    "default_tier": "low_cost",
+    "role_tiers": {
+      "develop": "low_cost",
+      "docs": "low_cost",
+      "integrate": "high_capability",
+      "plan": "high_capability",
+      "review": "high_capability"
+    },
+    "two_stage_roles": [
+      "integrate"
+    ],
+    "max_cost_usd_per_attempt": 1.0
+  },
+  "pricing": {
+    "gpt-4o-mini": {
+      "input_usd_per_1k": 0.00015,
+      "output_usd_per_1k": 0.0006
+    },
+    "gpt-4o": {
+      "input_usd_per_1k": 0.0025,
+      "output_usd_per_1k": 0.01
+    }
+  }
+}

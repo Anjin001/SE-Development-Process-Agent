@@ -4,6 +4,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock
 
+from .agent_client import configured_agent
 from .intake_preview import PreviewHandler as IntakeHandler
 from .synthesis_preview import PreviewHandler as ReviewHandler, PreviewStore
 
@@ -30,7 +31,8 @@ def make_server(port=8003):
     pages = {path: (PROTOTYPES / filename).read_bytes() for path, filename in PAGES.items()}
     server = ThreadingHTTPServer(("127.0.0.1", port), WorkbenchHandler)
     server.pages = pages
-    server.store = PreviewStore()
+    server.agent = configured_agent()
+    server.store = PreviewStore(server.agent)
     server.review_lock = Lock()
     return server
 

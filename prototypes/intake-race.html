@@ -54,7 +54,7 @@ html.embedded .layout{grid-template-columns:minmax(0,1fr) minmax(190px,220px)}
 @media(max-width:1050px){.layout{grid-template-columns:165px minmax(0,1fr)}aside{grid-column:2}}
 @media(max-width:650px){.layout,.grid{grid-template-columns:1fr}aside{grid-column:1}nav{position:static}nav>ul{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}nav>ul>li+li{margin-top:0}nav li ul{margin-left:5px;padding-left:6px}}
 </style>
-<header><h1>开发流程工作台</h1><span>需求与赛马 · 本地模拟</span></header>
+<header><h1>开发流程工作台</h1><span id="model-status">需求与赛马 · 本地模拟</span></header>
 <main>
 <div class="layout">
 <nav aria-label="流程阶段"><ul>
@@ -179,6 +179,8 @@ q('freeze').onclick = async () => {
       const config = await response.json();
       for (const [id, prompt] of Object.entries(config.prompts)) profiles.set(id, {prompt});
       extraPrompt = config.extra_prompt;
+      q('model-status').textContent = config.mode==='model' ? '需求与赛马 · 已连接模型' : '需求与赛马 · 本地模拟';
+      if (embedded) window.parent.setModelMode(config.mode);
       renderConfig();
     }
     frozen = await post('snapshot',{markdown:editor.value,version:version+1});
@@ -445,7 +447,7 @@ function render() {
   if (!all) return;
   const handoff = q('handoff');
   add(handoff,'h3','下载交接材料');
-  const payload = {requirement:frozen,drafts:['A','B'].map(id=>results.get(id).data.draft)};
+  const payload = {requirement:frozen,drafts:[...results.values()].map(group=>group.data.draft)};
   if (embedded) {
     const proceed = add(handoff,'button','进入评审与整合','primary');
     proceed.onclick = async () => {
@@ -456,15 +458,14 @@ function render() {
       finally { proceed.disabled = q('edit').disabled = q('reconfigure').disabled = false; }
     };
   }
-  add(handoff,'button','下载 A/B 评审交接 JSON',embedded?undefined:'primary').onclick =
+  add(handoff,'button','下载评审交接 JSON',embedded?undefined:'primary').onclick =
     () => exportJSON(payload,'race-handoff-v'+version+'.json');
   if (profiles.size>2) {
     add(handoff,'button','下载全部草案 JSON').onclick = () => {
-      const drafts = [...results.values()].map(group=>group.data.draft);
       const groups = [...results].map(([id, group])=>({id,prompt:group.prompt}));
-      exportJSON({requirement:frozen,drafts,groups},'race-all-groups-v'+version+'.json');
+      exportJSON({...payload,groups},'race-all-groups-v'+version+'.json');
     };
-    add(handoff,'p','额外小组可随全部草案下载。正式评审接口目前接收 A/B 两组。');
+    add(handoff,'p','所有参赛组都会送入独立评审。');
   }
 }
 

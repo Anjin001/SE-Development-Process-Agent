@@ -143,5 +143,21 @@ class SynthesisTest(unittest.TestCase):
                 self.proposal(agent=lambda *_: result)
 
 
+
+    def test_third_group_is_evaluated_and_contradictory_claims_are_pending(self):
+        self.drafts[1]["claims"][0]["text"] = "禁止对停用设备新建预约"
+        third = deepcopy(self.drafts[1])
+        third["id"] = "C"
+        third["claims"] = [{"id": "C-01", "text": "允许对停用设备新建预约", "requirement_ids": ["REQ-02"]}]
+        drafts = [*self.drafts, third]
+        evaluations = [s.evaluate_draft(self.req, draft) for draft in drafts]
+        proposal = s.propose_spec(self.req, drafts, evaluations, "merge")
+        issue = next(row for row in proposal["open_items"] if any(o["claim_id"] == "C-01" for o in row.get("options", [])))
+        self.assertTrue(issue["blocking"])
+        self.assertIsNone(issue["resolution"])
+        self.assertEqual({o["draft_id"] for o in issue["options"]}, {"B", "C"})
+        self.assertFalse(any("允许对停用设备" in d["choice"] for d in proposal["decisions"]))
+        self.assertTrue(s.propose_spec(self.req, drafts, evaluations, "C")["open_items"])
+
 if __name__ == "__main__":
     unittest.main()

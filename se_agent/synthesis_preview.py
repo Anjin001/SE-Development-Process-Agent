@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from . import synthesis
+from .agent_client import AgentError, configured_agent
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -26,7 +27,8 @@ def _records(project, spec, action):
             for claim in draft["claims"]:
                 related = [d for d in spec["decisions"] if draft["id"] in d["draft_ids"]
                            and set(claim["requirement_ids"]).intersection(d["requirement_ids"])]
-                deferred = any(claim["id"] in item["question"] for item in spec["open_items"])
+                deferred = any(claim["id"] in item["question"] or any(o["claim_id"] == claim["id"] for o in item.get("options", []))
+                               for item in spec["open_items"])
                 if spec["selection"] not in ("merge", draft["id"]):
                     disposition, reason = "舍弃", "未作为本轮方案起点；不表示该建议已被永久否决。"
                 elif deferred or not related:
@@ -51,14 +53,16 @@ def _records(project, spec, action):
 class PreviewStore:
     """Demo-only service layer; IDs and confirmations never come from agents."""
 
-    def __init__(self):
+    def __init__(self, agent=None):
         self.projects = {}
+        self.agent = {"agent": agent} if agent else {}
 
     def create(self, payload):
         synthesis.validate_handoff(payload.get("requirement"), payload.get("drafts"))
         project = {"id": uuid4().hex, "requirement": deepcopy(payload["requirement"]),
                    "drafts": sorted(deepcopy(payload["drafts"]), key=lambda d: d["id"]),
-                   "evaluations": [], "versions": [], "review_records": []}
+                   "evaluations": [], "versions": [], "review_records": [],
+                   "round": 1, "round_changes": [], "version_sources": {}}
         self.projects[project["id"]] = project
         return self.snapshot(project)
 
@@ -68,11 +72,14 @@ class PreviewStore:
         return self.projects[project_id]
 
     def snapshot(self, project):
-        latest = project["versions"][-1] if project["versions"] else None
-        return deepcopy({"id": project["id"], "mode": "mock", "requirement": project["requirement"],
+        previous = project["versions"][-1] if project["versions"] else None
+        latest = previous if previous and previous["round"] == project["round"] else None
+        return deepcopy({"id": project["id"], "mode": "model" if self.agent else "mock", "requirement": project["requirement"],
+                         "round": project["round"], "round_changes": project["round_changes"],
+                         "latest_version": previous["version"] if previous else 0,
                          "drafts": project["drafts"], "evaluations": project["evaluations"], "specification": latest,
                          "versions": [{"id": v["id"], "version": v["version"], "status": v["status"],
-                                       "selection": v["selection"]} for v in project["versions"]],
+                                       "selection": v["selection"], "round": v["round"]} for v in project["versions"]],
                          "review_records": project["review_records"],
                          "findings": self.findings(project, latest) if latest else []})
 
@@ -85,7 +92,8 @@ class PreviewStore:
         findings.extend({"code": "OPEN_ITEM", "version": spec["version"], "ref_id": item["id"],
                          "summary": item["question"], "blocking": item["blocking"], "severity": "warning",
                          "requirement_ids": item["affected_requirement_ids"],
-                         "evidence_refs": [item["id"], *item["affected_requirement_ids"]],
+                         "evidence_refs": [item["id"], *item["affected_requirement_ids"],
+                                           *(o["claim_id"] for o in item.get("options", []))],
                          "suggestion": "请填写人工答复；也可保留未决并交给后续环节。"}
                         for item in spec["open_items"] if item["resolution"] is None)
         return findings
@@ -97,18 +105,85 @@ class PreviewStore:
                 return deepcopy(spec)
         raise PreviewError("NOT_FOUND", "规格版本不存在", 404)
 
+    def version_handoff(self, project_id, spec_id, version):
+        spec = self.version(project_id, spec_id, version)
+        project = self.get(project_id)
+        return deepcopy({"requirement": project["requirement"], **project["version_sources"][version],
+                         "specification": spec, "review_records":
+                             [record for record in project["review_records"] if record["version"] <= version]})
+
+    def update_drafts(self, project, payload):
+        if payload.get("expected_round") != project["round"]:
+            raise PreviewError("VERSION_CONFLICT", "赛马轮次已更新，请刷新。", current_round=project["round"])
+        if payload.get("requirement") != project["requirement"]:
+            raise PreviewError("INVALID_STATE", "当前项目绑定另一份需求快照，请另建评审项目。")
+        drafts = payload.get("drafts")
+        synthesis.validate_handoff(project["requirement"], drafts)
+        drafts = sorted(deepcopy(drafts), key=lambda d: d["id"])
+        if drafts == project["drafts"]:
+            return self.snapshot(project)
+
+        def claims(rows):
+            return {c["id"]: {"group_id": d["id"], "text": c["text"], "requirement_ids": c["requirement_ids"]}
+                    for d in rows for c in d["claims"]}
+        before, after = claims(project["drafts"]), claims(drafts)
+        differences = [{"claim_id": id_, "before": before.get(id_), "after": after.get(id_)}
+                       for id_ in sorted(before.keys() | after.keys()) if before.get(id_) != after.get(id_)]
+        affected = {ref for change in differences for side in ("before", "after")
+                    for ref in (change[side] or {}).get("requirement_ids", [])}
+        previous = project["versions"][-1] if project["versions"] else None
+        old_groups = {d["id"]: d for d in project["drafts"]}
+        new_groups = {d["id"]: d for d in drafts}
+        changed_groups = sorted(id_ for id_ in old_groups.keys() | new_groups.keys()
+                                if old_groups.get(id_) != new_groups.get(id_))
+        project["round_changes"].append({
+            "round": project["round"] + 1, "changed_groups": changed_groups, "claims": differences,
+            "prior_decisions": [{"id": d["id"], "choice": d["choice"], "requirement_ids": d["requirement_ids"],
+                                 "needs_review": bool(affected.intersection(d["requirement_ids"]))}
+                                for d in (previous["decisions"] if previous else [])]
+        })
+        project.update(drafts=drafts, evaluations=[], round=project["round"] + 1)
+        return self.snapshot(project)
+
+    @staticmethod
+    def edited_content(payload):
+        content = {key: deepcopy(payload.get(key)) for key in ("markdown", "decisions", "open_items")}
+        notes = payload.get("notes_markdown", "")
+        if not isinstance(notes, str):
+            raise PreviewError("INVALID_REQUEST", "人工补充说明必须为文本。", 400)
+        content["notes_markdown"] = notes
+        return content
+
+    @staticmethod
+    def protect_issues(latest, content):
+        if not latest:
+            return
+        pending = {item["id"]: item for item in content["open_items"]}
+        for issue in latest["open_items"]:
+            if not issue.get("options"):
+                continue
+            current = pending.get(issue["id"])
+            if (not current or current.get("options") != issue["options"]
+                    or current["affected_requirement_ids"] != issue["affected_requirement_ids"]
+                    or (current["resolution"] is None and not current["blocking"])):
+                raise synthesis.SynthesisError("请在原议题上处理候选选项，保留来源和影响范围。",
+                                               "proposal.open_items", "INVALID_OUTPUT")
+
     def change(self, project_id, action, payload):
         project = self.get(project_id)
-        latest = project["versions"][-1] if project["versions"] else None
+        previous = project["versions"][-1] if project["versions"] else None
+        latest = previous if previous and previous["round"] == project["round"] else None
+        if action == "update-drafts":
+            return self.update_drafts(project, payload)
         if action == "evaluate":
             if latest:
                 raise PreviewError("INVALID_STATE", "已有方案版本；更换输入请新建演示项目。")
-            evaluations = [synthesis.evaluate_draft(project["requirement"], d) for d in project["drafts"]]
+            evaluations = [synthesis.evaluate_draft(project["requirement"], d, **self.agent) for d in project["drafts"]]
             project["evaluations"] = evaluations
             return self.snapshot(project)
         if action not in ("propose", "save", "confirm", "inspect"):
             raise PreviewError("NOT_FOUND", "操作不存在", 404)
-        current = latest["version"] if latest else 0
+        current = previous["version"] if previous else 0
         expected = payload.get("expected_version")
         if type(expected) is not int or expected < 0:
             raise PreviewError("INVALID_REQUEST", "expected_version 必须是非负整数", 400)
@@ -117,16 +192,18 @@ class PreviewStore:
         if action == "inspect":
             if not latest:
                 raise PreviewError("INVALID_STATE", "请先生成方案草稿。")
-            content = {key: payload.get(key) for key in ("markdown", "decisions", "open_items")}
+            content = self.edited_content(payload)
             try:
                 synthesis.validate_proposal(project["requirement"], project["drafts"], content)
+                self.protect_issues(latest, content)
             except synthesis.SynthesisError as error:
                 return {"version": current, "findings": [
                     {"code": error.code, "severity": "error", "summary": str(error),
                      "evidence_refs": [error.path] if error.path else [],
                      "suggestion": "检查对应字段和需求来源，修正后再保存。"}
                 ]}
-            return {"version": current, "findings": self.findings(project, {**content, "version": current})}
+            markdown = synthesis.render_spec_markdown(project["requirement"], content["decisions"], content["open_items"], content["notes_markdown"])
+            return {"version": current, "markdown": markdown, "findings": self.findings(project, {**content, "version": current})}
         if action == "confirm":
             if not latest or latest["status"] != "draft":
                 raise PreviewError("INVALID_STATE", "只有最新草稿可以确认。")
@@ -136,18 +213,23 @@ class PreviewStore:
             latest.update(status="confirmed", confirmed_by="lead-demo", confirmed_at=datetime.now(timezone.utc).isoformat())
             return self.snapshot(project)
         if action == "propose":
-            content = synthesis.propose_spec(project["requirement"], project["drafts"], project["evaluations"], payload.get("selection"))
+            content = synthesis.propose_spec(project["requirement"], project["drafts"], project["evaluations"], payload.get("selection"), **self.agent)
+            content["notes_markdown"] = ""
             selection = payload["selection"]
         else:
             if not latest:
                 raise PreviewError("INVALID_STATE", "请先生成方案草稿。")
-            content = {key: deepcopy(payload.get(key)) for key in ("markdown", "decisions", "open_items")}
+            content = self.edited_content(payload)
             synthesis.validate_proposal(project["requirement"], project["drafts"], content)
+            self.protect_issues(latest, content)
+            content["markdown"] = synthesis.render_spec_markdown(project["requirement"], content["decisions"], content["open_items"], content["notes_markdown"])
             selection = latest["selection"]
-        spec = {"id": latest["id"] if latest else "SPEC-" + project_id[:8], "version": current + 1, "status": "draft",
+        spec = {"id": previous["id"] if previous else "SPEC-" + project_id[:8], "version": current + 1, "status": "draft",
+                "round": project["round"],
                 "requirement_ref": {"id": project["requirement"]["id"], "version": project["requirement"]["version"]},
                 "selection": selection, **content, "confirmed_by": None, "confirmed_at": None}
         records = _records(project, spec, action)
+        project["version_sources"][spec["version"]] = deepcopy({"drafts": project["drafts"], "evaluations": project["evaluations"]})
         project["versions"].append(spec)
         project["review_records"].extend(records)
         return self.snapshot(project)
@@ -206,7 +288,12 @@ class PreviewHandler(BaseHTTPRequestHandler):
                 if len(parts) == 7 and parts[3] == "specifications" and parts[5] == "versions" and self.command == "GET":
                     self.respond(200, store.version(parts[2], parts[4], int(parts[6])))
                     return
+                if len(parts) == 8 and parts[3] == "specifications" and parts[5] == "versions" and parts[7] == "handoff" and self.command == "GET":
+                    self.respond(200, store.version_handoff(parts[2], parts[4], int(parts[6])))
+                    return
             raise PreviewError("NOT_FOUND", "接口不存在", 404)
+        except AgentError as error:
+            self.respond(502, {"error": {"code": "MODEL_ERROR", "message": str(error), "details": {}}})
         except synthesis.SynthesisError as error:
             self.respond(422, {"error": {"code": error.code, "message": str(error), "details": {"path": error.path}}})
         except PreviewError as error:
@@ -217,7 +304,7 @@ class PreviewHandler(BaseHTTPRequestHandler):
 
 def make_preview_server(port=8002):
     server = HTTPServer(("127.0.0.1", port), PreviewHandler)
-    server.store = PreviewStore()
+    server.store = PreviewStore(configured_agent())
     return server
 
 

@@ -103,6 +103,47 @@ class PreviewStoreTest(unittest.TestCase):
         self.assertEqual(before, self.store.snapshot(self.store.get(self.id)))
 
 
+    def test_answer_must_become_a_decision_and_saved_markdown_is_regenerated(self):
+        first = self.propose()["specification"]
+        content = {key: deepcopy(first[key]) for key in ("markdown", "decisions", "open_items")}
+        item = content["open_items"][0]
+        item["resolution"] = "保留已有预约，并允许改期。"
+        request = {"expected_version": 1, **content, "notes_markdown": "联调时关注已有预约。"}
+        self.assertEqual(self.store.change(self.id, "inspect", request)["findings"][0]["code"], "RESOLUTION_NOT_APPLIED")
+        with self.assertRaises(synthesis.SynthesisError):
+            self.store.change(self.id, "save", request)
+        item["decision_id"] = "DEC-HUMAN"
+        content["decisions"].append({"id": "DEC-HUMAN", "scope": "已有预约", "choice": item["resolution"],
+                                     "reason": "负责人裁决", "requirement_ids": item["affected_requirement_ids"],
+                                     "draft_ids": ["B"]})
+        saved = self.store.change(self.id, "save", request)["specification"]
+        self.assertIn(item["resolution"], saved["markdown"])
+        self.assertIn("联调时关注已有预约。", saved["markdown"])
+        self.assertNotIn("处理结果：待人工决定", saved["markdown"])
+        self.assertEqual(self.store.change(self.id, "confirm", {"expected_version": 2})["specification"]["status"], "confirmed")
+
+    def test_rework_preserves_versions_sources_and_decision_comparison(self):
+        self.propose()
+        previous = self.store.change(self.id, "confirm", {"expected_version": 1})["specification"]
+        payload = handoff()
+        payload["drafts"][1]["claims"][0]["text"] += "，同时提示设备停用原因。"
+        result = self.store.change(self.id, "update-drafts", {**payload, "expected_round": 1})
+        self.assertEqual(result["id"], self.id)
+        self.assertEqual(result["round"], 2)
+        self.assertIsNone(result["specification"])
+        self.assertEqual(result["round_changes"][0]["claims"][0]["claim_id"], "B-01")
+        self.assertEqual(result["round_changes"][0]["changed_groups"], ["B"])
+        comparison = result["round_changes"][0]["prior_decisions"]
+        self.assertTrue(any(row["needs_review"] for row in comparison))
+        self.assertTrue(any(not row["needs_review"] for row in comparison))
+        archive = self.store.version_handoff(self.id, previous["id"], 1)
+        self.assertEqual(archive["drafts"], self.project["drafts"])
+        self.assertEqual(archive["specification"]["status"], "confirmed")
+        self.store.change(self.id, "evaluate", {})
+        new = self.propose(version=1)["specification"]
+        self.assertEqual((new["id"], new["version"], new["round"]), (previous["id"], 2, 2))
+
+
 class PreviewHttpTest(unittest.TestCase):
     def setUp(self):
         self.server = make_preview_server(0)

@@ -4,6 +4,7 @@ import json
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+from .agent_client import AgentError, configured_agent
 from .intake import EXTRA_GROUP_PROMPT, build_snapshot, default_group_prompts, run_group
 from .server import Handler
 
@@ -13,6 +14,7 @@ PAGE = Path(__file__).resolve().parent.parent / "prototypes" / "intake-race.html
 class PreviewServer(ThreadingHTTPServer):
     def __init__(self, port):
         self.page = PAGE.read_bytes()
+        self.agent = configured_agent()
         super().__init__(("127.0.0.1", port), PreviewHandler)
 
 
@@ -22,7 +24,8 @@ class PreviewHandler(Handler):
             self.respond(200, self.server.page, "text/html; charset=utf-8")
             return
         if self.command == "GET" and self.path == "/preview/config":
-            self.send_json(200, {"prompts": default_group_prompts(), "extra_prompt": EXTRA_GROUP_PROMPT})
+            self.send_json(200, {"prompts": default_group_prompts(), "extra_prompt": EXTRA_GROUP_PROMPT,
+                                 "mode": "model" if self.server.agent else "mock"})
             return
         if self.command != "POST" or self.path not in ("/preview/snapshot", "/preview/group"):
             self.send_json(404, {"error": "接口不存在"})
@@ -41,7 +44,10 @@ class PreviewHandler(Handler):
             if body.get("simulate_failure") is True:
                 self.send_json(503, {"error": "模拟生成中断，可单独重试这一组。"})
                 return
-            self.send_json(200, run_group(snapshot, body.get("group_id"), prompt=body.get("prompt")))
+            kwargs = {"agent": self.server.agent} if self.server.agent else {}
+            self.send_json(200, run_group(snapshot, body.get("group_id"), prompt=body.get("prompt"), **kwargs))
+        except AgentError as exc:
+            self.send_json(502, {"error": str(exc)})
         except (ValueError, TypeError) as exc:
             self.send_json(400, {"error": str(exc)})
 

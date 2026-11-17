@@ -92,7 +92,8 @@ def validate_requirement(requirement):
 def validate_draft(requirement, draft):
     known = validate_requirement(requirement)
     _object(draft, "draft")
-    _check(draft.get("id") in ("A", "B"), "草案编号须为 A 或 B", "draft.id")
+    _check(isinstance(draft.get("id"), str) and re.fullmatch(r"[A-Z]+", draft["id"]),
+           "草案编号须为大写字母", "draft.id")
     ref = draft.get("requirement_ref")
     _object(ref, "draft.requirement_ref")
     _check(type(ref.get("version")) is int and ref == {"id": requirement["id"], "version": requirement["version"]},
@@ -110,7 +111,8 @@ def validate_draft(requirement, draft):
 def validate_handoff(requirement, drafts):
     validate_requirement(requirement)
     _rows(drafts, "drafts", True)
-    _check(_unique(drafts, "drafts") == {"A", "B"}, "需要齐备的 A、B 两份草案", "drafts")
+    _unique(drafts, "drafts")
+    _check(len(drafts) >= 2, "至少需要两份不同小组的草案", "drafts")
     seen = set()
     for draft in drafts:
         claims = validate_draft(requirement, draft)
@@ -143,6 +145,8 @@ def validate_proposal(requirement, drafts, proposal):
     _text(proposal.get("markdown"), "proposal.markdown")
     known = {item["id"] for item in requirement["items"]}
     covered = set()
+    group_ids = {draft["id"] for draft in drafts}
+    claims = {claim["id"]: (draft["id"], claim) for draft in drafts for claim in draft["claims"]}
     for key in ("decisions", "open_items"):
         _rows(proposal.get(key), "proposal." + key)
         _unique(proposal[key], "proposal." + key)
@@ -151,17 +155,38 @@ def validate_proposal(requirement, drafts, proposal):
         for key in ("scope", "choice", "reason"):
             _text(decision.get(key), path + "." + key)
         _refs(decision.get("requirement_ids"), known, path + ".requirement_ids")
-        _refs(decision.get("draft_ids"), {"A", "B"}, path + ".draft_ids")
+        _refs(decision.get("draft_ids"), group_ids, path + ".draft_ids")
         covered.update(decision["requirement_ids"])
     for i, item in enumerate(proposal["open_items"]):
         path = f"proposal.open_items[{i}]"
         _text(item.get("question"), path + ".question")
         _check(type(item.get("blocking")) is bool, "blocking 必须是布尔值", path + ".blocking")
         _check("resolution" in item, "缺少 resolution（未解决时为 null）", path + ".resolution")
-        if item["resolution"] is not None:
-            _text(item["resolution"], path + ".resolution")
         _refs(item.get("affected_requirement_ids"), known, path + ".affected_requirement_ids")
-        covered.update(item["affected_requirement_ids"])
+        affected = set(item["affected_requirement_ids"])
+        options = item.get("options", [])
+        _rows(options, path + ".options")
+        for option in options:
+            _object(option, path + ".options")
+            key = option.get("claim_id")
+            _check(isinstance(key, str) and key in claims, "选项引用了未知主张", path + ".options")
+            group, claim = claims[key]
+            _check(option.get("draft_id") == group and option.get("text") == claim["text"]
+                   and affected.intersection(claim["requirement_ids"]),
+                   "候选选项与原始草案不一致", path + ".options")
+        if item["resolution"] is None:
+            _check(not item.get("decision_id"), "请撤销已关联的取舍后再保留未决。",
+                   path + ".decision_id", "RESOLUTION_NOT_APPLIED")
+        else:
+            _text(item["resolution"], path + ".resolution")
+            linked = item.get("decision_id")
+            _check(any(d["choice"].strip() == item["resolution"].strip()
+                       and affected <= set(d["requirement_ids"])
+                       and (linked is None or d["id"] == linked)
+                       for d in proposal["decisions"]),
+                   "请先把 "+item["id"]+" 的人工答复写入决策，再保存或确认。",
+                   path + ".resolution", "RESOLUTION_NOT_APPLIED")
+        covered.update(affected)
     _check(covered == known, "部分需求未关联决策或未决事项：" + "、".join(sorted(known - covered)), "proposal.decisions", "INVALID_OUTPUT")
 
 
@@ -171,7 +196,7 @@ def _cancellation_suggestion(requirement, claim):
             and "取消" not in "\n".join(item["text"] for item in requirement["items"]))
 
 
-def render_spec_markdown(requirement, decisions, open_items):
+def render_spec_markdown(requirement, decisions, open_items, notes=""):
     parts = ["# 综合开发方案", "## 需求原文与约束", requirement["markdown"], "## 方案决策"]
     for row in decisions:
         parts.append(f"### {row['id']} · {row['scope']}\n{row['choice']}\n\n理由：{row['reason']}\n\n来源："
@@ -181,8 +206,12 @@ def render_spec_markdown(requirement, decisions, open_items):
         parts.append(f"- {row['id']} · {row['question']}\n  影响：{'、'.join(row['affected_requirement_ids'])}；"
                      + ("阻塞相关任务" if row["blocking"] else "非阻塞")
                      + "；处理结果：" + (row["resolution"] or "待人工决定"))
+        if row["resolution"] is None:
+            parts.extend(f"  - {option['claim_id']} · {option['text']}" for option in row.get("options", []))
     if not open_items:
         parts.append("无已登记的未决事项，仍需人工复查业务语义。")
+    if notes.strip():
+        parts.extend(["## 人工补充说明", notes.strip()])
     return "\n\n".join(parts)
 
 
@@ -204,9 +233,13 @@ def mock_agent(stage, context):
     selected = [d for d in context["drafts"] if context["selection"] == "merge" or d["id"] == context["selection"]]
     decisions, open_items = [], []
 
-    def pending(item, question):
-        open_items.append({"id": f"OPEN-{len(open_items) + 1:02d}", "question": question, "blocking": True,
-                           "affected_requirement_ids": [item["id"]], "resolution": None})
+    def pending(item, question, candidates=()):
+        row = {"id": f"OPEN-{len(open_items) + 1:02d}", "question": question, "blocking": True,
+               "affected_requirement_ids": [item["id"]], "resolution": None}
+        if candidates:
+            row["options"] = [{"claim_id": c["id"], "draft_id": group, "text": c["text"]}
+                              for group, c in candidates]
+        open_items.append(row)
 
     for item in requirement["items"]:
         candidates = [(d["id"], c) for d in selected for c in d["claims"] if item["id"] in c["requirement_ids"]]
@@ -216,11 +249,16 @@ def mock_agent(stage, context):
         unsafe = [(group, c) for group, c in candidates if _cancellation_suggestion(requirement, c)]
         if unsafe:
             pending(item, "示例复查：" + "、".join(c["id"] for _, c in unsafe)
-                    + "提出自动取消已有预约，原需求未确认该规则。请选择保留仍可履约的预约并处理改期、取消受影响预约并告知用户，或暂缓决定；补充理由。")
+                    + "提出自动取消已有预约，原需求未确认该规则。请选择保留仍可履约的预约并处理改期、取消受影响预约并告知用户，或暂缓决定；补充理由。", unsafe)
         safe = [(group, c) for group, c in candidates if not _cancellation_suggestion(requirement, c)]
         if not safe:
             if not unsafe:
                 pending(item, "所选草案尚未覆盖此需求，请补充实现规则：" + item["text"])
+            continue
+        alternatives = [(d["id"], c) for d in context["drafts"] for c in d["claims"]
+                        if item["id"] in c["requirement_ids"] and not _cancellation_suggestion(requirement, c)]
+        if len({c["text"] for _, c in alternatives}) > 1 and len({g for g, _ in alternatives}) > 1:
+            pending(item, "多组对该需求提出了不同做法。请核对依据，选择或改写最终规则。", alternatives)
             continue
         texts = list(dict.fromkeys(c["text"] for _, c in safe))
         decisions.append({"id": f"DEC-{len(decisions) + 1:02d}", "scope": item["title"],
@@ -241,13 +279,35 @@ def evaluate_draft(requirement, draft, *, agent=mock_agent):
 def propose_spec(requirement, drafts, evaluations, selection, *, agent=mock_agent):
     """Return content only; the calling service owns identity and confirmation."""
     validate_handoff(requirement, drafts)
-    _check(selection in ("A", "B", "merge"), "请选择 A、B 或融合", "selection")
+    group_ids = {d["id"] for d in drafts}
+    _check(isinstance(selection, str) and (selection == "merge" or selection in group_ids),
+           "请选择已参赛的小组或融合", "selection")
     _rows(evaluations, "evaluations", True)
-    _check(len(evaluations) == 2 and all(isinstance(e, dict) for e in evaluations), "需要 A/B 两份独立评价", "evaluations")
-    _check({e.get("draft_id") for e in evaluations if isinstance(e.get("draft_id"), str)} == {"A", "B"}, "评价对象必须分别是 A 和 B", "evaluations")
+    _check(len(evaluations) == len(drafts) and all(isinstance(e, dict) for e in evaluations),
+           "每份草案都需要一份独立评价", "evaluations")
+    _check({e.get("draft_id") for e in evaluations if isinstance(e.get("draft_id"), str)} == group_ids,
+           "评价对象须与参赛草案一致", "evaluations")
     for draft in drafts:
         validate_evaluation(requirement, draft, next(e for e in evaluations if e["draft_id"] == draft["id"]))
-    result = agent("synthesize", deepcopy({"requirement": requirement, "drafts": drafts,
-                                          "evaluations": evaluations, "selection": selection}))
+    context = {"requirement": requirement, "drafts": drafts, "evaluations": evaluations, "selection": selection}
+    result = deepcopy(agent("synthesize", deepcopy(context)))
+    validate_proposal(requirement, drafts, result)
+    if agent is not mock_agent:
+        _check(all(row["resolution"] is None for row in result["open_items"]),
+               "模型不能替人工处置未决事项", "proposal.open_items", "INVALID_OUTPUT")
+        guard = mock_agent("synthesize", context)
+        for issue in guard["open_items"]:
+            if "options" not in issue:
+                continue
+            affected = set(issue["affected_requirement_ids"])
+            covered_options = {o["claim_id"] for o in issue["options"]}
+            result["decisions"] = [d for d in result["decisions"]
+                                   if not affected.intersection(d["requirement_ids"])]
+            if not any(covered_options <= {o["claim_id"] for o in row.get("options", [])}
+                       and row["resolution"] is None for row in result["open_items"]):
+                used = {row["id"] for row in result["open_items"]}
+                number = next(n for n in range(1, len(used) + 2) if f"OPEN-{n:02d}" not in used)
+                result["open_items"].append({**issue, "id": f"OPEN-{number:02d}"})
+    result["markdown"] = render_spec_markdown(requirement, result["decisions"], result["open_items"])
     validate_proposal(requirement, drafts, result)
     return {key: deepcopy(result[key]) for key in ("markdown", "decisions", "open_items")}

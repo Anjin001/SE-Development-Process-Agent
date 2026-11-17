@@ -30,7 +30,7 @@ iframe{width:100%;height:100%;border:0;display:block}
   button{font-size:12px}
 }
 </style>
-<header><h1>开发流程工作台</h1><span>赛马与评审 · 本地模拟</span></header>
+<header><h1>开发流程工作台</h1><span id="mode">赛马与评审 · 本地模拟</span></header>
 <main>
 <nav aria-label="流程目录">
 <ul>
@@ -118,6 +118,9 @@ nav.addEventListener('click', event => {
   }
 });
 
+window.setModelMode = mode => {
+  document.querySelector('#mode').textContent = '赛马与评审 · '+(mode==='model'?'模型模式':'本地模拟');
+};
 window.returnToRace = payload => {
   const receive = intake.contentWindow.receiveReviewInstruction;
   if (typeof receive!=='function') throw new Error('赛马页面还在加载，请稍后重试。');

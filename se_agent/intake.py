@@ -203,8 +203,6 @@ def run_group(requirement, group_id, *, prompt=None, agent=_mock_agent):
     return {"draft": draft, "ideas": ideas, "challenge": challenge}
 
 
-def generate_draft(requirement, group_id):
+def generate_draft(requirement, group_id, *, prompt=None):
     """Public v2 module entry point; read only the supplied snapshot."""
-    if group_id not in ("A", "B"):
-        raise ValueError("v2 正式交接仅接收 A 或 B 组")
-    return run_group(requirement, group_id)["draft"]
+    return run_group(requirement, group_id, prompt=prompt)["draft"]

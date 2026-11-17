@@ -64,5 +64,4 @@ class IntakeRaceTest(unittest.TestCase):
         self.assertEqual(c["draft"]["requirement_ref"], a["draft"]["requirement_ref"])
         with self.assertRaisesRegex(ValueError, "提示词"):
             run_group(self.requirement, "C", prompt=" ")
-        with self.assertRaisesRegex(ValueError, "正式交接"):
-            generate_draft(self.requirement, "C")
+        self.assertEqual(generate_draft(self.requirement, "C", prompt="比较迁移路径")["id"], "C")

@@ -1,0 +1,1281 @@
+{
+  "description": "设备预约 v2 联调数据。提交号和账号为占位符。下方审核和派发是连续案例，其他失败用例独立。",
+  "requirement": {
+    "id": "REQSET-01",
+    "version": 1,
+    "markdown": "# 设备预约\n停用设备保留在列表，显示停用状态。\n禁止对停用设备发起新预约。",
+    "items": [
+      {
+        "id": "REQ-01",
+        "title": "展示停用状态",
+        "text": "停用设备保留在列表，显示停用状态。",
+        "source": {
+          "section": "设备预约",
+          "start_line": 2,
+          "end_line": 2
+        }
+      },
+      {
+        "id": "REQ-02",
+        "title": "阻止新预约",
+        "text": "禁止对停用设备发起新预约。",
+        "source": {
+          "section": "设备预约",
+          "start_line": 3,
+          "end_line": 3
+        }
+      }
+    ]
+  },
+  "drafts": [
+    {
+      "id": "A",
+      "requirement_ref": {
+        "id": "REQSET-01",
+        "version": 1
+      },
+      "title": "统一设备状态",
+      "summary": "先统一状态定义，再实现列表。",
+      "claims": [
+        {
+          "id": "A-01",
+          "text": "列表保留停用设备",
+          "requirement_ids": [
+            "REQ-01"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B",
+      "requirement_ref": {
+        "id": "REQSET-01",
+        "version": 1
+      },
+      "title": "先限制预约入口",
+      "summary": "把停用状态作为预约服务的准入条件。",
+      "claims": [
+        {
+          "id": "B-01",
+          "text": "服务端拒绝停用设备的新预约",
+          "requirement_ids": [
+            "REQ-02"
+          ]
+        }
+      ]
+    }
+  ],
+  "evaluations": [
+    {
+      "draft_id": "A",
+      "criteria": [
+        {
+          "criterion": "value",
+          "score": 5,
+          "reason": "列表保留停用设备",
+          "claim_ids": [
+            "A-01"
+          ]
+        },
+        {
+          "criterion": "feasibility",
+          "score": 4,
+          "reason": "列表保留停用设备",
+          "claim_ids": [
+            "A-01"
+          ]
+        },
+        {
+          "criterion": "cost",
+          "score": 3,
+          "reason": "列表保留停用设备",
+          "claim_ids": [
+            "A-01"
+          ]
+        }
+      ]
+    },
+    {
+      "draft_id": "B",
+      "criteria": [
+        {
+          "criterion": "value",
+          "score": 5,
+          "reason": "服务端拒绝停用设备的新预约",
+          "claim_ids": [
+            "B-01"
+          ]
+        },
+        {
+          "criterion": "feasibility",
+          "score": 4,
+          "reason": "服务端拒绝停用设备的新预约",
+          "claim_ids": [
+            "B-01"
+          ]
+        },
+        {
+          "criterion": "cost",
+          "score": 3,
+          "reason": "服务端拒绝停用设备的新预约",
+          "claim_ids": [
+            "B-01"
+          ]
+        }
+      ]
+    }
+  ],
+  "specification": {
+    "id": "SPEC-01",
+    "version": 1,
+    "status": "confirmed",
+    "requirement_ref": {
+      "id": "REQSET-01",
+      "version": 1
+    },
+    "markdown": "# 设备预约\n停用设备保留在列表，显示停用状态。\n禁止对停用设备发起新预约。",
+    "decisions": [
+      {
+        "id": "DEC-01",
+        "scope": "列表与预约",
+        "choice": "停用设备保留且显示状态，服务端拒绝新预约。",
+        "reason": "兼顾查阅与预约正确性。",
+        "requirement_ids": [
+          "REQ-01",
+          "REQ-02"
+        ],
+        "draft_ids": [
+          "A",
+          "B"
+        ]
+      }
+    ],
+    "open_items": [
+      {
+        "id": "OPEN-01",
+        "question": "联调演示使用哪个虚构设备编号？",
+        "blocking": true,
+        "affected_requirement_ids": [
+          "REQ-02"
+        ],
+        "resolution": null
+      }
+    ],
+    "confirmed_by": "lead-demo",
+    "confirmed_at": "2026-11-17T10:00:00Z",
+    "selection": "merge"
+  },
+  "plan_response": {
+    "plan": {
+      "id": "PLAN-01",
+      "version": 1,
+      "spec_ref": {
+        "id": "SPEC-01",
+        "version": 1
+      },
+      "base_commit": "1111111111111111111111111111111111111111",
+      "max_parallel": 2,
+      "tasks": [
+        {
+          "id": "T1",
+          "title": "定义设备状态",
+          "phase": "development",
+          "requirement_ids": [
+            "REQ-01"
+          ],
+          "decision_ids": [
+            "DEC-01"
+          ],
+          "open_item_ids": [],
+          "depends_on": [],
+          "role": "develop",
+          "write_paths": [
+            "app/status.py"
+          ],
+          "outputs": [
+            {
+              "id": "OUT-01",
+              "kind": "git_commit",
+              "path": "app/status.py"
+            }
+          ],
+          "estimate_seconds": 300,
+          "review_required": false,
+          "completion_condition": "定义设备状态提交后可按输出路径读取。"
+        },
+        {
+          "id": "T2",
+          "title": "实现预约限制",
+          "phase": "development",
+          "requirement_ids": [
+            "REQ-02"
+          ],
+          "decision_ids": [
+            "DEC-01"
+          ],
+          "open_item_ids": [
+            "OPEN-01"
+          ],
+          "depends_on": [
+            "T1"
+          ],
+          "role": "develop",
+          "write_paths": [
+            "app/reservations.py"
+          ],
+          "outputs": [
+            {
+              "id": "OUT-01",
+              "kind": "git_commit",
+              "path": "app/reservations.py"
+            }
+          ],
+          "estimate_seconds": 600,
+          "review_required": true,
+          "completion_condition": "实现预约限制提交后可按输出路径读取。"
+        },
+        {
+          "id": "T3",
+          "title": "整理使用说明",
+          "phase": "development",
+          "requirement_ids": [
+            "REQ-01"
+          ],
+          "decision_ids": [
+            "DEC-01"
+          ],
+          "open_item_ids": [],
+          "depends_on": [
+            "T1"
+          ],
+          "role": "docs",
+          "write_paths": [
+            "docs/usage.md"
+          ],
+          "outputs": [
+            {
+              "id": "OUT-01",
+              "kind": "text",
+              "path": "docs/usage.md"
+            }
+          ],
+          "estimate_seconds": 300,
+          "review_required": false,
+          "completion_condition": "整理使用说明提交后可按输出路径读取。"
+        },
+        {
+          "id": "T4",
+          "title": "集成预约规则",
+          "phase": "integration",
+          "requirement_ids": [
+            "REQ-01",
+            "REQ-02"
+          ],
+          "decision_ids": [
+            "DEC-01"
+          ],
+          "open_item_ids": [],
+          "depends_on": [
+            "T2",
+            "T3"
+          ],
+          "role": "develop",
+          "write_paths": [
+            "app/integration.py"
+          ],
+          "outputs": [
+            {
+              "id": "OUT-01",
+              "kind": "git_commit",
+              "path": "app/integration.py"
+            }
+          ],
+          "estimate_seconds": 300,
+          "review_required": false,
+          "completion_condition": "集成预约规则提交后可按输出路径读取。"
+        }
+      ]
+    },
+    "schedule": [
+      {
+        "task_id": "T1",
+        "early_start_seconds": 0,
+        "early_finish_seconds": 300,
+        "critical": true
+      },
+      {
+        "task_id": "T2",
+        "early_start_seconds": 300,
+        "early_finish_seconds": 900,
+        "critical": true
+      },
+      {
+        "task_id": "T3",
+        "early_start_seconds": 300,
+        "early_finish_seconds": 600,
+        "critical": false
+      },
+      {
+        "task_id": "T4",
+        "early_start_seconds": 900,
+        "early_finish_seconds": 1200,
+        "critical": true
+      }
+    ]
+  },
+  "needs_input": {
+    "request": {
+      "method": "POST",
+      "path": "/api/v2/projects/PROJECT-01/runs/RUN-01/actions/supply-input",
+      "headers": {
+        "Idempotency-Key": "supply-t2-1"
+      },
+      "body": {
+        "expected_revision": 5,
+        "task_id": "T2",
+        "values": {
+          "OPEN-01": "LAB-DEMO-07"
+        }
+      }
+    },
+    "response_excerpt": {
+      "task_id": "T2",
+      "state": "ready",
+      "missing_input_ids": []
+    }
+  },
+  "review_snapshot": {
+    "id": "RUN-01",
+    "plan_ref": {
+      "id": "PLAN-01",
+      "version": 1
+    },
+    "mode": "manual",
+    "dispatch": "active",
+    "state": "active",
+    "revision": 8,
+    "started_at": "2026-11-17T10:00:00Z",
+    "ended_at": null,
+    "latest_event_seq": 9,
+    "tasks": [
+      {
+        "task_id": "T1",
+        "state": "done",
+        "attempts": [
+          {
+            "id": "T1.1",
+            "number": 1,
+            "state": "succeeded",
+            "created_at": "2026-11-17T10:00:00Z",
+            "started_at": "2026-11-17T10:00:00Z",
+            "ended_at": "2026-11-17T10:00:30Z",
+            "error": null,
+            "input_refs": []
+          }
+        ],
+        "artifacts": [
+          {
+            "id": "ART-T1",
+            "version": 1,
+            "task_id": "T1",
+            "attempt_id": "T1.1",
+            "output_id": "OUT-01",
+            "kind": "git_commit",
+            "origin": "agent",
+            "status": "approved",
+            "based_on_version": null,
+            "commit_sha": "2222222222222222222222222222222222222222",
+            "changed_paths": [
+              "app/status.py"
+            ],
+            "content": null
+          }
+        ],
+        "blockers": [],
+        "missing_input_ids": [],
+        "review_records": []
+      },
+      {
+        "task_id": "T2",
+        "state": "review",
+        "attempts": [
+          {
+            "id": "T2.1",
+            "number": 1,
+            "state": "succeeded",
+            "created_at": "2026-11-17T10:00:40Z",
+            "started_at": "2026-11-17T10:00:40Z",
+            "ended_at": "2026-11-17T10:01:20Z",
+            "error": null,
+            "input_refs": [
+              {
+                "id": "ART-T1",
+                "version": 1,
+                "commit_sha": "2222222222222222222222222222222222222222"
+              }
+            ]
+          }
+        ],
+        "artifacts": [
+          {
+            "id": "ART-T2",
+            "version": 1,
+            "task_id": "T2",
+            "attempt_id": "T2.1",
+            "output_id": "OUT-01",
+            "kind": "git_commit",
+            "origin": "agent",
+            "status": "draft",
+            "based_on_version": null,
+            "commit_sha": "3333333333333333333333333333333333333333",
+            "changed_paths": [
+              "app/reservations.py"
+            ],
+            "content": null
+          }
+        ],
+        "blockers": [],
+        "missing_input_ids": [],
+        "review_records": []
+      },
+      {
+        "task_id": "T3",
+        "state": "done",
+        "attempts": [
+          {
+            "id": "T3.1",
+            "number": 1,
+            "state": "succeeded",
+            "created_at": "2026-11-17T10:00:32Z",
+            "started_at": "2026-11-17T10:00:32Z",
+            "ended_at": "2026-11-17T10:01:00Z",
+            "error": null,
+            "input_refs": [
+              {
+                "id": "ART-T1",
+                "version": 1,
+                "commit_sha": "2222222222222222222222222222222222222222"
+              }
+            ]
+          }
+        ],
+        "artifacts": [
+          {
+            "id": "ART-T3",
+            "version": 1,
+            "task_id": "T3",
+            "attempt_id": "T3.1",
+            "output_id": "OUT-01",
+            "kind": "text",
+            "origin": "agent",
+            "status": "approved",
+            "based_on_version": null,
+            "commit_sha": null,
+            "changed_paths": [],
+            "content": "停用设备只能查看历史记录。"
+          }
+        ],
+        "blockers": [],
+        "missing_input_ids": [],
+        "review_records": []
+      },
+      {
+        "task_id": "T4",
+        "state": "waiting",
+        "attempts": [],
+        "artifacts": [],
+        "blockers": [
+          {
+            "code": "UPSTREAM_REVIEW",
+            "ref_id": "T2",
+            "message": "等待预约限制的产物审核"
+          }
+        ],
+        "missing_input_ids": [],
+        "review_records": []
+      }
+    ],
+    "findings": []
+  },
+  "review_action": {
+    "method": "POST",
+    "path": "/api/v2/projects/PROJECT-01/runs/RUN-01/actions/review",
+    "headers": {
+      "Idempotency-Key": "review-t2-v1"
+    },
+    "body": {
+      "expected_revision": 8,
+      "task_id": "T2",
+      "decision": "revise",
+      "expected_versions": {
+        "ART-T2": 1
+      },
+      "revisions": {
+        "ART-T2": {
+          "commit_sha": "4444444444444444444444444444444444444444"
+        }
+      },
+      "note": "补齐停用状态分支"
+    }
+  },
+  "review_record": {
+    "task_id": "T2",
+    "decision": "revise",
+    "expected_versions": {
+      "ART-T2": 1
+    },
+    "approved_versions": {
+      "ART-T2": 2
+    },
+    "note": "补齐停用状态分支",
+    "actor_id": "lead-demo",
+    "created_at": "2026-11-17T10:02:00Z"
+  },
+  "approved_artifact": {
+    "id": "ART-T2",
+    "version": 2,
+    "task_id": "T2",
+    "attempt_id": "T2.1",
+    "output_id": "OUT-01",
+    "kind": "git_commit",
+    "origin": "human",
+    "status": "approved",
+    "based_on_version": 1,
+    "commit_sha": "4444444444444444444444444444444444444444",
+    "changed_paths": [
+      "app/reservations.py"
+    ],
+    "content": null
+  },
+  "next_worker_request": {
+    "project_id": "PROJECT-01",
+    "run_id": "RUN-01",
+    "attempt_id": "T4.1",
+    "task": {
+      "id": "T4",
+      "title": "集成预约规则",
+      "phase": "integration",
+      "requirement_ids": [
+        "REQ-01",
+        "REQ-02"
+      ],
+      "decision_ids": [
+        "DEC-01"
+      ],
+      "open_item_ids": [],
+      "depends_on": [
+        "T2",
+        "T3"
+      ],
+      "role": "develop",
+      "write_paths": [
+        "app/integration.py"
+      ],
+      "outputs": [
+        {
+          "id": "OUT-01",
+          "kind": "git_commit",
+          "path": "app/integration.py"
+        }
+      ],
+      "estimate_seconds": 300,
+      "review_required": false,
+      "completion_condition": "集成预约规则提交后可按输出路径读取。"
+    },
+    "spec_ref": {
+      "id": "SPEC-01",
+      "version": 1
+    },
+    "base_commit": "1111111111111111111111111111111111111111",
+    "workspace_id": "WS-04",
+    "inputs": [
+      {
+        "id": "ART-T2",
+        "version": 2,
+        "task_id": "T2",
+        "attempt_id": "T2.1",
+        "output_id": "OUT-01",
+        "kind": "git_commit",
+        "origin": "human",
+        "status": "approved",
+        "based_on_version": 1,
+        "commit_sha": "4444444444444444444444444444444444444444",
+        "changed_paths": [
+          "app/reservations.py"
+        ],
+        "content": null
+      },
+      {
+        "id": "ART-T3",
+        "version": 1,
+        "task_id": "T3",
+        "attempt_id": "T3.1",
+        "output_id": "OUT-01",
+        "kind": "text",
+        "origin": "agent",
+        "status": "approved",
+        "based_on_version": null,
+        "commit_sha": null,
+        "changed_paths": [],
+        "content": "停用设备只能查看历史记录。"
+      }
+    ],
+    "supplied_inputs": {},
+    "spec_context": {
+      "requirements": [
+        {
+          "id": "REQ-01",
+          "title": "展示停用状态",
+          "text": "停用设备保留在列表，显示停用状态。",
+          "source": {
+            "section": "设备预约",
+            "start_line": 2,
+            "end_line": 2
+          }
+        },
+        {
+          "id": "REQ-02",
+          "title": "阻止新预约",
+          "text": "禁止对停用设备发起新预约。",
+          "source": {
+            "section": "设备预约",
+            "start_line": 3,
+            "end_line": 3
+          }
+        }
+      ],
+      "decisions": [
+        {
+          "id": "DEC-01",
+          "scope": "列表与预约",
+          "choice": "停用设备保留且显示状态，服务端拒绝新预约。",
+          "reason": "兼顾查阅与预约正确性。",
+          "requirement_ids": [
+            "REQ-01",
+            "REQ-02"
+          ],
+          "draft_ids": [
+            "A",
+            "B"
+          ]
+        }
+      ],
+      "open_items": []
+    }
+  },
+  "worker_success": {
+    "attempt_id": "T2.1",
+    "status": "succeeded",
+    "artifacts": [
+      {
+        "output_id": "OUT-01",
+        "kind": "git_commit",
+        "commit_sha": "3333333333333333333333333333333333333333",
+        "changed_paths": [
+          "app/reservations.py"
+        ],
+        "content": null
+      }
+    ],
+    "error": null,
+    "provider": "example",
+    "model": "example-model",
+    "usage": null,
+    "started_at": "2026-11-17T10:00:40Z",
+    "ended_at": "2026-11-17T10:01:20Z",
+    "checkout_commit": "2222222222222222222222222222222222222222"
+  },
+  "worker_failure": {
+    "attempt_id": "T4.1",
+    "status": "failed",
+    "artifacts": [],
+    "error": {
+      "code": "MERGE_CONFLICT",
+      "message": "上游提交无法合并",
+      "retryable": true,
+      "details": {
+        "paths": [
+          "app/reservations.py"
+        ]
+      }
+    },
+    "provider": "example",
+    "model": "example-model",
+    "usage": null,
+    "started_at": "2026-11-17T10:02:05Z",
+    "ended_at": "2026-11-17T10:02:06Z",
+    "checkout_commit": null
+  },
+  "approval_event": {
+    "seq": 10,
+    "type": "artifact.approved",
+    "run_id": "RUN-01",
+    "task_id": "T2",
+    "attempt_id": "T2.1",
+    "created_at": "2026-11-17T10:02:00Z",
+    "payload": {
+      "approved_versions": {
+        "ART-T2": 2
+      }
+    }
+  },
+  "errors": {
+    "plan_cycle": {
+      "status": 422,
+      "body": {
+        "error": {
+          "code": "PLAN_CYCLE",
+          "message": "任务依赖成环",
+          "details": {
+            "cycle": [
+              "T1",
+              "T2",
+              "T4",
+              "T1"
+            ]
+          }
+        }
+      },
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v2/projects/PROJECT-01/plans/PLAN-01",
+        "headers": {
+          "Idempotency-Key": "cycle-example"
+        },
+        "body": {
+          "expected_version": 1,
+          "tasks": [
+            {
+              "id": "T1",
+              "title": "定义设备状态",
+              "phase": "development",
+              "requirement_ids": [
+                "REQ-01"
+              ],
+              "decision_ids": [
+                "DEC-01"
+              ],
+              "open_item_ids": [],
+              "depends_on": [
+                "T4"
+              ],
+              "role": "develop",
+              "write_paths": [
+                "app/status.py"
+              ],
+              "outputs": [
+                {
+                  "id": "OUT-01",
+                  "kind": "git_commit",
+                  "path": "app/status.py"
+                }
+              ],
+              "estimate_seconds": 300,
+              "review_required": false,
+              "completion_condition": "定义设备状态提交后可按输出路径读取。"
+            },
+            {
+              "id": "T2",
+              "title": "实现预约限制",
+              "phase": "development",
+              "requirement_ids": [
+                "REQ-02"
+              ],
+              "decision_ids": [
+                "DEC-01"
+              ],
+              "open_item_ids": [
+                "OPEN-01"
+              ],
+              "depends_on": [
+                "T1"
+              ],
+              "role": "develop",
+              "write_paths": [
+                "app/reservations.py"
+              ],
+              "outputs": [
+                {
+                  "id": "OUT-01",
+                  "kind": "git_commit",
+                  "path": "app/reservations.py"
+                }
+              ],
+              "estimate_seconds": 600,
+              "review_required": true,
+              "completion_condition": "实现预约限制提交后可按输出路径读取。"
+            },
+            {
+              "id": "T3",
+              "title": "整理使用说明",
+              "phase": "development",
+              "requirement_ids": [
+                "REQ-01"
+              ],
+              "decision_ids": [
+                "DEC-01"
+              ],
+              "open_item_ids": [],
+              "depends_on": [
+                "T1"
+              ],
+              "role": "docs",
+              "write_paths": [
+                "docs/usage.md"
+              ],
+              "outputs": [
+                {
+                  "id": "OUT-01",
+                  "kind": "text",
+                  "path": "docs/usage.md"
+                }
+              ],
+              "estimate_seconds": 300,
+              "review_required": false,
+              "completion_condition": "整理使用说明提交后可按输出路径读取。"
+            },
+            {
+              "id": "T4",
+              "title": "集成预约规则",
+              "phase": "integration",
+              "requirement_ids": [
+                "REQ-01",
+                "REQ-02"
+              ],
+              "decision_ids": [
+                "DEC-01"
+              ],
+              "open_item_ids": [],
+              "depends_on": [
+                "T2",
+                "T3"
+              ],
+              "role": "develop",
+              "write_paths": [
+                "app/integration.py"
+              ],
+              "outputs": [
+                {
+                  "id": "OUT-01",
+                  "kind": "git_commit",
+                  "path": "app/integration.py"
+                }
+              ],
+              "estimate_seconds": 300,
+              "review_required": false,
+              "completion_condition": "集成预约规则提交后可按输出路径读取。"
+            }
+          ]
+        }
+      }
+    },
+    "concurrent_review": {
+      "status": 409,
+      "body": {
+        "error": {
+          "code": "VERSION_CONFLICT",
+          "message": "运行或产物版本已更新",
+          "details": {
+            "current_revision": 9,
+            "current_versions": {
+              "ART-T2": 2
+            }
+          }
+        }
+      }
+    },
+    "stale_attempt": {
+      "status": 409,
+      "body": {
+        "error": {
+          "code": "STALE_ATTEMPT",
+          "message": "当前尝试已更新",
+          "details": {
+            "current_attempt_id": "T4.2"
+          }
+        }
+      }
+    }
+  },
+  "project_snapshot": {
+    "id": "PROJECT-01",
+    "stage": "execution",
+    "requirement": {
+      "id": "REQSET-01",
+      "version": 1,
+      "markdown": "# 设备预约\n停用设备保留在列表，显示停用状态。\n禁止对停用设备发起新预约。",
+      "items": [
+        {
+          "id": "REQ-01",
+          "title": "展示停用状态",
+          "text": "停用设备保留在列表，显示停用状态。",
+          "source": {
+            "section": "设备预约",
+            "start_line": 2,
+            "end_line": 2
+          }
+        },
+        {
+          "id": "REQ-02",
+          "title": "阻止新预约",
+          "text": "禁止对停用设备发起新预约。",
+          "source": {
+            "section": "设备预约",
+            "start_line": 3,
+            "end_line": 3
+          }
+        }
+      ]
+    },
+    "race": {
+      "requirement_ref": {
+        "id": "REQSET-01",
+        "version": 1
+      },
+      "groups": [
+        {
+          "group_id": "A",
+          "state": "completed",
+          "error": null
+        },
+        {
+          "group_id": "B",
+          "state": "completed",
+          "error": null
+        }
+      ]
+    },
+    "drafts": [
+      {
+        "id": "A",
+        "requirement_ref": {
+          "id": "REQSET-01",
+          "version": 1
+        },
+        "title": "统一设备状态",
+        "summary": "先统一状态定义，再实现列表。",
+        "claims": [
+          {
+            "id": "A-01",
+            "text": "列表保留停用设备",
+            "requirement_ids": [
+              "REQ-01"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "B",
+        "requirement_ref": {
+          "id": "REQSET-01",
+          "version": 1
+        },
+        "title": "先限制预约入口",
+        "summary": "把停用状态作为预约服务的准入条件。",
+        "claims": [
+          {
+            "id": "B-01",
+            "text": "服务端拒绝停用设备的新预约",
+            "requirement_ids": [
+              "REQ-02"
+            ]
+          }
+        ]
+      }
+    ],
+    "evaluations": [
+      {
+        "draft_id": "A",
+        "criteria": [
+          {
+            "criterion": "value",
+            "score": 5,
+            "reason": "列表保留停用设备",
+            "claim_ids": [
+              "A-01"
+            ]
+          },
+          {
+            "criterion": "feasibility",
+            "score": 4,
+            "reason": "列表保留停用设备",
+            "claim_ids": [
+              "A-01"
+            ]
+          },
+          {
+            "criterion": "cost",
+            "score": 3,
+            "reason": "列表保留停用设备",
+            "claim_ids": [
+              "A-01"
+            ]
+          }
+        ]
+      },
+      {
+        "draft_id": "B",
+        "criteria": [
+          {
+            "criterion": "value",
+            "score": 5,
+            "reason": "服务端拒绝停用设备的新预约",
+            "claim_ids": [
+              "B-01"
+            ]
+          },
+          {
+            "criterion": "feasibility",
+            "score": 4,
+            "reason": "服务端拒绝停用设备的新预约",
+            "claim_ids": [
+              "B-01"
+            ]
+          },
+          {
+            "criterion": "cost",
+            "score": 3,
+            "reason": "服务端拒绝停用设备的新预约",
+            "claim_ids": [
+              "B-01"
+            ]
+          }
+        ]
+      }
+    ],
+    "specification": {
+      "id": "SPEC-01",
+      "version": 1,
+      "status": "confirmed",
+      "requirement_ref": {
+        "id": "REQSET-01",
+        "version": 1
+      },
+      "markdown": "# 设备预约\n停用设备保留在列表，显示停用状态。\n禁止对停用设备发起新预约。",
+      "decisions": [
+        {
+          "id": "DEC-01",
+          "scope": "列表与预约",
+          "choice": "停用设备保留且显示状态，服务端拒绝新预约。",
+          "reason": "兼顾查阅与预约正确性。",
+          "requirement_ids": [
+            "REQ-01",
+            "REQ-02"
+          ],
+          "draft_ids": [
+            "A",
+            "B"
+          ]
+        }
+      ],
+      "open_items": [
+        {
+          "id": "OPEN-01",
+          "question": "联调演示使用哪个虚构设备编号？",
+          "blocking": true,
+          "affected_requirement_ids": [
+            "REQ-02"
+          ],
+          "resolution": null
+        }
+      ],
+      "confirmed_by": "lead-demo",
+      "confirmed_at": "2026-11-17T10:00:00Z",
+      "selection": "merge"
+    },
+    "latest_plan_ref": {
+      "id": "PLAN-01",
+      "version": 1
+    },
+    "runs": [
+      {
+        "id": "RUN-01",
+        "plan_ref": {
+          "id": "PLAN-01",
+          "version": 1
+        },
+        "state": "active",
+        "started_at": "2026-11-17T10:00:00Z",
+        "ended_at": null
+      }
+    ],
+    "findings": []
+  },
+  "review_response": {
+    "id": "RUN-01",
+    "plan_ref": {
+      "id": "PLAN-01",
+      "version": 1
+    },
+    "mode": "manual",
+    "dispatch": "active",
+    "state": "active",
+    "revision": 9,
+    "started_at": "2026-11-17T10:00:00Z",
+    "ended_at": null,
+    "latest_event_seq": 10,
+    "tasks": [
+      {
+        "task_id": "T1",
+        "state": "done",
+        "attempts": [
+          {
+            "id": "T1.1",
+            "number": 1,
+            "state": "succeeded",
+            "created_at": "2026-11-17T10:00:00Z",
+            "started_at": "2026-11-17T10:00:00Z",
+            "ended_at": "2026-11-17T10:00:30Z",
+            "error": null,
+            "input_refs": []
+          }
+        ],
+        "artifacts": [
+          {
+            "id": "ART-T1",
+            "version": 1,
+            "task_id": "T1",
+            "attempt_id": "T1.1",
+            "output_id": "OUT-01",
+            "kind": "git_commit",
+            "origin": "agent",
+            "status": "approved",
+            "based_on_version": null,
+            "commit_sha": "2222222222222222222222222222222222222222",
+            "changed_paths": [
+              "app/status.py"
+            ],
+            "content": null
+          }
+        ],
+        "blockers": [],
+        "missing_input_ids": [],
+        "review_records": []
+      },
+      {
+        "task_id": "T2",
+        "state": "done",
+        "attempts": [
+          {
+            "id": "T2.1",
+            "number": 1,
+            "state": "succeeded",
+            "created_at": "2026-11-17T10:00:40Z",
+            "started_at": "2026-11-17T10:00:40Z",
+            "ended_at": "2026-11-17T10:01:20Z",
+            "error": null,
+            "input_refs": [
+              {
+                "id": "ART-T1",
+                "version": 1,
+                "commit_sha": "2222222222222222222222222222222222222222"
+              }
+            ]
+          }
+        ],
+        "artifacts": [
+          {
+            "id": "ART-T2",
+            "version": 1,
+            "task_id": "T2",
+            "attempt_id": "T2.1",
+            "output_id": "OUT-01",
+            "kind": "git_commit",
+            "origin": "agent",
+            "status": "draft",
+            "based_on_version": null,
+            "commit_sha": "3333333333333333333333333333333333333333",
+            "changed_paths": [
+              "app/reservations.py"
+            ],
+            "content": null
+          },
+          {
+            "id": "ART-T2",
+            "version": 2,
+            "task_id": "T2",
+            "attempt_id": "T2.1",
+            "output_id": "OUT-01",
+            "kind": "git_commit",
+            "origin": "human",
+            "status": "approved",
+            "based_on_version": 1,
+            "commit_sha": "4444444444444444444444444444444444444444",
+            "changed_paths": [
+              "app/reservations.py"
+            ],
+            "content": null
+          }
+        ],
+        "blockers": [],
+        "missing_input_ids": [],
+        "review_records": [
+          {
+            "task_id": "T2",
+            "decision": "revise",
+            "expected_versions": {
+              "ART-T2": 1
+            },
+            "approved_versions": {
+              "ART-T2": 2
+            },
+            "note": "补齐停用状态分支",
+            "actor_id": "lead-demo",
+            "created_at": "2026-11-17T10:02:00Z"
+          }
+        ]
+      },
+      {
+        "task_id": "T3",
+        "state": "done",
+        "attempts": [
+          {
+            "id": "T3.1",
+            "number": 1,
+            "state": "succeeded",
+            "created_at": "2026-11-17T10:00:32Z",
+            "started_at": "2026-11-17T10:00:32Z",
+            "ended_at": "2026-11-17T10:01:00Z",
+            "error": null,
+            "input_refs": [
+              {
+                "id": "ART-T1",
+                "version": 1,
+                "commit_sha": "2222222222222222222222222222222222222222"
+              }
+            ]
+          }
+        ],
+        "artifacts": [
+          {
+            "id": "ART-T3",
+            "version": 1,
+            "task_id": "T3",
+            "attempt_id": "T3.1",
+            "output_id": "OUT-01",
+            "kind": "text",
+            "origin": "agent",
+            "status": "approved",
+            "based_on_version": null,
+            "commit_sha": null,
+            "changed_paths": [],
+            "content": "停用设备只能查看历史记录。"
+          }
+        ],
+        "blockers": [],
+        "missing_input_ids": [],
+        "review_records": []
+      },
+      {
+        "task_id": "T4",
+        "state": "ready",
+        "attempts": [],
+        "artifacts": [],
+        "blockers": [],
+        "missing_input_ids": [],
+        "review_records": []
+      }
+    ],
+    "findings": []
+  }
+}

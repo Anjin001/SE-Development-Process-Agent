@@ -84,4 +84,3 @@
 - estimate_seconds: 300
 - review_required: true
 - completion_condition: "逐条验证并记录以下规则的验收证据：停用设备保留且显示状态，服务端拒绝新预约。"
-

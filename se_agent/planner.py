@@ -26,7 +26,9 @@ def decompose_tasks(confirmed_spec):
     if confirmed_spec.get('status') != 'confirmed':
         raise ValueError('Specification must be confirmed')
     decisions = confirmed_spec['decisions']
-    requirements = list(dict.fromkeys(r for d in decisions for r in d['requirement_ids']))
+    pending = [o for o in confirmed_spec['open_items'] if o['blocking'] and o['resolution'] is None]
+    requirements = list(dict.fromkeys([r for d in decisions for r in d['requirement_ids']]
+                                      + [r for o in pending for r in o['affected_requirement_ids']]))
     if not requirements:
         raise ValueError('Specification has no actionable requirement references')
     tasks = []
@@ -37,12 +39,13 @@ def decompose_tasks(confirmed_spec):
                     depends_on=deps, role=role, write_paths=[path],
                     outputs=[dict(id='OUT-01', kind='text', path=path)],
                     estimate_seconds=seconds, review_required=review,
-                    completion_condition='逐条验证并记录以下规则的验收证据：' + '；'.join(d['choice'] for d in related))
+                    completion_condition=('逐条验证：' + '；'.join(d['choice'] for d in related)
+                                          if related else '补齐未决输入后，按原需求逐条核验。'))
+    names = {r['id']: r['title'] for r in confirmed_spec.get('requirement_items', [])}
     tasks.append(task('T1', '定义接口与业务规则', requirements, [], 'planning', 'plan', 'docs/rules.md', 300, False))
     for index, requirement in enumerate(requirements, 2):
-        current = task(f'T{index}', f'实现 {requirement}', [requirement], ['T1'], 'development', 'develop', f'app/task_{index}.py', 600, True)
-        current['open_item_ids'] = [o['id'] for o in confirmed_spec['open_items']
-                                    if o['resolution'] is None and requirement in o['affected_requirement_ids']]
+        current = task(f'T{index}', f'实现 {requirement}' + (' · ' + names[requirement] if requirement in names else ''), [requirement], ['T1'], 'development', 'develop', f'app/task_{index}.py', 600, True)
+        current['open_item_ids'] = [o['id'] for o in pending if requirement in o['affected_requirement_ids']]
         current['outputs'][0]['kind'] = 'git_commit'
         tasks.append(current)
     docs_id = f'T{len(tasks)+1}'
@@ -59,6 +62,15 @@ def export_plan(plan, directory):
     import json
     from pathlib import Path
     snapshot = json.loads(json.dumps(plan, ensure_ascii=False, allow_nan=False))
+    destination = Path(directory)
+    destination.mkdir(parents=True, exist_ok=True)
+    (destination / 'workflow.json').write_text(json.dumps(snapshot, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
+    (destination / 'task.md').write_text(render_plan_markdown(snapshot), encoding='utf-8')
+    return {'workflow': str(destination / 'workflow.json'), 'tasks': str(destination / 'task.md')}
+
+
+def render_plan_markdown(snapshot):
+    import json
     lines = ['# 任务计划', '', f"计划：{snapshot['id']}@{snapshot['version']}",
              f"规格：{snapshot['spec_ref']['id']}@{snapshot['spec_ref']['version']}",
              f"基线：{snapshot['base_commit']}", f"并发：{snapshot['max_parallel']}", '']
@@ -67,8 +79,4 @@ def export_plan(plan, directory):
         for key, value in t.items():
             lines.extend([f"- {key}: {json.dumps(value, ensure_ascii=False)}"])
         lines.append('')
-    destination = Path(directory)
-    destination.mkdir(parents=True, exist_ok=True)
-    (destination / 'workflow.json').write_text(json.dumps(snapshot, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
-    (destination / 'task.md').write_text('\n'.join(lines)+'\n', encoding='utf-8')
-    return {'workflow': str(destination / 'workflow.json'), 'tasks': str(destination / 'task.md')}
+    return '\n'.join(lines).rstrip()+'\n'

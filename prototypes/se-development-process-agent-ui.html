@@ -316,9 +316,9 @@
             <div id="panel-graph" class="flex-1 relative overflow-hidden graph-canvas-bg">
               <div class="absolute top-3 left-4 z-20 flex items-center gap-2">
                 <span class="px-2.5 py-1 rounded-md bg-indigo-50/95 border border-indigo-200 text-indigo-700 text-[11px] font-semibold shadow-2xs">
-                  Workflow 编排图 · 阶段容器与关键路径
+                  <span id="graph-caption">Workflow 编排图 · 阶段容器与关键路径</span>
                 </span>
-                <span class="text-[11px] text-slate-400 hidden xl:inline">拖拽画布平移 · 点击节点审阅产物或重试异常任务</span>
+                <span id="graph-hint" class="text-[11px] text-slate-400 hidden xl:inline">拖拽画布平移 · 点击节点审阅产物或重试异常任务</span>
               </div>
 
               <div class="absolute top-3 right-4 z-20 flex items-center bg-white/95 border border-slate-200 rounded-lg shadow-2xs text-xs overflow-hidden">
@@ -337,7 +337,7 @@
 
               <div id="graph-node-inspector" class="absolute bottom-3 left-4 z-20 bg-white/95 backdrop-blur-xs border border-slate-200 rounded-xl p-3 shadow-md max-w-md text-xs space-y-1.5"></div>
 
-              <div class="absolute bottom-3 right-4 z-20 bg-white/95 backdrop-blur-xs border border-slate-200 rounded-lg px-3 py-1.5 shadow-2xs flex items-center gap-3 text-[11px] text-slate-600">
+              <div id="graph-demo-legend" class="absolute bottom-3 right-4 z-20 bg-white/95 backdrop-blur-xs border border-slate-200 rounded-lg px-3 py-1.5 shadow-2xs flex items-center gap-3 text-[11px] text-slate-600">
                 <span class="flex items-center gap-1.5">
                   <span class="w-2.5 h-2.5 rounded-xs border border-indigo-400 bg-indigo-50 inline-block"></span>
                   <span>Phase 阶段容器</span>
@@ -406,12 +406,14 @@
     <span id="toast-msg"></span>
   </div>
 
+  <script src="/planner-link.js"></script>
   <script>
   (() => {
     // =========================================================================
     // 1. 全局状态：主体结构完全保持上一版 (S0.1~T3.1 & C1.1~C2.2)，同时支持双案例全局联动
     // =========================================================================
     let activeModule = 'workbench';
+    let plannerLink = null;
     let currentProjectKey = 'lab';
     let currentTab = 'graph';
     let selectedTaskId = 'T2.1';
@@ -884,7 +886,10 @@
       window.__seToast = setTimeout(() => box.classList.add('hidden'), 2600);
     }
 
-    function getActiveData() { return datasets[currentProjectKey]; }
+    const escapeText = value => String(value ?? '').replace(/[&<>"']/g, char => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    })[char]);
+    function getActiveData() { return plannerLink?.graphData() || datasets[currentProjectKey]; }
     function getIntakeState() { return intakeByProject[currentProjectKey]; }
     function getSynthesisState() { return synthesisByProject[currentProjectKey]; }
     function getMemoryState() { return memoryByProject[currentProjectKey]; }
@@ -905,6 +910,8 @@
 
     function statusMeta(status) {
       switch (status) {
+        case 'planned':
+          return { label: '已规划', dot: 'bg-indigo-500', icon: '○', iconCls: 'text-indigo-600 bg-indigo-50 border-indigo-200', badgeCls: 'bg-indigo-50 text-indigo-700 border-indigo-200' };
         case 'completed':
           return { label: '已完成', dot: 'bg-emerald-500', icon: '✓', iconCls: 'text-emerald-600 bg-emerald-50 border-emerald-200', badgeCls: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
         case 'in_progress':
@@ -1810,7 +1817,7 @@
 
       q('#progress-pct').textContent = `${pct}%`;
       q('#progress-bar').style.width = `${pct}%`;
-      q('#progress-count').textContent = `${doneCount} / ${totalCount} 项任务已完成`;
+      q('#progress-count').textContent = plannerLink ? `${totalCount} 项已规划任务` : `${doneCount} / ${totalCount} 项任务已完成`;
       q('#active-badge').textContent = data.badge;
 
       const container = q('#phase-list-container');
@@ -1841,7 +1848,7 @@
           </span>
           <span class="mono text-[11px] font-semibold shrink-0 ${
             pDone === pTotal ? 'text-emerald-600' : 'text-amber-600'
-          }">${pDone}/${pTotal} (${pPct}%)</span>
+          }">${plannerLink ? `${pTotal} 项` : `${pDone}/${pTotal} (${pPct}%)`}</span>
         `;
         headerBtn.addEventListener('click', () => {
           if (collapsedPhases.has(phase.id)) collapsedPhases.delete(phase.id);
@@ -1870,7 +1877,7 @@
                 ${meta.icon}
               </span>
               <div class="min-w-0 flex-1">
-                <div class="text-xs font-semibold text-slate-800 truncate">${t.code}: ${t.name}</div>
+                <div class="text-xs font-semibold text-slate-800 truncate">${t.code}: ${escapeText(t.name)}</div>
                 <div class="mono text-[11px] text-slate-400 mt-0.5 flex items-center justify-between">
                   <span>${t.id}</span>
                   <span>${t.estimateMin}m${t.critical ? ' · 关键路径' : ''}</span>
@@ -1899,6 +1906,10 @@
       svg.replaceChildren();
 
       const nodeMap = new Map();
+      if (plannerLink) {
+        q('#graph-stage').style.width = Math.max(1320, ...data.phases.map(({box}) => box.x + box.w + 24)) + 'px';
+        q('#graph-stage').style.height = Math.max(820, ...data.phases.map(({box}) => box.y + box.h + 24)) + 'px';
+      }
 
       for (const phase of data.phases) {
         const box = el('div', undefined, 'phase-group-box');
@@ -1997,8 +2008,8 @@
             </span>
             <span class="text-[9px] font-semibold px-1.5 py-0.2 rounded border ${meta.badgeCls}">${meta.label}</span>
           </div>
-          <div class="text-[11px] font-semibold text-slate-800 truncate mt-1" title="${t.name}">${t.name}</div>
-          <div class="text-[10px] text-slate-400 truncate mt-0.5">${t.output}</div>
+          <div class="text-[11px] font-semibold text-slate-800 truncate mt-1" title="${escapeText(t.name)}">${escapeText(t.name)}</div>
+          <div class="text-[10px] text-slate-400 truncate mt-0.5">${escapeText(t.output)}</div>
         `;
         node.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -2015,16 +2026,23 @@
         <div class="flex items-center justify-between gap-3">
           <div class="flex items-center gap-2">
             <span class="mono font-bold text-indigo-600">${sel.id}</span>
-            <strong class="text-slate-800">${sel.name}</strong>
+            <strong class="text-slate-800">${escapeText(sel.name)}</strong>
           </div>
           <span class="px-2 py-0.5 rounded border text-[10px] font-semibold ${selMeta.badgeCls}">${selMeta.label}</span>
         </div>
         <div class="text-[11px] text-slate-500 flex flex-wrap gap-x-4 gap-y-0.5">
-          <span>执行角色: <strong class="text-slate-700">${sel.owner}</strong></span>
-          <span>来源: <code class="mono text-slate-700">${sel.spec}</code></span>
-          <span>交付物: <code class="mono text-slate-700">${sel.output}</code></span>
+          <span>执行角色: <strong class="text-slate-700">${escapeText(sel.owner)}</strong></span>
+          <span>来源: <code class="mono text-slate-700">${escapeText(sel.spec)}</code></span>
+          <span>交付物: <code class="mono text-slate-700">${escapeText(sel.output)}</code></span>
         </div>
       `;
+      if (plannerLink) {
+        const edit = el('button', '返回任务分解', 'text-indigo-700 hover:underline');
+        edit.type = 'button';
+        edit.addEventListener('click', () => plannerLink.open('task-planner'));
+        inspector.append(edit);
+        return;
+      }
       const actionRow = el('div', undefined, 'flex items-center gap-2 pt-1');
 
       if (sel.id === 'T2.1' && sel.status === 'in_progress') {
@@ -2294,9 +2312,14 @@
       const dedicatedView = q('#module-dedicated-view');
       const workbenchView = q('#workbench-split-view');
 
-      renderRightStewardSidebar();
+      if (plannerLink?.render(activeModule)) return;
+      if (!plannerLink) renderRightStewardSidebar();
 
       if (activeModule === 'workbench') {
+        if (plannerLink) {
+          currentTab = 'graph';
+          if (!getAllTasks().some(task => task.id === selectedTaskId)) selectedTaskId = getAllTasks()[0].id;
+        }
         dedicatedView.classList.add('hidden');
         workbenchView.classList.remove('hidden');
 
@@ -2461,7 +2484,10 @@
       q('#info-modal').classList.add('hidden');
     });
 
-    renderAll();
+    if (window.createPlannerLink) {
+      plannerLink = window.createPlannerLink({ q, el, switchModule, toast });
+      plannerLink.open('intake-race');
+    } else renderAll();
   })();
   </script>
 </body>

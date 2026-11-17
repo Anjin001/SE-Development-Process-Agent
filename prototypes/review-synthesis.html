@@ -52,7 +52,12 @@ const splitRefs=text=>text.split(/[,，、\s]+/).filter(Boolean);
 function setProject(data){if(project?.id!==data.id){feedbackNote='';feedbackGroup=data.drafts[0].id;}inspection=null;project=data;historic=null;historicHandoff=null;buffer=data.specification?clone(data.specification):null;dirty=false;selection=data.specification?.selection||(data.drafts.some(d=>d.id===selection)?selection:'merge');
  if (!data.drafts.some(d=>d.id===feedbackGroup)) feedbackGroup=data.drafts[0].id;
  $('mode').textContent=data.mode==='model'?'模型模式 · 评审与整合':'本地模拟 · 评审与整合';
- if (embedded) window.parent.setModelMode(data.mode);render();}
+ if (embedded) {
+  window.parent.setModelMode(data.mode);
+  const spec=data.specification;
+  window.parent.setPlannerSpecification?.(spec?.status==='confirmed'?{review_id:data.id,id:spec.id,version:spec.version}:null);
+ }
+ render();}
 async function api(path,body){
  const response=await fetch(path,body===undefined?{cache:'no-store'}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  const data=await response.json();
@@ -127,6 +132,8 @@ function renderSide(){
  if(project&&!project.evaluations.length)html+='<button class="btn primary" data-action="evaluate">生成独立评价</button>';
  if(project?.evaluations.length){html+=`<div class="rule"><strong style="font-size:13px">方案起点</strong>${[...project.drafts.map(d=>[d.id,'以 '+d.id+' 为起点']),['merge','融合各组方案']].map(([v,label])=>`<label class="choice"><input type="radio" name="selection" value="${esc(v)}" ${selection===v?'checked':''} ${dirty||historic?'disabled':''}>${esc(label)}</label>`).join('')}<button class="btn ${!spec?'primary':''}" data-action="propose" ${dirty||historic?'disabled':''}>${project.specification?'重新生成一版草稿':'生成方案草稿'}</button></div>`;}
  if(spec){html+=`<div class="rule">${!historic?`<button class="btn ${dirty?'primary':''}" data-action="save" ${!dirty?'disabled':''}>保存人工编辑为新版本</button><button class="btn primary" data-action="confirm" ${dirty||spec.status!=='draft'?'disabled':''}>确认当前方案</button>`:''}${spec.status==='confirmed'?`<button class="btn" data-action="export-json" ${dirty?'disabled':''}>下载交接 JSON</button><button class="btn" data-action="export-md" ${dirty?'disabled':''}>下载方案 Markdown</button>`:''}${unresolved.length?'<p class="notice">确认保留当前记录，待决事项仍需后续处理。</p>':''}${dirty?'<p class="muted">有未保存编辑。保存后才能确认或导出。</p>':''}</div>`;}
+ if(embedded && spec?.status==='confirmed' && !historic && !dirty && typeof window.parent.openTaskPlanner==='function')
+  html+='<button class="btn primary" data-action="open-task-planner">进入任务分解 →</button>';
  if(project)html+=`<button class="btn subtle" data-action="refresh">${dirty?'放弃未保存编辑并刷新':'刷新当前快照'}</button>`;
  html+='<details><summary>本轮演示范围</summary><p>默认使用离线模拟回调；来源覆盖不等于方案质量。具体语义、技术与预算由人工复查。公开的方案内容不替代用户的关键业务决定。</p></details>';
  $('supervisor').innerHTML=html;
@@ -248,6 +255,10 @@ document.addEventListener('click',async event=>{
  if(a==='propose')return action('propose',{selection,expected_version:project.latest_version});
  if(a==='save')return action('save',{expected_version:buffer.version,markdown:buffer.markdown,notes_markdown:buffer.notes_markdown||'',decisions:buffer.decisions,open_items:buffer.open_items});
  if(a==='confirm')return action('confirm',{expected_version:project.specification.version});
+ if(a==='open-task-planner')return operate(async()=>{
+  await window.parent.openTaskPlanner({review_id:project.id,version:project.specification.version});
+  $('status').textContent='已把确认版规格交接给任务分解。';
+ });
  if(a==='inspect')return inspectCurrent();
  if(a==='locate-finding'){
   tab='spec';render();

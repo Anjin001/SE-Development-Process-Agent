@@ -53,3 +53,27 @@ class InvalidOutput(DomainError):
     code = "INVALID_OUTPUT"
     status = 422
     default_message = "任务输出无效"
+
+
+class VersionConflict(DomainError):
+    """The client saw an older revision or artifact version."""
+
+    code = "VERSION_CONFLICT"
+    status = 409
+    default_message = "运行或产物版本已更新"
+
+
+class InvalidState(DomainError):
+    """The current run, task or plan state does not allow this operation."""
+
+    code = "INVALID_STATE"
+    status = 409
+    default_message = "当前状态不允许该操作"
+
+
+class StaleAttempt(DomainError):
+    """A worker reported for an attempt that is no longer current."""
+
+    code = "STALE_ATTEMPT"
+    status = 409
+    default_message = "当前尝试已更新"

@@ -71,11 +71,11 @@ class StoreTestCase(unittest.TestCase):
     def tearDown(self):
         self.store.close()
 
-    def start(self, tasks=None, spec=None, max_parallel=2):
+    def start(self, tasks=None, spec=None, max_parallel=2, mode="auto"):
         self.store.save_spec(self.project, spec or make_spec())
         plan = self.store.create_plan(self.project, spec or make_spec(), SHA, max_parallel,
                                       tasks or make_tasks())
-        run = self.store.create_run(self.project, plan["id"], plan["version"])
+        run = self.store.create_run(self.project, plan["id"], plan["version"], mode)
         return plan, run
 
     def succeed(self, run_id, request, commit=SHA):
@@ -290,6 +290,40 @@ class ReviewTest(StoreTestCase):
         self.assertEqual(caught.exception.details["current_versions"], {"OUT-01": 1})
 
 
+class ManualDispatchTest(StoreTestCase):
+    def test_claim_without_step_hands_out_nothing(self):
+        _, run = self.start(mode="manual")
+        self.assertEqual(self.store.claim(run["id"], "w1"), [])
+
+    def test_step_fixes_a_batch_that_claim_consumes(self):
+        _, run = self.start(mode="manual", max_parallel=1)
+        self.assertEqual(self.store.step(run["id"]), ["T1"])
+        with self.assertRaises(InvalidState):
+            self.store.step(run["id"])           # the queue is still open
+        handed = self.store.claim(run["id"], "w1")
+        self.assertEqual([item["attempt_id"] for item in handed], ["T1.1"])
+        self.assertEqual(self.store.claim(run["id"], "w1"), [])
+        with self.assertRaises(InvalidState):
+            self.store.step(run["id"])           # nothing ready while T1 runs
+
+    def test_manual_step_does_not_bypass_the_concurrency_limit(self):
+        _, run = self.start(mode="manual", max_parallel=1)
+        self.assertEqual(len(self.store.step(run["id"])), 1)
+
+    def test_pausing_clears_unconsumed_slots(self):
+        _, run = self.start(mode="manual")
+        self.store.step(run["id"])
+        self.store.set_dispatch(run["id"], paused=True)
+        self.store.set_dispatch(run["id"], paused=False)
+        self.assertEqual(self.store.claim(run["id"], "w1"), [])
+
+    def test_auto_mode_needs_no_step(self):
+        _, run = self.start(mode="auto")
+        with self.assertRaises(InvalidState):
+            self.store.step(run["id"])
+        self.assertEqual(len(self.store.claim(run["id"], "w1")), 1)
+
+
 class RestartTest(unittest.TestCase):
     def test_state_survives_reopening_the_database(self):
         path = Path(__file__).with_name("_run_state.db")
@@ -302,7 +336,7 @@ class RestartTest(unittest.TestCase):
             spec = make_spec()
             first.save_spec("PROJECT-01", spec)
             plan = first.create_plan("PROJECT-01", spec, SHA, 2, make_tasks())
-            run = first.create_run("PROJECT-01", plan["id"], plan["version"])
+            run = first.create_run("PROJECT-01", plan["id"], plan["version"], "auto")
             request = first.claim(run["id"], "w1")[0]
             first.close()
 

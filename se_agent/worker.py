@@ -4,7 +4,7 @@ The orchestration side owns attempts, leases and release; the executor only
 answers one request at a time. ``run_once`` is the loop the runner plugs into:
 swap ``simulated`` for 胡子昂's real executor and nothing above changes.
 """
-from .contracts import InvalidReference
+from .contracts import InvalidState, InvalidReference
 
 
 def simulated(request):
@@ -53,3 +53,28 @@ def run_once(store, execute, run_id, worker_id="worker-1", lease_seconds=300,
         store.submit(run_id, result, worker_id)
         results.append(result)
     return results
+
+
+def drive(store, execute, run_id, worker_id="worker-1", lease_seconds=300,
+          rounds=100):
+    """Dispatch until nothing is left to hand out.
+
+    Automatic runs claim whatever is ready. Manual runs first fix a batch with
+    ``step``; an empty or exhausted queue simply ends this round.
+    """
+    processed = []
+    for _ in range(rounds):
+        store.expire_leases(run_id)
+        snapshot = store.snapshot(run_id)
+        if snapshot["state"] == "completed":
+            break
+        if snapshot["mode"] == "manual":
+            try:
+                store.step(run_id)
+            except InvalidState:
+                pass                     # queue still open, or nothing to dispatch
+        batch = run_once(store, execute, run_id, worker_id, lease_seconds)
+        if not batch:
+            break
+        processed.extend(batch)
+    return processed

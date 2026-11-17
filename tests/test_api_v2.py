@@ -166,7 +166,8 @@ class RunApiTest(ApiTestCase):
         self.call("POST", f"{RUNS}/{run['id']}/actions/pause", {}, "pause-1")
         status, payload = self.call("POST", f"{RUNS}/{run['id']}/actions/step", {},
                                     "step-2")
-        self.assertEqual(payload["dispatched"], [])
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"]["code"], "INVALID_STATE")
 
     def test_action_with_stale_revision_conflicts(self):
         _, run = self.create_run()

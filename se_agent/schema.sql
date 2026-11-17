@@ -165,6 +165,14 @@ CREATE TABLE IF NOT EXISTS run_tasks (
   PRIMARY KEY (run_id, task_id)
 );
 
+-- manual mode fixes a batch into this queue; claim consumes it
+CREATE TABLE IF NOT EXISTS dispatch_queue (
+  run_id   TEXT NOT NULL REFERENCES runs(id),
+  task_id  TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  PRIMARY KEY (run_id, task_id)
+);
+
 CREATE TABLE IF NOT EXISTS attempts (
   id          TEXT PRIMARY KEY,                 -- T2.1
   run_id      TEXT NOT NULL REFERENCES runs(id),

@@ -155,6 +155,7 @@ class Router:
             if action == "resume":
                 return 200, self.store.set_dispatch(run_id, False)
             if action == "step":
+                self.store.step(run_id)
                 handed = self.store.claim(run_id, "manual")
                 return 200, {"dispatched": [item["attempt_id"] for item in handed],
                              "run": self.store.snapshot(run_id)}

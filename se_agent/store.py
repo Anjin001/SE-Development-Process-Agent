@@ -386,6 +386,53 @@ class Store:
 
     # ---------- dispatch ----------
 
+    def step(self, run_id):
+        """Manual mode: fix this batch as the queue that claim() consumes."""
+        with self.tx() as db:
+            run, rows = self._task_map(db, run_id)
+            if run["mode"] != "manual":
+                raise InvalidState("自动模式不需要单步", run_id=run_id)
+            if run["state"] != "active" or run["dispatch"] != "active":
+                raise InvalidState("当前不可派发", run_id=run_id)
+            pending = [row["task_id"] for row in db.execute(
+                "SELECT task_id FROM dispatch_queue WHERE run_id=? ORDER BY position",
+                (run_id,))]
+            if pending:
+                raise InvalidState("上一批名单尚未领取完", pending=pending)
+            tasks = {task["id"]: task for task in self.plan_tasks(
+                run["project_id"], run["plan_id"], run["plan_version"])}
+            batch = self._admit(db, run, rows, tasks,
+                                sorted(t for t, row in rows.items() if row["state"] == READY))
+            if not batch:
+                raise InvalidState("没有可派发的任务", run_id=run_id)
+            for position, task_id in enumerate(batch):
+                db.execute("INSERT INTO dispatch_queue(run_id, task_id, position)"
+                           " VALUES (?,?,?)", (run_id, task_id, position))
+            return batch
+
+    def _admit(self, db, run, rows, tasks, order):
+        """Slots and write-path contention decide which candidates may start."""
+        plan = db.execute("SELECT max_parallel FROM plans WHERE project_id=? AND id=?"
+                          " AND version=?", (run["project_id"], run["plan_id"],
+                                             run["plan_version"])).fetchone()
+        running = [task_id for task_id, row in rows.items() if row["state"] == RUNNING]
+        slots = plan["max_parallel"] - len(running)
+        if slots <= 0:
+            return []
+        busy = [path for task_id in running for path in tasks[task_id]["write_paths"]]
+        taken, batch = [], []
+        for task_id in order:
+            if len(batch) >= slots:
+                break
+            if rows[task_id]["state"] != READY:
+                continue
+            paths = tasks[task_id]["write_paths"]
+            if any(overlaps(left, right) for left in paths for right in busy + taken):
+                continue
+            taken.extend(paths)
+            batch.append(task_id)
+        return batch
+
     def claim(self, run_id, worker_id, lease_seconds=300, limit=None):
         """Hand out ready tasks: one attempt each, respecting slots and paths."""
         with self.tx() as db:
@@ -397,23 +444,23 @@ class Store:
                                                  run["plan_version"])).fetchone()
             tasks = {task["id"]: task for task in self.plan_tasks(
                 run["project_id"], run["plan_id"], run["plan_version"])}
-            running = [row["task_id"] for row in rows.values() if row["state"] == RUNNING]
-            slots = plan["max_parallel"] - len(running)
-            if slots <= 0:
-                return []
+            queued = [row["task_id"] for row in db.execute(
+                "SELECT task_id FROM dispatch_queue WHERE run_id=? ORDER BY position",
+                (run_id,))]
+            if run["mode"] == "manual" and not queued:
+                return []                       # manual dispatch only follows step()
+            order = queued or sorted(task_id for task_id, row in rows.items()
+                                     if row["state"] == READY)
+            batch = self._admit(db, run, rows, tasks, order)
             if limit is not None:
-                slots = min(slots, limit)
-            busy = [path for task_id in running for path in tasks[task_id]["write_paths"]]
-            taken, batch = [], []
-            for task_id in sorted(task_id for task_id, row in rows.items()
-                                  if row["state"] == READY):
-                if len(batch) >= slots:
-                    break
-                paths = tasks[task_id]["write_paths"]
-                if any(overlaps(left, right) for left in paths for right in busy + taken):
-                    continue
-                taken.extend(paths)
-                batch.append(task_id)
+                batch = batch[:limit]
+            for task_id in queued:
+                if rows[task_id]["state"] != READY:      # stale entry, drop it
+                    db.execute("DELETE FROM dispatch_queue WHERE run_id=? AND task_id=?",
+                               (run_id, task_id))
+            for task_id in batch:
+                db.execute("DELETE FROM dispatch_queue WHERE run_id=? AND task_id=?",
+                           (run_id, task_id))
             if not batch:
                 return []
             now = self.now()
@@ -768,6 +815,8 @@ class Store:
             run, _ = self._task_map(db, run_id)
             db.execute("UPDATE runs SET dispatch=? WHERE id=?",
                        ("paused" if paused else "active", run_id))
+            if paused:      # the contract clears unconsumed manual slots
+                db.execute("DELETE FROM dispatch_queue WHERE run_id=?", (run_id,))
             self._emit(db, run_id, "run.paused" if paused else "run.resumed")
             self._bump(db, run_id)
             return self.snapshot(run_id)

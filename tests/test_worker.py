@@ -48,12 +48,12 @@ class WorkerTestCase(unittest.TestCase):
     def tearDown(self):
         self.store.close()
 
-    def start(self, plan_tasks=None, plan_spec=None, max_parallel=2):
+    def start(self, plan_tasks=None, plan_spec=None, max_parallel=2, mode="auto"):
         chosen_spec = plan_spec or spec()
         self.store.save_spec(PROJECT, chosen_spec)
         plan = self.store.create_plan(PROJECT, chosen_spec, SHA, max_parallel,
                                       plan_tasks or tasks())
-        run = self.store.create_run(PROJECT, plan["id"], plan["version"])
+        run = self.store.create_run(PROJECT, plan["id"], plan["version"], mode)
         return run["id"]
 
 
@@ -158,6 +158,30 @@ class FindingsTest(WorkerTestCase):
         self.assertEqual(attempt["model"], "claude-x")
         self.assertEqual(attempt["checkout_commit"], "b" * 40)
         self.assertIn("input_tokens", attempt["usage"])
+
+
+class DriveTest(WorkerTestCase):
+    def test_auto_run_dispatches_until_only_review_remains(self):
+        run_id = self.start(mode="auto")
+        worker.drive(self.store, worker.simulated, run_id)
+        run = self.store.snapshot(run_id)
+        self.assertEqual(run["tasks"]["T1"]["state"], "done")
+        self.assertEqual(run["tasks"]["T2"]["state"], "review")
+        self.assertEqual(run["tasks"]["T3"]["state"], "done")
+        self.assertEqual(run["state"], "active")
+
+    def test_manual_run_is_driven_through_step(self):
+        run_id = self.start(mode="manual")
+        worker.drive(self.store, worker.simulated, run_id)
+        run = self.store.snapshot(run_id)
+        self.assertEqual(run["tasks"]["T1"]["state"], "done")
+        self.assertEqual(run["tasks"]["T2"]["state"], "review")
+
+    def test_drive_finishes_a_single_task_plan(self):
+        run_id = self.start(mode="auto", plan_tasks=[tasks()[0]])
+        processed = worker.drive(self.store, worker.simulated, run_id)
+        self.assertEqual(len(processed), 1)
+        self.assertEqual(self.store.snapshot(run_id)["state"], "completed")
 
 
 if __name__ == "__main__":

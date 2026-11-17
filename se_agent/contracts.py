@@ -87,6 +87,18 @@ class IdempotencyConflict(DomainError):
     default_message = "同一幂等键提交了不同请求"
 
 
+class OutputInvalid(DomainError):
+    """Worker-side code for a rejected artifact (contract §5 error codes).
+
+    Distinct from ``InvalidOutput`` on purpose: §6 spells the HTTP validation
+    code INVALID_OUTPUT while §5 spells the worker code OUTPUT_INVALID.
+    """
+
+    code = "OUTPUT_INVALID"
+    status = 422
+    default_message = "产物校验失败"
+
+
 class NotFound(DomainError):
     """The referenced project, plan, run or specification does not exist."""
 

@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .contracts import (Conflict, InvalidOutput, InvalidReference, InvalidState,
+from .contracts import (Conflict, DomainError, InvalidOutput, InvalidReference, InvalidState,
                         NotFound, StaleAttempt, VersionConflict)
 from .plan_rules import overlaps, validate_plan
 from .schedule import schedule_plan
@@ -52,8 +52,9 @@ def _load(text, default):
 
 
 class Store:
-    def __init__(self, path=":memory:", now=None):
+    def __init__(self, path=":memory:", now=None, verifier=None):
         self.now = now or utcnow
+        self.verifier = verifier
         self._lock = threading.RLock()
         self.db = sqlite3.connect(str(path), isolation_level=None,
                                   check_same_thread=False)
@@ -579,8 +580,22 @@ class Store:
                     if item["id"] == task_id)
                 now = _stamp(self.now())
                 if status == "succeeded":
-                    self._accept(db, run_id, task, attempt, artifacts or [], now,
-                                 payload_hash)
+                    problems = self._check_git(task, attempt, artifacts or [])
+                    if problems:
+                        db.execute("UPDATE attempts SET state='failed', ended_at=?,"
+                                   " error=?, report_hash=? WHERE id=?",
+                                   (now, _dump({"code": "OUTPUT_INVALID",
+                                                "problems": problems}),
+                                    payload_hash, attempt_id))
+                        db.execute("UPDATE run_tasks SET state=? WHERE run_id=?"
+                                   " AND task_id=?", (FAILED, run_id, task_id))
+                        self._emit(db, run_id, "task.failed", task_id=task_id,
+                                   attempt_id=attempt_id,
+                                   payload={"code": "OUTPUT_INVALID",
+                                            "problems": problems})
+                    else:
+                        self._accept(db, run_id, task, attempt, artifacts or [], now,
+                                     payload_hash)
                 elif status == "failed":
                     db.execute("UPDATE attempts SET state='failed', ended_at=?, error=?,"
                                " report_hash=? WHERE id=?",
@@ -612,6 +627,28 @@ class Store:
         if expired:
             raise StaleAttempt(current_attempt_id=stale_id)
         return self.snapshot(run_id)
+
+    def _check_git(self, task, attempt, artifacts):
+        """Reject a commit the plan cannot account for (§5 verification)."""
+        if self.verifier is None:
+            return []
+        kinds = {output["id"]: output["kind"] for output in task["outputs"]}
+        commits = [item for item in artifacts
+                   if kinds.get(item.get("output_id")) == "git_commit"]
+        if not commits:
+            return []
+        required = [ref.get("commit_sha") for ref in _load(attempt["input_refs"], [])
+                    if ref.get("commit_sha")]
+        problems = []
+        for item in commits:
+            try:
+                self.verifier.verify(commit_sha=item.get("commit_sha"),
+                                     checkout_commit=attempt["checkout_commit"],
+                                     required_shas=required,
+                                     allowed_paths=task["write_paths"])
+            except DomainError as exc:
+                problems.append({"message": exc.message, "details": exc.details})
+        return problems
 
     def submit(self, run_id, result, worker_id):
         """Route a WorkerResult dict (contract §5) through report()."""

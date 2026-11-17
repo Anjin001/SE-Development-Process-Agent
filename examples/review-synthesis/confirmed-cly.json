@@ -1,0 +1,291 @@
+{
+  "requirement": {
+    "id": "REQSET-DEMO",
+    "version": 1,
+    "markdown": "# 实验室设备预约\n\n## 业务规则\n- 停用设备保留在列表中，并显示停用状态。\n- 禁止对停用设备发起新预约。\n\n## 待澄清\n- 已有预约如何处理？",
+    "items": [
+      {
+        "id": "REQ-01",
+        "title": "停用设备保留在列表中，并显示停用状态。",
+        "text": "停用设备保留在列表中，并显示停用状态。",
+        "source": {
+          "section": "业务规则",
+          "start_line": 4,
+          "end_line": 4
+        }
+      },
+      {
+        "id": "REQ-02",
+        "title": "禁止对停用设备发起新预约。",
+        "text": "禁止对停用设备发起新预约。",
+        "source": {
+          "section": "业务规则",
+          "start_line": 5,
+          "end_line": 5
+        }
+      },
+      {
+        "id": "REQ-03",
+        "title": "已有预约如何处理？",
+        "text": "已有预约如何处理？",
+        "source": {
+          "section": "待澄清",
+          "start_line": 8,
+          "end_line": 8
+        }
+      }
+    ]
+  },
+  "drafts": [
+    {
+      "id": "A",
+      "requirement_ref": {
+        "id": "REQSET-DEMO",
+        "version": 1
+      },
+      "title": "收紧范围，先交付最小可用链路",
+      "summary": "以核心规则为起点。先把约束做成可验收的规则。方案以同一需求快照为依据。",
+      "claims": [
+        {
+          "id": "A-01",
+          "text": "设备查询继续返回停用记录，列表直接展示设备状态。",
+          "requirement_ids": [
+            "REQ-01"
+          ]
+        },
+        {
+          "id": "A-02",
+          "text": "预约接口校验设备状态。遇到停用设备直接拒绝创建预约。",
+          "requirement_ids": [
+            "REQ-02"
+          ]
+        },
+        {
+          "id": "A-03",
+          "text": "待确认，保留原问题：已有预约如何处理？",
+          "requirement_ids": [
+            "REQ-03"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B",
+      "requirement_ref": {
+        "id": "REQSET-DEMO",
+        "version": 1
+      },
+      "title": "围绕关键场景优化体验与异常处置",
+      "summary": "以用户任务为起点。先比较用户可见的处理方式。方案以同一需求快照为依据。",
+      "claims": [
+        {
+          "id": "B-01",
+          "text": "列表保留停用设备，提供显眼的状态标识，让用户能辨认仍可预约的设备。",
+          "requirement_ids": [
+            "REQ-01"
+          ]
+        },
+        {
+          "id": "B-02",
+          "text": "设备详情显示停用原因或状态提示，隐藏新预约入口。服务端仍校验状态。",
+          "requirement_ids": [
+            "REQ-02"
+          ]
+        },
+        {
+          "id": "B-03",
+          "text": "待确认，保留原问题：已有预约如何处理？",
+          "requirement_ids": [
+            "REQ-03"
+          ]
+        }
+      ]
+    }
+  ],
+  "evaluations": [
+    {
+      "draft_id": "A",
+      "criteria": [
+        {
+          "criterion": "value",
+          "score": 5,
+          "reason": "模拟：主张引用覆盖 3/3 项需求，仅衡量来源覆盖，不代表真实用户价值。",
+          "claim_ids": [
+            "A-01",
+            "A-02",
+            "A-03"
+          ]
+        },
+        {
+          "criterion": "feasibility",
+          "score": 3,
+          "reason": "模拟中性值：尚未核实技术和外部依赖，须人工复查。",
+          "claim_ids": [
+            "A-01",
+            "A-02",
+            "A-03"
+          ]
+        },
+        {
+          "criterion": "cost",
+          "score": 3,
+          "reason": "模拟中性值：缺少可信工时和预算依据，不能据此断言更省。",
+          "claim_ids": [
+            "A-01",
+            "A-02",
+            "A-03"
+          ]
+        }
+      ]
+    },
+    {
+      "draft_id": "B",
+      "criteria": [
+        {
+          "criterion": "value",
+          "score": 5,
+          "reason": "模拟：主张引用覆盖 3/3 项需求，仅衡量来源覆盖，不代表真实用户价值。",
+          "claim_ids": [
+            "B-01",
+            "B-02",
+            "B-03"
+          ]
+        },
+        {
+          "criterion": "feasibility",
+          "score": 3,
+          "reason": "模拟中性值：尚未核实技术和外部依赖，须人工复查。",
+          "claim_ids": [
+            "B-01",
+            "B-02",
+            "B-03"
+          ]
+        },
+        {
+          "criterion": "cost",
+          "score": 3,
+          "reason": "模拟中性值：缺少可信工时和预算依据，不能据此断言更省。",
+          "claim_ids": [
+            "B-01",
+            "B-02",
+            "B-03"
+          ]
+        }
+      ]
+    }
+  ],
+  "specification": {
+    "id": "SPEC-dc8d9cbb",
+    "version": 1,
+    "status": "confirmed",
+    "requirement_ref": {
+      "id": "REQSET-DEMO",
+      "version": 1
+    },
+    "selection": "merge",
+    "markdown": "# 综合开发方案\n\n## 需求原文与约束\n\n# 实验室设备预约\n\n## 业务规则\n- 停用设备保留在列表中，并显示停用状态。\n- 禁止对停用设备发起新预约。\n\n## 待澄清\n- 已有预约如何处理？\n\n## 方案决策\n\n### DEC-01 · 停用设备保留在列表中，并显示停用状态。\n设备查询继续返回停用记录，列表直接展示设备状态。\n列表保留停用设备，提供显眼的状态标识，让用户能辨认仍可预约的设备。\n\n理由：模拟整合：按人工选择整理候选主张 A-01、B-01，未自动判定语义一致性；确认前需人工复查。\n\n来源：REQ-01、A、B\n\n### DEC-02 · 禁止对停用设备发起新预约。\n预约接口校验设备状态。遇到停用设备直接拒绝创建预约。\n设备详情显示停用原因或状态提示，隐藏新预约入口。服务端仍校验状态。\n\n理由：模拟整合：按人工选择整理候选主张 A-02、B-02，未自动判定语义一致性；确认前需人工复查。\n\n来源：REQ-02、A、B\n\n## 待处理事项\n\n- OPEN-01 · 已有预约如何处理？\n  影响：REQ-03；阻塞相关任务；处理结果：待人工决定",
+    "decisions": [
+      {
+        "id": "DEC-01",
+        "scope": "停用设备保留在列表中，并显示停用状态。",
+        "choice": "设备查询继续返回停用记录，列表直接展示设备状态。\n列表保留停用设备，提供显眼的状态标识，让用户能辨认仍可预约的设备。",
+        "reason": "模拟整合：按人工选择整理候选主张 A-01、B-01，未自动判定语义一致性；确认前需人工复查。",
+        "requirement_ids": [
+          "REQ-01"
+        ],
+        "draft_ids": [
+          "A",
+          "B"
+        ]
+      },
+      {
+        "id": "DEC-02",
+        "scope": "禁止对停用设备发起新预约。",
+        "choice": "预约接口校验设备状态。遇到停用设备直接拒绝创建预约。\n设备详情显示停用原因或状态提示，隐藏新预约入口。服务端仍校验状态。",
+        "reason": "模拟整合：按人工选择整理候选主张 A-02、B-02，未自动判定语义一致性；确认前需人工复查。",
+        "requirement_ids": [
+          "REQ-02"
+        ],
+        "draft_ids": [
+          "A",
+          "B"
+        ]
+      }
+    ],
+    "open_items": [
+      {
+        "id": "OPEN-01",
+        "question": "已有预约如何处理？",
+        "blocking": true,
+        "affected_requirement_ids": [
+          "REQ-03"
+        ],
+        "resolution": null
+      }
+    ],
+    "confirmed_by": "lead-demo",
+    "confirmed_at": "2026-11-17T13:23:29.096356+00:00"
+  },
+  "review_records": [
+    {
+      "version": 1,
+      "action": "组合",
+      "source_refs": [
+        "A",
+        "A-01",
+        "REQ-01"
+      ],
+      "reason": "依据需求和草案编号关联到候选决策，具体语义须人工复查。"
+    },
+    {
+      "version": 1,
+      "action": "组合",
+      "source_refs": [
+        "A",
+        "A-02",
+        "REQ-02"
+      ],
+      "reason": "依据需求和草案编号关联到候选决策，具体语义须人工复查。"
+    },
+    {
+      "version": 1,
+      "action": "延期",
+      "source_refs": [
+        "A",
+        "A-03",
+        "REQ-03"
+      ],
+      "reason": "尚待人工决定或补齐，查看相关未决事项。"
+    },
+    {
+      "version": 1,
+      "action": "组合",
+      "source_refs": [
+        "B",
+        "B-01",
+        "REQ-01"
+      ],
+      "reason": "依据需求和草案编号关联到候选决策，具体语义须人工复查。"
+    },
+    {
+      "version": 1,
+      "action": "组合",
+      "source_refs": [
+        "B",
+        "B-02",
+        "REQ-02"
+      ],
+      "reason": "依据需求和草案编号关联到候选决策，具体语义须人工复查。"
+    },
+    {
+      "version": 1,
+      "action": "延期",
+      "source_refs": [
+        "B",
+        "B-03",
+        "REQ-03"
+      ],
+      "reason": "尚待人工决定或补齐，查看相关未决事项。"
+    }
+  ]
+}

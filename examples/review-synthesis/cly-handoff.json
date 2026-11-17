@@ -1,0 +1,105 @@
+{
+  "requirement": {
+    "id": "REQSET-DEMO",
+    "version": 1,
+    "markdown": "# 实验室设备预约\n\n## 业务规则\n- 停用设备保留在列表中，并显示停用状态。\n- 禁止对停用设备发起新预约。\n\n## 待澄清\n- 已有预约如何处理？",
+    "items": [
+      {
+        "id": "REQ-01",
+        "title": "停用设备保留在列表中，并显示停用状态。",
+        "text": "停用设备保留在列表中，并显示停用状态。",
+        "source": {
+          "section": "业务规则",
+          "start_line": 4,
+          "end_line": 4
+        }
+      },
+      {
+        "id": "REQ-02",
+        "title": "禁止对停用设备发起新预约。",
+        "text": "禁止对停用设备发起新预约。",
+        "source": {
+          "section": "业务规则",
+          "start_line": 5,
+          "end_line": 5
+        }
+      },
+      {
+        "id": "REQ-03",
+        "title": "已有预约如何处理？",
+        "text": "已有预约如何处理？",
+        "source": {
+          "section": "待澄清",
+          "start_line": 8,
+          "end_line": 8
+        }
+      }
+    ]
+  },
+  "drafts": [
+    {
+      "id": "A",
+      "requirement_ref": {
+        "id": "REQSET-DEMO",
+        "version": 1
+      },
+      "title": "收紧范围，先交付最小可用链路",
+      "summary": "以核心规则为起点。先把约束做成可验收的规则。方案以同一需求快照为依据。",
+      "claims": [
+        {
+          "id": "A-01",
+          "text": "设备查询继续返回停用记录，列表直接展示设备状态。",
+          "requirement_ids": [
+            "REQ-01"
+          ]
+        },
+        {
+          "id": "A-02",
+          "text": "预约接口校验设备状态。遇到停用设备直接拒绝创建预约。",
+          "requirement_ids": [
+            "REQ-02"
+          ]
+        },
+        {
+          "id": "A-03",
+          "text": "待确认，保留原问题：已有预约如何处理？",
+          "requirement_ids": [
+            "REQ-03"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B",
+      "requirement_ref": {
+        "id": "REQSET-DEMO",
+        "version": 1
+      },
+      "title": "围绕关键场景优化体验与异常处置",
+      "summary": "以用户任务为起点。先比较用户可见的处理方式。方案以同一需求快照为依据。",
+      "claims": [
+        {
+          "id": "B-01",
+          "text": "列表保留停用设备，提供显眼的状态标识，让用户能辨认仍可预约的设备。",
+          "requirement_ids": [
+            "REQ-01"
+          ]
+        },
+        {
+          "id": "B-02",
+          "text": "设备详情显示停用原因或状态提示，隐藏新预约入口。服务端仍校验状态。",
+          "requirement_ids": [
+            "REQ-02"
+          ]
+        },
+        {
+          "id": "B-03",
+          "text": "待确认，保留原问题：已有预约如何处理？",
+          "requirement_ids": [
+            "REQ-03"
+          ]
+        }
+      ]
+    }
+  ]
+}

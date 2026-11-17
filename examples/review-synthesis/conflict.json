@@ -1,0 +1,74 @@
+{
+  "requirement": {
+    "id": "REQSET-01",
+    "version": 1,
+    "markdown": "# 设备预约\n停用设备保留在列表，显示停用状态。\n禁止对停用设备发起新预约。",
+    "items": [
+      {
+        "id": "REQ-01",
+        "title": "展示停用状态",
+        "text": "停用设备保留在列表，显示停用状态。",
+        "source": {
+          "section": "设备预约",
+          "start_line": 2,
+          "end_line": 2
+        }
+      },
+      {
+        "id": "REQ-02",
+        "title": "阻止新预约",
+        "text": "禁止对停用设备发起新预约。",
+        "source": {
+          "section": "设备预约",
+          "start_line": 3,
+          "end_line": 3
+        }
+      }
+    ]
+  },
+  "drafts": [
+    {
+      "id": "A",
+      "requirement_ref": {
+        "id": "REQSET-01",
+        "version": 1
+      },
+      "title": "统一设备状态",
+      "summary": "先统一状态定义，再实现列表。",
+      "claims": [
+        {
+          "id": "A-01",
+          "text": "列表保留停用设备",
+          "requirement_ids": [
+            "REQ-01"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B",
+      "requirement_ref": {
+        "id": "REQSET-01",
+        "version": 1
+      },
+      "title": "先限制预约入口",
+      "summary": "把停用状态作为预约服务的准入条件。",
+      "claims": [
+        {
+          "id": "B-01",
+          "text": "服务端拒绝停用设备的新预约",
+          "requirement_ids": [
+            "REQ-02"
+          ]
+        },
+        {
+          "id": "B-02",
+          "text": "设备停用后自动取消受影响的已有预约。",
+          "requirement_ids": [
+            "REQ-02"
+          ]
+        }
+      ]
+    }
+  ]
+}

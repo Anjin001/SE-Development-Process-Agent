@@ -1,0 +1,2468 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SE-Agent · 开发流程工作台</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei UI", sans-serif;
+      background: #f8fafc;
+      color: #1e293b;
+      -webkit-font-smoothing: antialiased;
+      overflow: hidden;
+    }
+    .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+    /* Dot Grid Background for DAG Canvas */
+    .graph-canvas-bg {
+      background-color: #f8fafc;
+      background-image: radial-gradient(#cbd5e1 1px, transparent 1px);
+      background-size: 18px 18px;
+    }
+
+    @keyframes dashFlow {
+      to { stroke-dashoffset: -24; }
+    }
+    .edge-animated {
+      stroke-dasharray: 5 4;
+      animation: dashFlow 1.2s linear infinite;
+    }
+    .edge-static-dashed {
+      stroke-dasharray: 4 3;
+    }
+
+    /* Graph Node Cards */
+    .graph-node {
+      position: absolute;
+      width: 196px;
+      background: #ffffff;
+      border-radius: 8px;
+      padding: 8px 11px;
+      cursor: pointer;
+      user-select: none;
+      transition: transform 0.14s ease, box-shadow 0.14s ease;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+      z-index: 2;
+    }
+    .graph-node:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.12);
+    }
+    .graph-node.selected {
+      box-shadow: 0 0 0 2px #4f46e5, 0 4px 12px rgba(79, 70, 229, 0.18);
+    }
+    .graph-node[data-status="completed"] { border: 1.5px solid #86efac; }
+    .graph-node[data-status="in_progress"] { border: 1.5px solid #fbbf24; background: #fffbeb; }
+    .graph-node[data-status="failed"] { border: 1.5px solid #fca5a5; background: #fef2f2; }
+    .graph-node[data-status="pending"] { border: 1.5px solid #cbd5e1; background: #f8fafc; }
+
+    .phase-group-box {
+      position: absolute;
+      border: 1.5px dashed #c7d2fe;
+      background: rgba(238, 242, 255, 0.28);
+      border-radius: 12px;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    /* Left Sidebar Collapsed State: keep toggle button clearly clickable */
+    #left-sidebar.collapsed {
+      width: 48px;
+    }
+    #left-sidebar.collapsed .sb-hide-on-collapse {
+      display: none !important;
+    }
+    #left-sidebar.collapsed .nav-item {
+      justify-content: center;
+      padding-left: 0;
+      padding-right: 0;
+    }
+  </style>
+</head>
+<body class="h-screen w-screen flex select-none">
+
+  <!-- ==================== 1. 左侧项目模块导航栏 ==================== -->
+  <aside id="left-sidebar" class="w-60 bg-[#f3f5f9] border-r border-slate-200/90 flex flex-col justify-between shrink-0 h-full overflow-y-auto transition-all duration-150">
+    <div>
+      <!-- Brand Header -->
+      <div class="px-3.5 py-3.5 flex items-center justify-between border-b border-slate-200/70">
+        <div class="flex items-center gap-2 sb-hide-on-collapse">
+          <div class="flex items-center">
+            <span class="font-extrabold text-base tracking-tight text-slate-900">SE-Agent</span>
+            <span class="w-1.5 h-1.5 rounded-full bg-orange-500 ml-0.5 -mt-2"></span>
+            <span class="w-1.5 h-1.5 rounded-full bg-indigo-500 ml-0.5 -mt-1"></span>
+          </div>
+          <span class="mono text-[10px] font-semibold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 border border-indigo-200/60">v2.0</span>
+        </div>
+        <button id="btn-toggle-sidebar" type="button" title="收起/展开导航栏" class="w-7 h-7 rounded border border-indigo-200 bg-white text-indigo-600 flex items-center justify-center text-xs hover:bg-indigo-50 mx-auto sm:mx-0">
+          ◧
+        </button>
+      </div>
+
+      <!-- Navigation Tree -->
+      <nav class="p-2 space-y-3 text-[13px]" aria-label="SE Development Process Agent 导航">
+        <!-- 1. 需求与赛马中心 -->
+        <div class="space-y-1">
+          <div class="px-2.5 py-1 flex items-center justify-between text-xs font-semibold text-slate-500 sb-hide-on-collapse">
+            <span class="flex items-center gap-2"><span>🏁</span>需求与赛马出案</span>
+            <span>⌃</span>
+          </div>
+          <div class="space-y-0.5">
+            <button type="button" data-module="intake-race" data-title="需求快照与赛马出案" class="nav-item w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-slate-600 hover:bg-slate-200/60" title="需求快照与赛马">
+              <span class="flex items-center gap-2"><span class="text-slate-400 text-xs">📄</span><span class="sb-hide-on-collapse">需求快照与赛马</span></span>
+            </button>
+            <button type="button" data-module="review-synthesis" data-title="评审与方案整合" class="nav-item w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-slate-600 hover:bg-slate-200/60" title="评审与方案整合">
+              <span class="flex items-center gap-2"><span class="text-slate-400 text-xs">⚖</span><span class="sb-hide-on-collapse">评审与方案整合</span></span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 2. 分解与编排中心 -->
+        <div class="space-y-1">
+          <div class="px-2.5 py-1 flex items-center justify-between text-xs font-semibold text-indigo-600 sb-hide-on-collapse">
+            <span class="flex items-center gap-2"><span>🗂</span>分解与编排中心</span>
+            <span>⌃</span>
+          </div>
+          <div class="space-y-0.5">
+            <button type="button" data-module="task-planner" data-title="任务分解与配置" class="nav-item w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-slate-600 hover:bg-slate-200/60" title="任务分解">
+              <span class="flex items-center gap-2"><span class="text-slate-400 text-xs">❐</span><span class="sb-hide-on-collapse">任务分解</span></span>
+            </button>
+            <button type="button" data-module="workbench" data-title="开发流程工作台" class="nav-item active-nav w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-indigo-50/90 text-indigo-600 font-semibold border border-indigo-200/60" title="开发流程工作台">
+              <span class="flex items-center gap-2"><span class="text-indigo-600 text-xs">⊞</span><span class="sb-hide-on-collapse">开发流程工作台</span></span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 3. 数字人与记忆系统 -->
+        <div class="space-y-1">
+          <div class="px-2.5 py-1 flex items-center justify-between text-xs font-semibold text-slate-500 sb-hide-on-collapse">
+            <span class="flex items-center gap-2"><span>🧠</span>数字人与记忆系统</span>
+            <span>⌃</span>
+          </div>
+          <div class="space-y-0.5">
+            <button type="button" data-module="agents-profile" data-title="领域数字人档案" class="nav-item w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-slate-600 hover:bg-slate-200/60" title="数字人档案">
+              <span class="flex items-center gap-2"><span class="text-slate-400 text-xs">✦</span><span class="sb-hide-on-collapse">数字人档案</span></span>
+            </button>
+            <button type="button" data-module="exp-memory" data-title="领域经验卡库" class="nav-item w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-slate-600 hover:bg-slate-200/60" title="领域经验卡">
+              <span class="flex items-center gap-2"><span class="text-slate-400 text-xs">⚡</span><span class="sb-hide-on-collapse">领域经验卡</span></span>
+              <span class="mono text-[10px] text-emerald-600 sb-hide-on-collapse">V1</span>
+            </button>
+            <button type="button" data-module="model-router" data-title="高低配模型路由" class="nav-item w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-slate-600 hover:bg-slate-200/60" title="高低配模型路由">
+              <span class="flex items-center gap-2"><span class="text-slate-400 text-xs">⬡</span><span class="sb-hide-on-collapse">高低配模型路由</span></span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 4. 编排器与运行存储 -->
+        <div class="space-y-1">
+          <div class="px-2.5 py-1 flex items-center justify-between text-xs font-semibold text-slate-500 sb-hide-on-collapse">
+            <span class="flex items-center gap-2"><span>🎛</span>编排器与运行存储</span>
+            <span>⌃</span>
+          </div>
+          <div class="space-y-0.5">
+            <button type="button" data-module="autogen-resume" data-title="会话恢复与阶段隔离" class="nav-item w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-slate-600 hover:bg-slate-200/60" title="AutoGen 会话恢复">
+              <span class="flex items-center gap-2"><span class="text-slate-400 text-xs">💬</span><span class="sb-hide-on-collapse">AutoGen 会话恢复</span></span>
+            </button>
+            <button type="button" data-module="git-worktree" data-title="Git Worktree 沙箱隔离" class="nav-item w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-slate-600 hover:bg-slate-200/60" title="Git Worktree 隔离">
+              <span class="flex items-center gap-2"><span class="text-slate-400 text-xs">🌿</span><span class="sb-hide-on-collapse">Git Worktree 隔离</span></span>
+            </button>
+            <button type="button" data-module="sqlite-store" data-title="SQLite 检查点与事务存储" class="nav-item w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-slate-600 hover:bg-slate-200/60" title="SQLite 检查点与事务">
+              <span class="flex items-center gap-2"><span class="text-slate-400 text-xs">🗄</span><span class="sb-hide-on-collapse">SQLite 检查点与事务</span></span>
+            </button>
+          </div>
+        </div>
+      </nav>
+    </div>
+
+    <!-- Bottom Status -->
+    <div class="p-3 border-t border-slate-200/80 text-[11px] text-slate-500 flex items-center justify-between sb-hide-on-collapse">
+      <span class="flex items-center gap-1.5">
+        <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+        <span>FastAPI · SQLite 就绪</span>
+      </span>
+      <span id="sidebar-req-ver" class="mono">REQ-01@v1</span>
+    </div>
+  </aside>
+
+  <!-- ==================== 2. 主工作区容器 ==================== -->
+  <div class="flex-1 flex flex-col h-full min-w-0 bg-white">
+
+    <!-- 顶部标题栏 -->
+    <header class="h-12 px-5 border-b border-slate-200 flex items-center justify-between shrink-0">
+      <div class="flex items-center gap-3 min-w-0">
+        <h1 id="page-title" class="text-base font-bold text-slate-800 truncate">开发流程工作台</h1>
+        <span id="nav-breadcrumb" class="text-xs text-slate-400 hidden lg:inline mono">/ SE-Development-Process-Agent</span>
+      </div>
+      <div class="flex items-center gap-3 text-xs text-slate-500 shrink-0">
+        <button id="btn-changelog" type="button" class="flex items-center gap-1 hover:text-slate-800 font-medium px-2 py-1 rounded hover:bg-slate-100">
+          <span>📄</span><span>接口契约 v2</span>
+        </button>
+        <button id="btn-doc" type="button" class="flex items-center gap-1 hover:text-slate-800 font-medium px-2 py-1 rounded hover:bg-slate-100">
+          <span>📘</span><span>开发文档</span>
+        </button>
+        <button id="btn-toggle-right-sidebar" type="button" class="px-2.5 py-1 rounded-md border border-indigo-200 bg-indigo-50/70 text-indigo-700 font-semibold hover:bg-indigo-100 transition">
+          主理侧边栏 ◨
+        </button>
+        <span class="w-2 h-2 rounded-full bg-emerald-500" title="独立 Worker 在线"></span>
+      </div>
+    </header>
+
+    <!-- 二级工具栏：项目切换与快捷操作 -->
+    <div class="h-11 px-5 bg-slate-50/70 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
+      <div class="flex flex-wrap items-center gap-2.5 text-xs">
+        <span class="flex items-center gap-1.5 font-semibold text-slate-700">
+          <span class="text-indigo-600">⊞</span>
+          <span>当前演示案例</span>
+        </span>
+
+        <select id="select-project" aria-label="选择演示案例" class="bg-white border border-slate-300 rounded-md px-2.5 py-1 text-xs font-medium text-slate-700 focus:outline-none focus:border-indigo-500">
+          <option value="lab">实验室设备预约系统 · REQ-01</option>
+          <option value="studyroom">自习室座位预约系统 · CASE-01</option>
+        </select>
+
+        <select id="select-engine" aria-label="选择计划与编排版本" class="bg-white border border-slate-300 rounded-md px-2.5 py-1 text-xs mono text-slate-700 focus:outline-none focus:border-indigo-500">
+          <option value="plan_v1">SPEC-01 · PLAN-01</option>
+          <option value="case_v1">CASE-STUDYROOM-V1</option>
+        </select>
+
+        <span id="active-badge" class="mono text-[11px] font-semibold px-2 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-200">
+          DEC-01 · EXP-012
+        </span>
+      </div>
+
+      <div class="flex items-center gap-2 text-xs">
+        <button id="btn-step-sim" type="button" class="px-2.5 py-1 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-medium transition shadow-2xs">
+          ▶ 推进一轮派发
+        </button>
+        <button id="btn-fit-graph" type="button" class="px-2.5 py-1 rounded-md bg-white hover:bg-slate-100 text-slate-600 border border-slate-300 transition">
+          重置画布
+        </button>
+      </div>
+    </div>
+
+    <!-- 主体横向容器：中间核心区 (视图A / 视图B) + 右侧常驻主理侧边栏 -->
+    <div class="flex-1 flex min-h-0 overflow-hidden">
+
+      <!-- 中间核心区 -->
+      <div class="flex-1 flex min-w-0 h-full overflow-hidden">
+
+        <!-- ==================== 视图 A：独立模块工作区 (当点击左侧非 Workbench 栏目时展示) ==================== -->
+        <div id="module-dedicated-view" class="hidden flex-1 overflow-y-auto p-6 bg-slate-50/60"></div>
+
+        <!-- ==================== 视图 B：默认开发流程工作台 (左侧 Phase 列表 + 右侧 Twin Graph 四标签) ==================== -->
+        <div id="workbench-split-view" class="flex-1 flex min-h-0 overflow-hidden">
+
+          <!-- 2A. 左侧任务完成进度与 Phase 列表 -->
+          <section class="w-76 border-r border-slate-200 flex flex-col h-full bg-[#fbfcfe] shrink-0">
+            <div class="p-4 border-b border-slate-200/80 space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-bold text-slate-700">整体任务进度</span>
+                <span id="progress-pct" class="text-xs font-bold text-indigo-600 mono">73%</span>
+              </div>
+              <div class="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+                <div id="progress-bar" class="h-full bg-indigo-600 rounded-full transition-all duration-300" style="width: 73%"></div>
+              </div>
+              <div class="flex items-center justify-between text-[11px] text-slate-500">
+                <span id="progress-count" class="mono">8 / 11 项任务已完成</span>
+                <div class="flex items-center gap-1">
+                  <button id="filter-all" type="button" class="px-1.5 py-0.5 rounded text-[10px] bg-indigo-50 text-indigo-700 font-semibold">全部</button>
+                  <button id="filter-异常" type="button" class="px-1.5 py-0.5 rounded text-[10px] hover:bg-slate-200/60 text-slate-600">待审/受阻</button>
+                </div>
+              </div>
+            </div>
+
+            <div id="phase-list-container" class="flex-1 overflow-y-auto p-3 space-y-3"></div>
+          </section>
+
+          <!-- 2B. 右侧四合一视图区 -->
+          <section class="flex-1 flex flex-col h-full min-w-0 bg-white relative">
+
+            <!-- 顶部 Tab 切换栏 -->
+            <div class="h-10 px-5 border-b border-slate-200 flex items-center justify-between shrink-0 bg-white">
+              <div class="flex items-center gap-6 text-xs font-semibold h-full" role="tablist">
+                <button type="button" data-tab="details" class="ws-tab h-full border-b-2 border-transparent text-slate-500 hover:text-slate-800 transition">
+                  任务详情与交付审阅
+                </button>
+                <button type="button" data-tab="monitor" class="ws-tab h-full border-b-2 border-transparent text-slate-500 hover:text-slate-800 transition">
+                  甘特排期与并发监控
+                </button>
+                <button type="button" data-tab="activity" class="ws-tab h-full border-b-2 border-transparent text-slate-500 hover:text-slate-800 transition">
+                  活动记录与经验检索
+                </button>
+                <button type="button" data-tab="graph" class="ws-tab h-full border-b-2 border-indigo-600 text-indigo-600 transition">
+                  Workflow 依赖图
+                </button>
+              </div>
+
+              <div class="hidden sm:flex items-center gap-2 text-[11px] text-slate-400 mono">
+                <span>当前选中:</span>
+                <strong id="selected-node-indicator" class="text-slate-700">T2.1</strong>
+              </div>
+            </div>
+
+            <!-- Tab 1: Workflow 依赖图画布 -->
+            <div id="panel-graph" class="flex-1 relative overflow-hidden graph-canvas-bg">
+              <div class="absolute top-3 left-4 z-20 flex items-center gap-2">
+                <span class="px-2.5 py-1 rounded-md bg-indigo-50/95 border border-indigo-200 text-indigo-700 text-[11px] font-semibold shadow-2xs">
+                  Workflow 编排图 · 阶段容器与关键路径
+                </span>
+                <span class="text-[11px] text-slate-400 hidden xl:inline">拖拽画布平移 · 点击节点审阅产物或重试异常任务</span>
+              </div>
+
+              <div class="absolute top-3 right-4 z-20 flex items-center bg-white/95 border border-slate-200 rounded-lg shadow-2xs text-xs overflow-hidden">
+                <button id="btn-zoom-out" type="button" class="px-2.5 py-1 hover:bg-slate-100 text-slate-600 font-bold">−</button>
+                <span id="zoom-label" class="px-2 py-1 mono text-[11px] text-slate-600 border-x border-slate-200">100%</span>
+                <button id="btn-zoom-in" type="button" class="px-2.5 py-1 hover:bg-slate-100 text-slate-600 font-bold">+</button>
+              </div>
+
+              <div id="graph-viewport" class="w-full h-full cursor-grab active:cursor-grabbing overflow-hidden relative">
+                <div id="graph-stage" class="origin-top-left transition-transform duration-75" style="width: 1320px; height: 820px; transform: translate(0px, 0px) scale(1);">
+                  <div id="graph-phases-layer"></div>
+                  <svg id="graph-edges-svg" class="absolute inset-0 w-full h-full pointer-events-none" width="1320" height="820" style="z-index: 1;"></svg>
+                  <div id="graph-nodes-layer"></div>
+                </div>
+              </div>
+
+              <div id="graph-node-inspector" class="absolute bottom-3 left-4 z-20 bg-white/95 backdrop-blur-xs border border-slate-200 rounded-xl p-3 shadow-md max-w-md text-xs space-y-1.5"></div>
+
+              <div class="absolute bottom-3 right-4 z-20 bg-white/95 backdrop-blur-xs border border-slate-200 rounded-lg px-3 py-1.5 shadow-2xs flex items-center gap-3 text-[11px] text-slate-600">
+                <span class="flex items-center gap-1.5">
+                  <span class="w-2.5 h-2.5 rounded-xs border border-indigo-400 bg-indigo-50 inline-block"></span>
+                  <span>Phase 阶段容器</span>
+                </span>
+                <span class="flex items-center gap-1.5">
+                  <span class="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
+                  <span>已完成交付</span>
+                </span>
+                <span class="flex items-center gap-1.5">
+                  <span class="w-2 h-2 rounded-full bg-amber-500 inline-block"></span>
+                  <span>待人工审核 / 运行中</span>
+                </span>
+                <span class="flex items-center gap-1.5">
+                  <span class="w-2 h-2 rounded-full bg-red-500 inline-block"></span>
+                  <span>执行失败 / 受阻</span>
+                </span>
+              </div>
+            </div>
+
+            <!-- Tab 2: 任务详情与交付审阅 -->
+            <div id="panel-details" class="hidden flex-1 overflow-y-auto p-6 bg-slate-50/50"></div>
+
+            <!-- Tab 3: 甘特排期与并发监控 -->
+            <div id="panel-monitor" class="hidden flex-1 overflow-y-auto p-6 bg-slate-50/50"></div>
+
+            <!-- Tab 4: 活动记录与 EXP-012 -->
+            <div id="panel-activity" class="hidden flex-1 overflow-y-auto p-6 bg-slate-50/50"></div>
+
+          </section>
+        </div>
+      </div>
+
+      <!-- ==================== 3. 新增右侧常驻主理控制侧边栏 (STAGE STEWARD) ==================== -->
+      <aside id="right-steward-sidebar" aria-label="主理 AI 与人工控制侧边栏" class="w-72 bg-[#f8fafc] border-l border-slate-200 flex flex-col justify-between shrink-0 h-full overflow-y-auto p-4 space-y-4">
+        <div id="steward-sidebar-body" class="space-y-3.5 text-xs"></div>
+
+        <div class="pt-3 border-t border-slate-200/80 space-y-1.5 text-[11px] text-slate-500">
+          <div class="flex items-center justify-between">
+            <span>当前案例</span>
+            <span id="steward-case-label" class="font-semibold text-slate-700">实验室设备预约</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span>全局并发上限</span>
+            <span id="steward-parallel-label" class="mono font-semibold text-indigo-600">max_parallel = 2</span>
+          </div>
+        </div>
+      </aside>
+
+    </div>
+  </div>
+
+  <!-- Info Modal -->
+  <div id="info-modal" class="fixed inset-0 z-50 hidden bg-slate-900/40 flex items-center justify-center p-4">
+    <div class="bg-white border border-slate-200 rounded-xl max-w-lg w-full p-5 shadow-xl space-y-3 text-xs">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-2.5">
+        <strong id="info-modal-title" class="text-sm text-slate-900">文档说明</strong>
+        <button id="btn-close-modal" type="button" class="px-2 py-0.5 rounded border border-slate-200 text-slate-500 hover:text-slate-800">关闭</button>
+      </div>
+      <div id="info-modal-body" class="text-slate-600 space-y-2 leading-relaxed"></div>
+    </div>
+  </div>
+
+  <!-- Toast 提示 -->
+  <div id="toast-banner" class="fixed bottom-4 right-4 z-50 hidden bg-slate-900 text-white text-xs px-4 py-2.5 rounded-lg shadow-lg border border-slate-700 flex items-center gap-2">
+    <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+    <span id="toast-msg"></span>
+  </div>
+
+  <script>
+  (() => {
+    // =========================================================================
+    // 1. 全局状态：主体结构完全保持上一版 (S0.1~T3.1 & C1.1~C2.2)，同时支持双案例全局联动
+    // =========================================================================
+    let activeModule = 'workbench';
+    let currentProjectKey = 'lab';
+    let currentTab = 'graph';
+    let selectedTaskId = 'T2.1';
+    let collapsedPhases = new Set();
+    let filterMode = 'all';
+    let zoom = 1;
+    let panX = 0;
+    let panY = 0;
+    let isPanning = false;
+    let panStartX = 0;
+    let panStartY = 0;
+
+    // 1.1 按案例隔离的需求与赛马状态
+    const intakeByProject = {
+      lab: {
+        version: 1,
+        locked: false,
+        dispatchPaused: false,
+        markdown: `# 实验室设备预约\n\n- 师生可查看实验室设备列表；停用设备保留在列表中并显示停用状态。\n- 师生可对可用设备发起时段预约与主动取消。\n- 管理员可将设备置为停用；禁止对停用设备发起新预约。`,
+        items: [],
+        extraPromptTemplate: '请围绕同一份需求快照提出兼具可扩展性与异常兜底的差异化建设方案。',
+        simulateBFailure: false,
+        groups: [
+          {
+            id: 'A',
+            defaultGroup: true,
+            prompt: '严格依据已知需求条目设计最小可行闭环，对未知假设显式标记为待确认项，不擅自扩充未授权规则。',
+            status: 'done',
+            draftTitle: 'A 组方案草案 · 基础预约与显式待决路线',
+            summary: '保留设备列表停用展示、预约与取消主流程；停用期间禁止新预约，对停用前已有预约保持待用户确认。',
+            claims: [
+              { id: 'CLM-A1', req: 'REQ-01', text: 'GET /devices 返回全量设备并标记停用状态，前端隐藏预约入口。' },
+              { id: 'CLM-A2', req: 'REQ-03', text: '停用操作仅拦截新预约请求，已有预约处置留待人工决策。' }
+            ]
+          },
+          {
+            id: 'B',
+            defaultGroup: true,
+            prompt: '结合领域经验卡 EXP-012，重点考虑资源状态变更对已有预约单据的影响，给出自动化处置与通知方案。',
+            status: 'done',
+            draftTitle: 'B 组方案草案 · 自动取消已有预约与通知路线',
+            summary: '停用设备后自动取消受影响时段的已有预约，在预约记录显示取消原因并推送通知。',
+            claims: [
+              { id: 'CLM-B1', req: 'REQ-02', text: '引入时段状态锁与预约状态机。' },
+              { id: 'CLM-B2', req: 'REQ-03', text: '管理员停用设备时自动批处理取消重叠预约并写入原因。' }
+            ]
+          }
+        ]
+      },
+      studyroom: {
+        version: 1,
+        locked: true,
+        dispatchPaused: false,
+        markdown: `# 自习室座位预约系统\n\n- 学生可按时段查询空余座位、发起预约与主动取消。\n- 管理员可维护自习室开放状态与临时停用座位。\n- 综合方案需平衡无座候补体验与首版开发成本。`,
+        items: [],
+        extraPromptTemplate: '围绕自习室预约场景补充签到或统计管理机制。',
+        simulateBFailure: false,
+        groups: [
+          {
+            id: 'A',
+            defaultGroup: true,
+            prompt: '聚焦查询、预约、取消主流程，保证首版范围清晰可控。',
+            status: 'done',
+            draftTitle: 'A 组方案草案 · 基础查询与预约流程',
+            summary: '首版范围清晰，实现查询、预约与取消闭环，暂不含无座候补。',
+            claims: [{ id: 'CLM-SA1', req: 'REQ-01', text: '提供按时段座位查询与预约取消主流程。' }]
+          },
+          {
+            id: 'B',
+            defaultGroup: true,
+            prompt: '针对高峰期无座场景增加候补与提醒机制。',
+            status: 'done',
+            draftTitle: 'B 组方案草案 · 无座候补与到座提醒',
+            summary: '无座场景考虑充分，提供自动候补与提醒，但首版功能较多。',
+            claims: [{ id: 'CLM-SB1', req: 'REQ-01', text: '增加无座提示与候补队列规则。' }]
+          }
+        ]
+      }
+    };
+
+    function parseMarkdownItems(projKey) {
+      const st = intakeByProject[projKey];
+      const lines = st.markdown.split('\n');
+      const extracted = [];
+      let idx = 1;
+      lines.forEach((raw, i) => {
+        const trimmed = raw.trim();
+        if (!trimmed || trimmed.startsWith('#')) return;
+        const clean = trimmed.replace(/^[-*+]\s+/, '').replace(/^\d+\.\s+/, '');
+        if (clean) {
+          extracted.push({ id: `REQ-0${idx}`, line: i + 1, text: clean });
+          idx++;
+        }
+      });
+      if (!extracted.length) {
+        extracted.push({ id: 'REQ-01', line: 1, text: st.markdown.trim() || '未填写需求条目' });
+      }
+      st.items = extracted;
+    }
+    parseMarkdownItems('lab');
+    parseMarkdownItems('studyroom');
+
+    // 1.2 按案例隔离的评审与方案整合状态
+    const synthesisByProject = {
+      lab: {
+        subStep: 'spec',
+        baseRoute: 'merge',
+        confirmed: true,
+        currentVersion: 2,
+        evaluations: {
+          A: { value: 4, feasibility: 5, cost: 5, reason: '严守需求边界，首版开发成本低，但停用后已有预约处理未闭合。', claims: 'CLM-A1, CLM-A2' },
+          B: { value: 5, feasibility: 4, cost: 4, reason: '完整回应 EXP-012 踩坑检查，但自动取消规则超出 REQ-03 原文授权。', claims: 'CLM-B1, CLM-B2' }
+        },
+        decisions: [
+          {
+            id: 'DEC-01',
+            scope: '停用设备期间已有预约处置',
+            choice: '取消受停用影响的已有预约，并在「我的预约」显示取消状态和原因',
+            reason: '采纳 EXP-012 走查经验并经用户拍板确认，避免师生白跑实验室',
+            reqRefs: 'REQ-03'
+          }
+        ],
+        openItems: [
+          {
+            id: 'OPEN-01',
+            question: '管理员停用设备时，已经预约该时段的存量预约单如何处理？',
+            affectedReq: 'REQ-03',
+            answer: '取消受停用影响的预约，并在「我的预约」显示取消状态与原因。'
+          }
+        ],
+        specMarkdown: `# 实验室设备预约系统 · 综合开发方案\n\n## 1. 范围与选定路线\n基于 REQ-01@v1，融合 A 组基础状态约定与 B 组停用处置闭环。\n\n## 2. 核心业务规则与人工决定\n- **REQ-01**：GET /devices 返回设备列表，停用设备保留在列表中并显示「停用」状态，隐藏新预约入口。\n- **REQ-02**：支持可用设备的时段预约与主动取消。\n- **REQ-03 & DEC-01**：设备停用后暂停接受新预约；取消受停用影响的已有预约，并在预约记录显示原因。`,
+        historyVersions: [
+          { ver: 1, time: '10:15:00', note: '基于融合路线生成首版综合草稿，保留待决项 OPEN-01。' },
+          { ver: 2, time: '10:22:30', note: '将 OPEN-01 人工答复写入 DEC-01 并更新方案正文，确认定稿。' }
+        ]
+      },
+      studyroom: {
+        subStep: 'spec',
+        baseRoute: 'merge',
+        confirmed: true,
+        currentVersion: 1,
+        evaluations: {
+          A: { value: 4, feasibility: 5, cost: 5, reason: '查询、预约、取消主流程清晰，首版交付风险最低。', claims: 'CLM-SA1' },
+          B: { value: 5, feasibility: 4, cost: 3, reason: '无座候补与提醒体验好，但增加首版开发成本。', claims: 'CLM-SB1' }
+        },
+        decisions: [
+          {
+            id: 'DEC-SR01',
+            scope: '管理员停用座位时的已有预约处置',
+            choice: '停用后禁止新增预约，取消受影响已有预约并在「我的预约」显示取消状态与原因',
+            reason: '整合复查走查发现遗漏后补齐，沉淀为经验卡 EXP-012',
+            reqRefs: 'REQ-02'
+          }
+        ],
+        openItems: [
+          {
+            id: 'OPEN-SR01',
+            question: '候补、提醒与签到是否进入首版范围？',
+            affectedReq: 'REQ-01',
+            answer: '首版先完成基础预约与停用处置，将候补、提醒与签到列入后续迭代建议。'
+          }
+        ],
+        specMarkdown: `# 自习室座位预约系统 · 综合建设方案\n\n## 1. 整合结论\n保留 A 组核心预约流程，吸收 B 组无座提示，明确管理员停用职责。\n\n## 2. 复查修正记录\n管理员停用座位后禁止新增预约，取消受影响已有预约并在「我的预约」显示原因。`,
+        historyVersions: [
+          { ver: 1, time: '历史归档', note: '完成自习室方案整合与走查复盘，提炼入库 EXP-012 / V1。' }
+        ]
+      }
+    };
+
+    // 1.3 按案例隔离的数字人档案与领域经验卡 (修复切换案例下拉栏时数字人与记忆系统同步切换)
+    const memoryByProject = {
+      lab: {
+        agents: [
+          { id: 'AG-01', name: '校园数字化产品顾问', role: '方案组成员 / 交叉评审员', domain: '校园预约、资源生命周期、通知触达', focus: '资源状态变更对在途业务单据的边界影响', history: '亲历自习室座位预约复查，在本项目中提前提出设备停用检查并引用 EXP-012' },
+          { id: 'AG-02', name: '高校教务与实验室架构师', role: '方案组成员 / 规划与整合 Agent', domain: '设备台账、并发锁、模块接口契约', focus: '状态枚举一致性、接口幂等与共享文件冲突规避', history: '亲历大型仪器共享试点与课程报名原型，提供改期与冲突边界设计' },
+          { id: 'AG-03', name: '质量与合规复查官', role: '评审 Agent / 经验归纳复查者', domain: '需求双向追踪、异常恢复、权限审计', focus: '核查无依据范围膨胀、跨组隐私隔离与证据级别', history: '独立核查本项目 B 组自动取消规则并触发 DEC-01 人工确认门禁' }
+        ],
+        experience: {
+          id: 'EXP-012',
+          version: 'V1',
+          domain: '实验室设备与可预约资源管理',
+          phenomenon: '综合方案允许管理员停用座位/设备，却漏写该资源已有预约时怎样处理',
+          trigger: '操作会让可预约资源转为不可用，并且可能影响已有有效预约',
+          action: '检查是否阻止新预约、如何处理受影响的已有预约、如何告知预约人。用一个已有预约的场景走查',
+          aliases: '停用、暂停开放、下架、设备检修、场地封闭、周五送修',
+          counterExample: '仅修改设备名称，或停用时段与所有已有预约均不重叠',
+          pubStatus: '已发布',
+          evidStatus: '方案走查',
+          defaultQuery: '仪器周五送修，已经约了周五的同学怎么办？'
+        }
+      },
+      studyroom: {
+        agents: [
+          { id: 'AG-01', name: '校园数字化产品顾问', role: '整合复查员 / 经验提炼者', domain: '自习室预约、学生端体验、通知触达', focus: '用「学生已预约周三14点座位、管理员周二停用」场景走查综合草案', history: '在自习室案例复查中首次发现已有预约未处理遗漏，推动生成 EXP-012 / V1' },
+          { id: 'AG-04', name: '场馆空间运营顾问', role: '方案 C 组成员', domain: '签到核销、座位释放、管理员统计报表', focus: '自习室座位状态维护与违约释放规则', history: '提出管理员停用座位功能，复盘后补充停用时存量预约退订规则' }
+        ],
+        experience: {
+          id: 'EXP-012',
+          version: 'V1 · 首次提炼来源',
+          domain: '自习室座位预约系统',
+          phenomenon: '综合方案合并了「学生预约座位」和「管理员停用座位」，但未回答周三14点已约座位被停用后的状态',
+          trigger: '管理员停用座位，且停用时段存在已确认的学生预约',
+          action: '停用后禁止新增预约，取消停用期间受影响的已有预约，在「我的预约」显示取消状态和原因',
+          aliases: '停用座位、自习室封闭、暂停开放、桌面维修',
+          counterExample: '仅修改自习室编号，或停用时段无任何已确认预约',
+          pubStatus: '已发布',
+          evidStatus: '方案走查',
+          defaultQuery: '管理员周二把座位停用了，学生已经约了周三14点的座位处于什么状态？'
+        }
+      }
+    };
+
+    const modelRouterConfig = {
+      lowCostModel: 'deepseek-chat / gpt-4o-mini',
+      highCapModel: 'claude-3-5-sonnet / gpt-4o',
+      budgetLimit: 2.00,
+      budgetUsed: 0.18,
+      maxParallel: 2
+    };
+
+    // 1.4 编排与工作台 DAG 数据集 (保持上一版主体结构，精简括号与人名)
+    const datasets = {
+      lab: {
+        badge: 'DEC-01 · EXP-012',
+        baseDone: 0,
+        baseTotal: 0,
+        phases: [
+          {
+            id: 'P1',
+            title: 'Phase 0 · 需求录入、赛马出案与评审整合',
+            box: { x: 420, y: 20, w: 770, h: 195 },
+            tasks: [
+              {
+                id: 'S0.1',
+                code: '阶段 0.1',
+                name: '需求快照录入',
+                status: 'completed',
+                owner: '需求与赛马模块',
+                worktree: 'wt/intake-snapshot',
+                spec: 'REQ-01 ~ REQ-03',
+                output: 'REQSET-01@v1',
+                estimateMin: 5,
+                critical: true,
+                x: 445,
+                y: 52,
+                deps: []
+              },
+              {
+                id: 'S0.2A',
+                code: '阶段 0.2A',
+                name: 'A 组赛马草案 · 基础稳健流程',
+                status: 'completed',
+                owner: '方案 A 组',
+                worktree: 'wt/race-group-a',
+                spec: 'REQSET-01@v1 · 组间隔离',
+                output: 'DRAFT-A@v1',
+                estimateMin: 5,
+                critical: false,
+                x: 690,
+                y: 42,
+                deps: ['S0.1']
+              },
+              {
+                id: 'S0.2B',
+                code: '阶段 0.2B',
+                name: 'B 组赛马草案 · 自动退订处置',
+                status: 'completed',
+                owner: '方案 B 组',
+                worktree: 'wt/race-group-b',
+                spec: 'REQSET-01@v1 · EXP-012',
+                output: 'DRAFT-B@v1',
+                estimateMin: 5,
+                critical: true,
+                x: 690,
+                y: 128,
+                deps: ['S0.1']
+              },
+              {
+                id: 'S0.3',
+                code: '阶段 0.3',
+                name: '交叉盲评与 DEC-01 人工确认',
+                status: 'completed',
+                owner: '评审与整合模块',
+                worktree: 'wt/review-synthesis',
+                spec: 'DEC-01 · EXP-012/V1',
+                output: '综合方案 SPEC-01@v2',
+                estimateMin: 5,
+                critical: true,
+                x: 965,
+                y: 85,
+                deps: ['S0.2A', 'S0.2B']
+              }
+            ]
+          },
+          {
+            id: 'P2',
+            title: 'Phase 1 · 任务分解与基础状态准备',
+            box: { x: 420, y: 235, w: 770, h: 130 },
+            tasks: [
+              {
+                id: 'T1.0',
+                code: 'Task 1.0',
+                name: '按交付物拆分任务与查环',
+                status: 'completed',
+                owner: '任务分解模块',
+                worktree: 'wt/task-planner',
+                spec: 'SPEC-01@v2 · WBS',
+                output: 'workflow.json & task.md',
+                estimateMin: 5,
+                critical: true,
+                x: 445,
+                y: 272,
+                deps: ['S0.3']
+              },
+              {
+                id: 'T1.1',
+                code: 'Task 1.1',
+                name: '定义设备与预约状态约定',
+                status: 'completed',
+                owner: '规划 Agent',
+                worktree: 'wt/t1-1-states',
+                spec: '规格 §2.1',
+                output: '状态约定 v1',
+                estimateMin: 5,
+                critical: true,
+                x: 760,
+                y: 272,
+                deps: ['T1.0']
+              }
+            ]
+          },
+          {
+            id: 'P3',
+            title: 'Phase 2 & Phase 3 · 功能并行开发、交付审阅与集成工作台',
+            box: { x: 35, y: 395, w: 1155, h: 350 },
+            tasks: [
+              {
+                id: 'T2.1',
+                code: 'Task 2.1',
+                name: '开发设备查询',
+                status: 'in_progress',
+                owner: '后端 Agent A',
+                worktree: 'wt/t2-1-devices',
+                spec: 'REQ-01 · 停用保留并展示状态',
+                output: '查询模块 · 待审阅放行 v2',
+                originalContent: 'GET /devices 返回设备列表。默认展示所有设备。',
+                revisedContent: 'GET /devices 返回设备列表。停用设备保留在列表中，显示「停用」状态，隐藏新预约入口。',
+                reviewNote: '补充停用设备的状态展示和预约入口规则。',
+                estimateMin: 5,
+                critical: false,
+                x: 65,
+                y: 445,
+                deps: ['T1.1']
+              },
+              {
+                id: 'T2.2',
+                code: 'Task 2.2',
+                name: '开发预约与取消服务',
+                status: 'failed',
+                owner: '后端 Agent B',
+                worktree: 'wt/t2-2-reservation',
+                spec: 'REQ-02 · 关键路径任务',
+                output: '预约服务提交 · 尝试1失败',
+                estimateMin: 10,
+                critical: true,
+                x: 365,
+                y: 445,
+                deps: ['T1.1']
+              },
+              {
+                id: 'T2.3',
+                code: 'Task 2.3',
+                name: '实现停用后的预约处置',
+                status: 'pending',
+                owner: '后端 Agent B',
+                worktree: 'wt/t2-3-deactivation',
+                spec: 'REQ-03 · DEC-01 · EXP-012',
+                output: '停用处置提交 · 等待 T2.2',
+                estimateMin: 5,
+                critical: true,
+                x: 665,
+                y: 445,
+                deps: ['T2.2']
+              },
+              {
+                id: 'M0.12',
+                code: 'EXP-012',
+                name: '经验卡走查：停用影响已有预约',
+                status: 'completed',
+                owner: '质量复查 Agent',
+                worktree: 'memory/experiences/EXP-012',
+                spec: '触发词：停用/送修/下架',
+                output: '验证通过条件：取消并告知原因',
+                estimateMin: 5,
+                critical: false,
+                x: 365,
+                y: 615,
+                deps: ['T2.1']
+              },
+              {
+                id: 'T3.1',
+                code: 'Task 3.1',
+                name: '接入工作台并交付代码',
+                status: 'pending',
+                owner: '集成 Agent',
+                worktree: 'wt/t3-1-workbench',
+                spec: '规格 §4 · 合并并行分支路由',
+                output: '集成提交 · T2.1@v2 + T2.3@v1',
+                estimateMin: 5,
+                critical: true,
+                x: 960,
+                y: 535,
+                deps: ['T2.1', 'T2.3', 'M0.12']
+              }
+            ]
+          }
+        ]
+      },
+      studyroom: {
+        badge: 'CASE-01 · 已归档',
+        baseDone: 0,
+        baseTotal: 0,
+        phases: [
+          {
+            id: 'P1',
+            title: 'Phase 1 · 自习室预约赛马出案',
+            box: { x: 80, y: 40, w: 980, h: 160 },
+            tasks: [
+              { id: 'C1.1', code: '草案 A', name: '查询、预约、取消基础流程', status: 'completed', owner: '方案 A 组', worktree: 'case/studyroom-a', spec: '自习室简述 v1', output: '首版范围清晰，缺候补处理', estimateMin: 5, critical: true, x: 110, y: 85, deps: [] },
+              { id: 'C1.2', code: '草案 B', name: '增加无座候补与到座提醒', status: 'completed', owner: '方案 B 组', worktree: 'case/studyroom-b', spec: '自习室简述 v1', output: '无座场景充分，后续迭代建议', estimateMin: 5, critical: false, x: 440, y: 85, deps: [] },
+              { id: 'C1.3', code: '草案 C', name: '强调签到与管理员停用统计', status: 'completed', owner: '方案 C 组', worktree: 'case/studyroom-c', spec: '自习室简述 v1', output: '管理视角完整，明确管理员职责', estimateMin: 5, critical: true, x: 770, y: 85, deps: [] }
+            ]
+          },
+          {
+            id: 'P2',
+            title: 'Phase 2 · 整合复查踩坑与 EXP-012 经验卡提炼',
+            box: { x: 180, y: 260, w: 880, h: 180 },
+            tasks: [
+              { id: 'C2.1', code: '整合复查', name: '走查发现：停用周三14点已约座位漏处理', status: 'completed', owner: '校园数字化产品顾问', worktree: 'case/review-walkthrough', spec: '方案走查验证层级', output: '补充取消已有预约并显示原因', estimateMin: 10, critical: true, x: 230, y: 315, deps: ['C1.1', 'C1.3'] },
+              { id: 'C2.2', code: '经验入库', name: '发布经验卡 EXP-012 / V1', status: 'completed', owner: '复盘归纳 Agent', worktree: 'sqlite/experiences', spec: '状态：已发布 · 证据：方案走查', output: '供后续实验室设备预约项目复用', estimateMin: 5, critical: true, x: 680, y: 315, deps: ['C2.1'] }
+            ]
+          }
+        ]
+      }
+    };
+
+    let memSimQuery = memoryByProject.lab.experience.defaultQuery;
+
+    const activityLogs = [
+      { time: 'Stage 1', seq: 'seq#1', actor: '需求录入模块', text: '导入《实验室设备预约》需求原文，生成需求快照 REQ-01@v1。' },
+      { time: 'Stage 2', seq: 'seq#2', actor: '记忆服务', text: '检测到「管理员停用设备 + 有效预约」，命中标准标签与别名，自动召回经验卡 EXP-012 / V1。' },
+      { time: 'Stage 3', seq: 'seq#3', actor: '评审与整合模块', text: '复查指出 B 组草案新增「自动取消预约」无原文依据；经人工确认 DEC-01 后定稿 SPEC-01@v2。' },
+      { time: 'Stage 4', seq: 'seq#4', actor: '任务分解模块', text: '按交付物拆分 T1.1 ~ T3.1 任务卡，导出 workflow.json 与 task.md，通过无环校验。' },
+      { time: 'Stage 6', seq: 'seq#5', actor: '编排器与执行器', text: 'T1.1 交付状态约定 v1；T2.1 提交查询模块进入「待人工审核」；T2.2 预约服务模拟失败，下游 T2.3、T3.1 受阻。' }
+    ];
+
+    const q = (s) => document.querySelector(s);
+    const el = (tag, text, cls) => {
+      const n = document.createElement(tag);
+      if (text !== undefined && text !== null) n.textContent = text;
+      if (cls) n.className = cls;
+      return n;
+    };
+
+    function toast(msg) {
+      const box = q('#toast-banner');
+      q('#toast-msg').textContent = msg;
+      box.classList.remove('hidden');
+      clearTimeout(window.__seToast);
+      window.__seToast = setTimeout(() => box.classList.add('hidden'), 2600);
+    }
+
+    function getActiveData() { return datasets[currentProjectKey]; }
+    function getIntakeState() { return intakeByProject[currentProjectKey]; }
+    function getSynthesisState() { return synthesisByProject[currentProjectKey]; }
+    function getMemoryState() { return memoryByProject[currentProjectKey]; }
+
+    function getAllTasks() {
+      const data = getActiveData();
+      return data.phases.flatMap((p) => p.tasks.map((t) => ({ ...t, phaseId: p.id, phaseTitle: p.title })));
+    }
+    function findTask(id) {
+      const data = getActiveData();
+      for (const p of data.phases) {
+        for (const t of p.tasks) {
+          if (t.id === id) return t;
+        }
+      }
+      return data.phases[0].tasks[0];
+    }
+
+    function statusMeta(status) {
+      switch (status) {
+        case 'completed':
+          return { label: '已完成', dot: 'bg-emerald-500', icon: '✓', iconCls: 'text-emerald-600 bg-emerald-50 border-emerald-200', badgeCls: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
+        case 'in_progress':
+          return { label: '待人工审核', dot: 'bg-amber-500', icon: '◔', iconCls: 'text-amber-600 bg-amber-50 border-amber-200', badgeCls: 'bg-amber-50 text-amber-700 border-amber-200' };
+        case 'failed':
+          return { label: '执行失败', dot: 'bg-red-500', icon: '!', iconCls: 'text-red-600 bg-red-50 border-red-200', badgeCls: 'bg-red-50 text-red-700 border-red-200' };
+        default:
+          return { label: '等待前置 / 受阻', dot: 'bg-slate-400', icon: '○', iconCls: 'text-slate-400 bg-slate-100 border-slate-200', badgeCls: 'bg-slate-100 text-slate-600 border-slate-200' };
+      }
+    }
+
+    // =========================================================================
+    // 2. 新增右侧常驻主理侧边栏渲染器 (STAGE STEWARD)
+    // =========================================================================
+    function renderRightStewardSidebar() {
+      const body = q('#steward-sidebar-body');
+      body.replaceChildren();
+
+      const caseName = currentProjectKey === 'lab' ? '实验室设备预约' : '自习室座位预约';
+      q('#steward-case-label').textContent = caseName;
+      q('#steward-parallel-label').textContent = `max_parallel = ${modelRouterConfig.maxParallel}`;
+
+      const head = el('div', undefined, 'flex items-center justify-between');
+      head.innerHTML = `
+        <span class="text-[10px] font-bold uppercase tracking-wider text-indigo-600">STAGE STEWARD · 主理控制</span>
+        <span class="mono text-[10px] px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 font-semibold">${ getActiveData().badge }</span>
+      `;
+      body.append(head);
+
+      if (activeModule === 'intake-race') {
+        const intakeState = getIntakeState();
+        body.append(
+          el('h3', '赛马出案主理 AI', 'text-sm font-bold text-slate-900'),
+          el('p', '监控需求条目覆盖率与各组提示词差异，支持暂停赛马派发或向指定小组追加补充指令。', 'text-slate-600 leading-relaxed')
+        );
+
+        const checkBox = el('div', undefined, 'p-3 rounded-xl bg-white border border-slate-200 space-y-1.5');
+        checkBox.innerHTML = `
+          <div class="font-semibold text-slate-800">赛马前检查</div>
+          <div class="text-[11px] text-emerald-700">✓ 已提取需求：${intakeState.items.length} 条</div>
+          <div class="text-[11px] text-emerald-700">✓ 当前讨论组：${intakeState.groups.map((g) => g.id).join(' / ')} 组</div>
+        `;
+        body.append(checkBox);
+
+        const pauseBtn = el(
+          'button',
+          intakeState.dispatchPaused ? '▶ 恢复赛马派发' : '⏸ 暂停赛马派发',
+          `w-full py-2 px-3 rounded-lg font-semibold border transition ${intakeState.dispatchPaused ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'}`
+        );
+        pauseBtn.type = 'button';
+        pauseBtn.addEventListener('click', () => {
+          intakeState.dispatchPaused = !intakeState.dispatchPaused;
+          toast(intakeState.dispatchPaused ? '已暂停赛马派发' : '已恢复赛马派发');
+          renderAll();
+        });
+        body.append(pauseBtn);
+
+        const instCard = el('div', undefined, 'p-3 rounded-xl bg-white border border-slate-200 space-y-2');
+        instCard.append(el('strong', '向小组追加主理指令', 'block text-slate-800'));
+        const gSel = el('select', undefined, 'w-full border border-slate-300 rounded px-2 py-1 bg-white');
+        for (const g of intakeState.groups) {
+          const opt = el('option', `${g.id} 组`);
+          opt.value = g.id;
+          gSel.append(opt);
+        }
+        const noteTa = el('textarea', undefined, 'w-full h-16 border border-slate-300 rounded p-2 text-xs');
+        noteTa.placeholder = '输入负责人补充指令...';
+        const sendInstBtn = el('button', '追加指令并重跑该组', 'w-full py-1.5 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold');
+        sendInstBtn.type = 'button';
+        sendInstBtn.addEventListener('click', () => {
+          const txt = noteTa.value.trim();
+          if (!txt) { toast('请先输入补充指令'); return; }
+          const target = intakeState.groups.find((x) => x.id === gSel.value);
+          if (target) {
+            target.prompt += `\n负责人补充指令：${txt}`;
+            target.summary = `已纳入补充指令「${txt}」并重新生成草案。`;
+            target.status = 'done';
+            toast(`已向 ${target.id} 组追加指令并更新草案`);
+            renderAll();
+          }
+        });
+        instCard.append(gSel, noteTa, sendInstBtn);
+        body.append(instCard);
+
+      } else if (activeModule === 'review-synthesis') {
+        const syn = getSynthesisState();
+        body.append(
+          el('h3', '评审与整合主理 AI', 'text-sm font-bold text-slate-900'),
+          el('p', '核查草案主张与需求原文对应关系，管理待确认项人工答复与退回返工。', 'text-slate-600 leading-relaxed')
+        );
+
+        const routeCard = el('div', undefined, 'p-3 rounded-xl bg-white border border-slate-200 space-y-2');
+        routeCard.append(el('strong', '选择方案整合起点', 'block text-slate-800'));
+        const rSel = el('select', undefined, 'w-full border border-slate-300 rounded px-2 py-1.5 bg-white');
+        for (const [k, lbl] of [
+          ['merge', '融合两组方案'],
+          ['A', '以 A 组草案为起点'],
+          ['B', '以 B 组草案为起点']
+        ]) {
+          const opt = el('option', lbl);
+          opt.value = k;
+          rSel.append(opt);
+        }
+        rSel.value = syn.baseRoute;
+        rSel.onchange = () => { syn.baseRoute = rSel.value; };
+        const genBtn = el('button', '重新生成一版草稿', 'w-full py-1.5 px-3 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold');
+        genBtn.type = 'button';
+        genBtn.addEventListener('click', () => {
+          syn.currentVersion += 1;
+          toast(`已按 ${syn.baseRoute} 起点生成 v${syn.currentVersion} 草稿`);
+          renderAll();
+        });
+        routeCard.append(rSel, genBtn);
+        body.append(routeCard);
+
+        const reworkCard = el('div', undefined, 'p-3 rounded-xl bg-white border border-slate-200 space-y-2');
+        reworkCard.append(el('strong', '退回赛马小组补充', 'block text-slate-800'));
+        const rwInp = el('input', undefined, 'w-full border border-slate-300 rounded px-2 py-1.5');
+        rwInp.placeholder = '输入退回返工说明...';
+        const rwBtn = el('button', '退回赛马模块重新出案', 'w-full py-1.5 px-3 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-semibold');
+        rwBtn.type = 'button';
+        rwBtn.addEventListener('click', () => {
+          const note = rwInp.value.trim() || '补充停用期间已有预约通知规则';
+          const g = getIntakeState().groups[1] || getIntakeState().groups[0];
+          g.prompt += `\n评审退回补充：${note}`;
+          toast(`已退回 ${g.id} 组补充`);
+          switchModule('intake-race', '需求快照与赛马出案');
+        });
+        reworkCard.append(rwInp, rwBtn);
+        body.append(reworkCard);
+
+      } else {
+        const sel = findTask(selectedTaskId);
+        const meta = statusMeta(sel.status);
+        body.append(
+          el('h3', '工作台编排主理 AI', 'text-sm font-bold text-slate-900'),
+          el('p', '对照任务范围与规格依据核对完成报告，管理交付审阅放行与异常重试。', 'text-slate-600 leading-relaxed')
+        );
+
+        const selBox = el('div', undefined, 'p-3 rounded-xl bg-white border border-slate-200 space-y-1.5');
+        selBox.innerHTML = `
+          <div class="flex items-center justify-between">
+            <span class="mono font-bold text-indigo-600">${sel.id}</span>
+            <span class="px-2 py-0.5 rounded border text-[10px] font-semibold ${meta.badgeCls}">${meta.label}</span>
+          </div>
+          <div class="font-bold text-slate-800">${sel.name}</div>
+          <div class="text-[11px] text-slate-500">执行角色：${sel.owner}</div>
+          <div class="text-[11px] text-slate-500">规格来源：<span class="mono">${sel.spec}</span></div>
+          <div class="text-[11px] text-slate-500">当前交付：<span class="mono">${sel.output}</span></div>
+        `;
+        body.append(selBox);
+
+        const all = getAllTasks();
+        const pendingReviewTask = all.find((t) => t.status === 'in_progress');
+        const failedTask = all.find((t) => t.status === 'failed');
+
+        if (pendingReviewTask) {
+          const btnRev = el('button', `🔍 审阅并放行 ${pendingReviewTask.id}`, 'w-full py-2 px-3 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-semibold transition');
+          btnRev.type = 'button';
+          btnRev.addEventListener('click', () => {
+            selectedTaskId = pendingReviewTask.id;
+            activeModule = 'workbench';
+            currentTab = 'details';
+            renderAll();
+          });
+          body.append(btnRev);
+        }
+
+        if (failedTask) {
+          const btnRetry = el('button', `🔄 重试失败任务 ${failedTask.id}`, 'w-full py-2 px-3 rounded-lg bg-red-600 hover:bg-red-500 text-white font-semibold transition');
+          btnRetry.type = 'button';
+          btnRetry.addEventListener('click', () => {
+            const real = findTask(failedTask.id);
+            real.status = 'completed';
+            real.output = '预约服务提交 v1';
+            const t23 = findTask('T2.3');
+            if (t23 && t23.status === 'pending') {
+              t23.status = 'in_progress';
+              t23.output = '读取 T2.2@v1 执行停用处置中';
+            }
+            toast(`${real.id} 重试成功，下游已解除受阻`);
+            renderAll();
+          });
+          body.append(btnRetry);
+        }
+
+        const expMemCard = el('div', undefined, 'p-3 rounded-xl bg-amber-50/80 border border-amber-200 space-y-1');
+        const exp = getMemoryState().experience;
+        expMemCard.innerHTML = `
+          <div class="font-bold text-amber-900">关联经验卡：${exp.id}</div>
+          <p class="text-[11px] text-amber-800 leading-relaxed">${exp.phenomenon}</p>
+        `;
+        body.append(expMemCard);
+      }
+    }
+
+    // =========================================================================
+    // 3. 独立模块界面渲染器 (保留原版主体结构，精简括号与人名，评分改为只读展示)
+    // =========================================================================
+
+    // 模块 1：需求快照与赛马出案
+    function renderModuleIntakeRace(container) {
+      const intakeState = getIntakeState();
+      const wrap = el('div', undefined, 'max-w-5xl mx-auto space-y-5 text-xs');
+
+      const sec1 = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-3');
+      sec1.innerHTML = `
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+          <div>
+            <span class="text-[11px] font-bold uppercase tracking-wider text-indigo-600">STAGE 1 · 需求录入与快照版本控制</span>
+            <h2 class="text-base font-bold text-slate-900 mt-0.5">自由输入需求 Markdown · 确认快照或解锁创建新版本</h2>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="mono px-2.5 py-1 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-semibold">快照版本: REQ-01 @ v${intakeState.version}</span>
+            <span class="px-2.5 py-1 rounded font-semibold ${intakeState.locked ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'}">
+              ${intakeState.locked ? '已锁定快照' : '编辑模式'}
+            </span>
+          </div>
+        </div>
+      `;
+
+      const grid1 = el('div', undefined, 'grid grid-cols-1 lg:grid-cols-12 gap-4');
+      const leftCol = el('div', undefined, 'lg:col-span-7 space-y-2.5');
+      const ta = el('textarea', undefined, `w-full h-44 p-3 rounded-lg border mono text-xs leading-relaxed ${intakeState.locked ? 'bg-slate-100 border-slate-200 text-slate-600' : 'bg-white border-slate-300 text-slate-800 focus:border-indigo-600 focus:outline-none'}`);
+      ta.value = intakeState.markdown;
+      ta.readOnly = intakeState.locked;
+      ta.addEventListener('input', () => { intakeState.markdown = ta.value; });
+
+      const btnRow = el('div', undefined, 'flex flex-wrap items-center gap-2');
+      const freezeBtn = el('button', '确认需求快照', 'px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-semibold transition');
+      freezeBtn.type = 'button';
+      freezeBtn.disabled = intakeState.locked;
+      freezeBtn.addEventListener('click', () => {
+        parseMarkdownItems(currentProjectKey);
+        intakeState.locked = true;
+        q('#sidebar-req-ver').textContent = `REQ-01@v${intakeState.version}`;
+        toast(`已确认并锁定需求快照 REQ-01@v${intakeState.version}`);
+        renderAll();
+      });
+
+      const editNewVerBtn = el('button', '编辑并创建新版本', 'px-3.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 disabled:opacity-40 text-slate-700 border border-slate-300 font-semibold transition');
+      editNewVerBtn.type = 'button';
+      editNewVerBtn.disabled = !intakeState.locked;
+      editNewVerBtn.addEventListener('click', () => {
+        intakeState.locked = false;
+        intakeState.version += 1;
+        toast(`已解锁编辑器，下次确认将生成新版本 v${intakeState.version}`);
+        renderAll();
+      });
+
+      btnRow.append(freezeBtn, editNewVerBtn);
+      leftCol.append(ta, btnRow);
+
+      const rightCol = el('div', undefined, 'lg:col-span-5 bg-slate-50 border border-slate-200 rounded-lg p-3.5 space-y-2');
+      rightCol.append(el('strong', `结构化需求快照条目 · 共 ${intakeState.items.length} 项`, 'block text-slate-800'));
+      const itemList = el('div', undefined, 'space-y-1.5 max-h-40 overflow-y-auto');
+      for (const it of intakeState.items) {
+        const row = el('div', undefined, 'p-2 bg-white rounded border border-slate-200/80 flex items-start justify-between gap-2');
+        row.innerHTML = `<div><span class="mono font-bold text-indigo-600 mr-1.5">${it.id}</span><span>${it.text}</span></div><span class="mono text-[10px] text-slate-400 shrink-0">L${it.line}</span>`;
+        itemList.append(row);
+      }
+      rightCol.append(itemList);
+      grid1.append(leftCol, rightCol);
+      sec1.append(grid1);
+      wrap.append(sec1);
+
+      // 阶段2：赛马讨论组与提示词自由配置
+      const sec2 = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-4');
+      const sec2Head = el('div', undefined, 'flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3');
+      sec2Head.innerHTML = `
+        <div>
+          <span class="text-[11px] font-bold uppercase tracking-wider text-indigo-600">STAGE 2 · 赛马出案分组与提示词配置</span>
+          <h2 class="text-base font-bold text-slate-900 mt-0.5">自定义各组系统提示词 · 动态添加或移除讨论组</h2>
+        </div>
+      `;
+      const sec2Btns = el('div', undefined, 'flex flex-wrap items-center gap-2');
+      const addGroupBtn = el('button', '+ 添加讨论组', 'px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-semibold transition');
+      addGroupBtn.type = 'button';
+      addGroupBtn.addEventListener('click', () => {
+        const usedIds = new Set(intakeState.groups.map((g) => g.id));
+        const alphabet = 'CDEFGHIJKLMN';
+        let nextId = 'C';
+        for (const ch of alphabet) {
+          if (!usedIds.has(ch)) { nextId = ch; break; }
+        }
+        intakeState.groups.push({
+          id: nextId,
+          defaultGroup: false,
+          prompt: `${intakeState.extraPromptTemplate}`,
+          status: 'idle',
+          draftTitle: `${nextId} 组方案草案 · 自定义路线`,
+          summary: '',
+          claims: []
+        });
+        toast(`已添加 ${nextId} 讨论组`);
+        renderAll();
+      });
+
+      const runRaceBtn = el('button', '🚀 启动赛马生成草案', 'px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition');
+      runRaceBtn.type = 'button';
+      runRaceBtn.addEventListener('click', () => {
+        if (intakeState.dispatchPaused) {
+          toast('当前已暂停派发，请先在右侧主理栏恢复派发');
+          return;
+        }
+        for (const g of intakeState.groups) {
+          if (!g.prompt.trim()) {
+            toast(`错误：${g.id} 组提示词不能为空！`);
+            return;
+          }
+        }
+        intakeState.groups.forEach((g) => {
+          if (g.id === 'B' && intakeState.simulateBFailure) {
+            g.status = 'failed';
+            g.summary = '模拟 B 组首次调用模型中断，可点击下方「重试」恢复。';
+          } else {
+            g.status = 'done';
+            g.draftTitle = `${g.id} 组方案草案 · REQ-01@v${intakeState.version}`;
+            g.summary = `已按提示词「${g.prompt.slice(0, 48)}...」生成独立草案，关联 ${intakeState.items.map((x) => x.id).join(', ')}。`;
+            g.claims = [
+              { id: `CLM-${g.id}1`, req: intakeState.items[0]?.id || 'REQ-01', text: `${g.id} 组核心流程设计与状态约束实现。` }
+            ];
+          }
+        });
+        toast('赛马出案执行完毕');
+        renderAll();
+      });
+
+      sec2Btns.append(addGroupBtn, runRaceBtn);
+      sec2Head.append(sec2Btns);
+      sec2.append(sec2Head);
+
+      const failToggle = el('label', undefined, 'flex items-center gap-2 text-slate-600 cursor-pointer');
+      const failChk = el('input');
+      failChk.type = 'checkbox';
+      failChk.checked = intakeState.simulateBFailure;
+      failChk.addEventListener('change', () => { intakeState.simulateBFailure = failChk.checked; });
+      failToggle.append(failChk, el('span', '模拟 B 组首次中断'));
+      sec2.append(failToggle);
+
+      const groupList = el('div', undefined, 'grid grid-cols-1 md:grid-cols-2 gap-3.5');
+      for (const g of intakeState.groups) {
+        const gCard = el('div', undefined, 'p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2');
+        const gTop = el('div', undefined, 'flex items-center justify-between');
+        gTop.append(
+          el('strong', `${g.id} 组赛马提示词`, 'text-slate-800'),
+          g.defaultGroup
+            ? el('span', '默认分组', 'text-[10px] px-2 py-0.5 rounded bg-slate-200 text-slate-600')
+            : (() => {
+                const rmBtn = el('button', `移除 ${g.id} 组`, 'text-[11px] text-red-600 hover:underline font-semibold');
+                rmBtn.type = 'button';
+                rmBtn.addEventListener('click', () => {
+                  intakeState.groups = intakeState.groups.filter((x) => x.id !== g.id);
+                  toast(`已移除 ${g.id} 组`);
+                  renderAll();
+                });
+                return rmBtn;
+              })()
+        );
+        const pInput = el('textarea', undefined, 'w-full h-20 p-2 rounded border border-slate-300 bg-white text-xs leading-relaxed');
+        pInput.value = g.prompt;
+        pInput.addEventListener('input', () => { g.prompt = pInput.value; });
+        gCard.append(gTop, pInput);
+        groupList.append(gCard);
+      }
+      sec2.append(groupList);
+      wrap.append(sec2);
+
+      // 阶段3：草案对比与交接
+      const sec3 = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-3');
+      const sec3Head = el('div', undefined, 'flex items-center justify-between');
+      sec3Head.append(
+        el('strong', 'STAGE 3 · 赛马草案对比与评审交接', 'text-sm text-slate-900'),
+        (() => {
+          const goReviewBtn = el('button', '交接至「评审与方案整合」 →', 'px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition');
+          goReviewBtn.type = 'button';
+          goReviewBtn.addEventListener('click', () => {
+            switchModule('review-synthesis', '评审与方案整合');
+          });
+          return goReviewBtn;
+        })()
+      );
+      sec3.append(sec3Head);
+
+      const draftsGrid = el('div', undefined, 'grid grid-cols-1 md:grid-cols-2 gap-3.5');
+      for (const g of intakeState.groups) {
+        const dCard = el('div', undefined, `p-4 rounded-xl border space-y-2 ${g.status === 'failed' ? 'bg-red-50/70 border-red-300' : 'bg-slate-50/70 border-slate-200'}`);
+        dCard.innerHTML = `
+          <div class="flex items-center justify-between">
+            <strong class="text-slate-900">${g.draftTitle}</strong>
+            <span class="px-2 py-0.5 rounded text-[10px] font-semibold ${g.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}">
+              ${g.status === 'failed' ? '执行中断' : `已生成 · REQ-01@v${intakeState.version}`}
+            </span>
+          </div>
+          <p class="text-slate-600 leading-relaxed">${g.summary || '点击上方「启动赛马」生成本组草案。'}</p>
+        `;
+        if (g.status === 'failed') {
+          const retryBtn = el('button', `重试 ${g.id} 组出案`, 'px-3 py-1 rounded bg-red-600 text-white font-semibold text-xs');
+          retryBtn.type = 'button';
+          retryBtn.addEventListener('click', () => {
+            g.status = 'done';
+            g.summary = `重试成功：已按 ${g.id} 组提示词完成草案生成，补充停用设备自动取消预约与通知规则。`;
+            toast(`${g.id} 组重试成功`);
+            renderAll();
+          });
+          dCard.append(retryBtn);
+        }
+        draftsGrid.append(dCard);
+      }
+      sec3.append(draftsGrid);
+      wrap.append(sec3);
+
+      container.append(wrap);
+    }
+
+    // 模块 2：评审与方案整合 (移除人为评分输入框，改为只读展示评分与理由)
+    function renderModuleReviewSynthesis(container) {
+      const synthesisState = getSynthesisState();
+      const intakeState = getIntakeState();
+      const wrap = el('div', undefined, 'max-w-5xl mx-auto space-y-5 text-xs');
+
+      const topCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-4 shadow-2xs flex flex-wrap items-center justify-between gap-3');
+      const stepTabs = el('div', undefined, 'flex flex-wrap gap-1.5');
+      for (const [k, lbl] of [
+        ['handoff', '01 交接材料导入'],
+        ['eval', '02 独立评价结果'],
+        ['spec', '03 综合方案与决策编辑'],
+        ['history', '04 历史版本记录']
+      ]) {
+        const b = el('button', lbl, `px-3 py-1.5 rounded-lg font-semibold transition ${synthesisState.subStep === k ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`);
+        b.type = 'button';
+        b.addEventListener('click', () => {
+          synthesisState.subStep = k;
+          renderAll();
+        });
+        stepTabs.append(b);
+      }
+
+      const presetBtns = el('div', undefined, 'flex items-center gap-2');
+      const loadConflictBtn = el('button', '加载已有预约取舍演示', 'px-2.5 py-1.5 rounded border border-slate-300 hover:bg-slate-100 text-slate-700 font-medium');
+      loadConflictBtn.type = 'button';
+      loadConflictBtn.addEventListener('click', () => {
+        synthesisState.openItems[0].answer = '';
+        synthesisState.confirmed = false;
+        toast('已加载取舍演示数据，待决项等待人工答复');
+        renderAll();
+      });
+      presetBtns.append(loadConflictBtn);
+      topCard.append(stepTabs, presetBtns);
+      wrap.append(topCard);
+
+      if (synthesisState.subStep === 'handoff') {
+        const handoffBox = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-3');
+        handoffBox.innerHTML = `
+          <strong class="text-sm text-slate-900 block">上游赛马交接数据包校验 · REQ-01@v${intakeState.version}</strong>
+          <p class="text-slate-600">已同步需求快照（${intakeState.items.length} 条需求）与 ${intakeState.groups.length} 份赛马草案，结构与版本引用校验通过。</p>
+        `;
+        const pre = el('pre', JSON.stringify({ requirement: { id: 'REQ-01', version: intakeState.version, items: intakeState.items }, drafts: intakeState.groups.map((g) => ({ id: g.id, title: g.draftTitle, claims: g.claims })) }, null, 2), 'p-4 rounded-xl bg-slate-900 text-emerald-300 mono text-xs overflow-x-auto max-h-80');
+        handoffBox.append(pre);
+        wrap.append(handoffBox);
+
+      } else if (synthesisState.subStep === 'eval') {
+        // 独立评价结果：只读展示分数与理由，不提供人为修改输入框
+        const evalBox = el('div', undefined, 'grid grid-cols-1 md:grid-cols-2 gap-4');
+        for (const gId of ['A', 'B']) {
+          const ev = synthesisState.evaluations[gId];
+          const card = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-3.5 shadow-2xs');
+          card.innerHTML = `
+            <div class="flex items-center justify-between border-b border-slate-100 pb-2.5">
+              <strong class="text-sm text-slate-900">草案 ${gId} 独立评价</strong>
+              <span class="mono text-[11px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded font-semibold">评审 Agent 评分</span>
+            </div>
+            <div class="grid grid-cols-3 gap-2.5 text-center">
+              <div class="p-3 rounded-lg bg-slate-50 border border-slate-200/80">
+                <div class="text-[11px] text-slate-500">用户价值</div>
+                <div class="text-base font-bold text-indigo-600 mono mt-0.5">${ev.value} / 5</div>
+              </div>
+              <div class="p-3 rounded-lg bg-slate-50 border border-slate-200/80">
+                <div class="text-[11px] text-slate-500">技术可行性</div>
+                <div class="text-base font-bold text-emerald-600 mono mt-0.5">${ev.feasibility} / 5</div>
+              </div>
+              <div class="p-3 rounded-lg bg-slate-50 border border-slate-200/80">
+                <div class="text-[11px] text-slate-500">成本友好度</div>
+                <div class="text-base font-bold text-blue-600 mono mt-0.5">${ev.cost} / 5</div>
+              </div>
+            </div>
+            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200/80 space-y-1">
+              <div class="text-[11px] font-semibold text-slate-700">评分理由与关联主张 · ${ev.claims}</div>
+              <p class="text-slate-600 leading-relaxed">${ev.reason}</p>
+            </div>
+          `;
+          evalBox.append(card);
+        }
+        wrap.append(evalBox);
+
+      } else if (synthesisState.subStep === 'spec') {
+        const specWrap = el('div', undefined, 'space-y-4');
+
+        // Open items editor
+        const openCard = el('div', undefined, 'bg-amber-50/70 border border-amber-200 rounded-xl p-5 space-y-3');
+        openCard.append(el('strong', '1. 待决问题处理 · 人工填写答复并写入决策', 'text-sm text-amber-950 block'));
+        for (const item of synthesisState.openItems) {
+          const row = el('div', undefined, 'bg-white p-3.5 rounded-lg border border-amber-200 space-y-2');
+          row.innerHTML = `<div class="font-semibold text-slate-800">${item.id} · ${item.affectedReq}：${item.question}</div>`;
+          const ansInput = el('input', undefined, 'w-full border border-slate-300 rounded-lg px-3 py-1.5 text-xs');
+          ansInput.value = item.answer;
+          ansInput.placeholder = '在此输入人工答复，例如：取消受停用影响的已有预约并告知原因...';
+          ansInput.addEventListener('input', () => { item.answer = ansInput.value; });
+          const applyAnsBtn = el('button', '将答复写入决策并同步更新方案正文', 'px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold transition');
+          applyAnsBtn.type = 'button';
+          applyAnsBtn.addEventListener('click', () => {
+            if (!item.answer.trim()) { toast('请先输入人工答复内容'); return; }
+            synthesisState.decisions[0].choice = item.answer.trim();
+            synthesisState.specMarkdown = `# 综合开发方案 · SPEC-01 v${synthesisState.currentVersion}\n\n## 1. 范围与选定路线\n基于 REQ-01@v${intakeState.version}，融合路线：${synthesisState.baseRoute}。\n\n## 2. 核心业务规则与人工决定\n- **${synthesisState.decisions[0].id} · ${synthesisState.decisions[0].scope}**：${item.answer.trim()}\n- **关联经验卡**：EXP-012 / V1。`;
+            toast('已将人工答复写入决策并同步更新下方正文');
+            renderAll();
+          });
+          row.append(ansInput, applyAnsBtn);
+          openCard.append(row);
+        }
+        specWrap.append(openCard);
+
+        // Decisions list
+        const decCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-3');
+        const decHead = el('div', undefined, 'flex items-center justify-between');
+        decHead.append(
+          el('strong', '2. 方案取舍与决策表', 'text-sm text-slate-900'),
+          (() => {
+            const addDecBtn = el('button', '+ 新增决策条目', 'px-2.5 py-1 rounded bg-indigo-50 text-indigo-700 font-semibold');
+            addDecBtn.type = 'button';
+            addDecBtn.addEventListener('click', () => {
+              const nextNum = synthesisState.decisions.length + 1;
+              synthesisState.decisions.push({
+                id: `DEC-0${nextNum}`,
+                scope: '新功能取舍范围',
+                choice: '列入后续迭代版本',
+                reason: '首版聚焦核心预约与停用闭环',
+                reqRefs: 'REQ-02'
+              });
+              renderAll();
+            });
+            return addDecBtn;
+          })()
+        );
+        decCard.append(decHead);
+        for (const dec of synthesisState.decisions) {
+          const dRow = el('div', undefined, 'grid grid-cols-1 md:grid-cols-12 gap-2 p-3 rounded-lg bg-slate-50 border border-slate-200 items-center');
+          const idSpan = el('span', dec.id, 'md:col-span-1 mono font-bold text-indigo-600');
+          const scopeInp = el('input', undefined, 'md:col-span-3 border border-slate-300 rounded px-2 py-1 bg-white');
+          scopeInp.value = dec.scope;
+          scopeInp.oninput = () => { dec.scope = scopeInp.value; };
+          const choiceInp = el('input', undefined, 'md:col-span-5 border border-slate-300 rounded px-2 py-1 bg-white');
+          choiceInp.value = dec.choice;
+          choiceInp.oninput = () => { dec.choice = choiceInp.value; };
+          const reasonInp = el('input', undefined, 'md:col-span-3 border border-slate-300 rounded px-2 py-1 bg-white');
+          reasonInp.value = dec.reason;
+          reasonInp.oninput = () => { dec.reason = reasonInp.value; };
+          dRow.append(idSpan, scopeInp, choiceInp, reasonInp);
+          decCard.append(dRow);
+        }
+        specWrap.append(decCard);
+
+        // Spec Markdown Editor
+        const mdCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-3');
+        mdCard.innerHTML = `<div class="flex items-center justify-between"><strong class="text-sm text-slate-900">3. 综合方案正文编辑器 · 当前版本 v${synthesisState.currentVersion}</strong><span class="mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded">${synthesisState.confirmed ? '已确认定稿' : '草稿待确认'}</span></div>`;
+        const mdTa = el('textarea', undefined, 'w-full h-44 p-3 rounded-lg border border-slate-300 mono text-xs leading-relaxed');
+        mdTa.value = synthesisState.specMarkdown;
+        mdTa.addEventListener('input', () => { synthesisState.specMarkdown = mdTa.value; });
+
+        const saveBar = el('div', undefined, 'flex flex-wrap items-center gap-2');
+        const saveNewVerBtn = el('button', '保存人工编辑为新版本', 'px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition');
+        saveNewVerBtn.type = 'button';
+        saveNewVerBtn.addEventListener('click', () => {
+          synthesisState.currentVersion += 1;
+          synthesisState.historyVersions.unshift({
+            ver: synthesisState.currentVersion,
+            time: new Date().toTimeString().slice(0, 8),
+            note: '人工编辑综合方案正文与决策表并保存新版本'
+          });
+          toast(`已保存为 SPEC-01 @ v${synthesisState.currentVersion}`);
+          renderAll();
+        });
+
+        const confirmSpecBtn = el('button', '确认当前方案并交接任务分解 →', 'px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition');
+        confirmSpecBtn.type = 'button';
+        confirmSpecBtn.addEventListener('click', () => {
+          synthesisState.confirmed = true;
+          toast(`已确认综合方案 SPEC-01@v${synthesisState.currentVersion}`);
+          switchModule('task-planner', '任务分解与配置');
+        });
+
+        saveBar.append(saveNewVerBtn, confirmSpecBtn);
+        mdCard.append(mdTa, saveBar);
+        specWrap.append(mdCard);
+
+        wrap.append(specWrap);
+      } else {
+        const histCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-3');
+        histCard.append(el('strong', '方案历史版本记录', 'text-sm text-slate-900 block'));
+        for (const h of synthesisState.historyVersions) {
+          const item = el('div', undefined, 'p-3.5 rounded-lg bg-slate-50 border border-slate-200 space-y-1');
+          item.innerHTML = `<div class="flex items-center justify-between"><strong class="mono text-indigo-600">SPEC-01 @ v${h.ver}</strong><span class="mono text-slate-400">${h.time}</span></div><p class="text-slate-700">${h.note}</p>`;
+          histCard.append(item);
+        }
+        wrap.append(histCard);
+      }
+
+      container.append(wrap);
+    }
+
+    // 模块 3：任务分解与配置
+    function renderModuleTaskPlanner(container) {
+      const wrap = el('div', undefined, 'max-w-5xl mx-auto space-y-5 text-xs');
+      const data = getActiveData();
+
+      const headerCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs flex flex-wrap items-center justify-between gap-3');
+      headerCard.innerHTML = `
+        <div>
+          <span class="text-[11px] font-bold uppercase tracking-wider text-indigo-600">TASK PLANNER · 按交付物拆分与配置</span>
+          <h2 class="text-base font-bold text-slate-900 mt-0.5">自由修改任务名称、执行角色、估时、前置依赖，或新增自定义任务</h2>
+        </div>
+      `;
+      const addTaskBtn = el('button', '+ 新增自定义开发任务卡', 'px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition');
+      addTaskBtn.type = 'button';
+      addTaskBtn.addEventListener('click', () => {
+        const p3 = data.phases[data.phases.length - 1];
+        const newIdx = p3.tasks.length + 1;
+        const newId = `T3.${newIdx}`;
+        p3.tasks.push({
+          id: newId,
+          code: `Task 3.${newIdx}`,
+          name: '新增：停用通知消息推送服务',
+          status: 'pending',
+          owner: '后端 Agent C',
+          worktree: `wt/${newId.toLowerCase()}-notify`,
+          spec: 'DEC-01 · EXP-012',
+          output: '通知服务提交',
+          estimateMin: 5,
+          critical: false,
+          x: 665,
+          y: 615,
+          deps: ['T2.3']
+        });
+        toast(`已新增任务 ${newId}`);
+        renderAll();
+      });
+      headerCard.append(addTaskBtn);
+      wrap.append(headerCard);
+
+      for (const phase of data.phases) {
+        const pBox = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-3 shadow-2xs');
+        pBox.append(el('strong', phase.title, 'text-sm text-indigo-700 block border-b border-slate-100 pb-2'));
+
+        for (const t of phase.tasks) {
+          const row = el('div', undefined, 'grid grid-cols-1 md:grid-cols-12 gap-2.5 p-3 rounded-lg bg-slate-50 border border-slate-200 items-center');
+
+          const idCol = el('div', undefined, 'md:col-span-2');
+          idCol.innerHTML = `<span class="mono font-bold text-indigo-600">${t.id}</span><div class="text-[10px] text-slate-400">${t.worktree}</div>`;
+
+          const nameInp = el('input', undefined, 'md:col-span-3 border border-slate-300 rounded px-2.5 py-1.5 bg-white font-medium');
+          nameInp.value = t.name;
+          nameInp.addEventListener('input', () => { t.name = nameInp.value; });
+
+          const ownerInp = el('input', undefined, 'md:col-span-2 border border-slate-300 rounded px-2.5 py-1.5 bg-white');
+          ownerInp.value = t.owner;
+          ownerInp.addEventListener('input', () => { t.owner = ownerInp.value; });
+
+          const depsInp = el('input', undefined, 'md:col-span-2 border border-slate-300 rounded px-2.5 py-1.5 bg-white mono');
+          depsInp.value = t.deps.join(', ');
+          depsInp.placeholder = '前置ID, 如 T1.1';
+          depsInp.addEventListener('change', () => {
+            t.deps = depsInp.value.split(',').map((s) => s.trim()).filter(Boolean);
+            toast(`已更新 ${t.id} 的前置依赖`);
+          });
+
+          const estInp = el('input', undefined, 'md:col-span-1 border border-slate-300 rounded px-2 py-1.5 bg-white mono text-center');
+          estInp.type = 'number';
+          estInp.min = '5';
+          estInp.step = '5';
+          estInp.value = String(t.estimateMin);
+          estInp.addEventListener('change', () => {
+            t.estimateMin = Math.max(5, Number(estInp.value) || 5);
+          });
+
+          const statusSel = el('select', undefined, 'md:col-span-2 border border-slate-300 rounded px-2 py-1.5 bg-white font-medium');
+          for (const [val, txt] of [
+            ['completed', '✓ 已完成'],
+            ['in_progress', '◔ 待审核/运行中'],
+            ['failed', '! 执行失败'],
+            ['pending', '○ 等待前置']
+          ]) {
+            const opt = el('option', txt);
+            opt.value = val;
+            statusSel.append(opt);
+          }
+          statusSel.value = t.status;
+          statusSel.addEventListener('change', () => {
+            t.status = statusSel.value;
+            toast(`${t.id} 状态已更新`);
+          });
+
+          row.append(idCol, nameInp, ownerInp, depsInp, estInp, statusSel);
+          pBox.append(row);
+        }
+        wrap.append(pBox);
+      }
+
+      const jumpGraphBtn = el('button', '保存任务清单并查看依赖图 →', 'px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold');
+      jumpGraphBtn.type = 'button';
+      jumpGraphBtn.addEventListener('click', () => {
+        switchModule('workbench', '开发流程工作台');
+      });
+      wrap.append(jumpGraphBtn);
+      container.append(wrap);
+    }
+
+    // 模块 4：数字人档案 / 领域经验卡 / 模型路由 / 会话恢复 / Worktree / SQLite (已绑定 getMemoryState() 实现案例下拉联动)
+    function renderModuleSystemPanel(container) {
+      const memState = getMemoryState();
+      const caseTitle = currentProjectKey === 'lab' ? '实验室设备预约系统' : '自习室座位预约系统';
+      const wrap = el('div', undefined, 'max-w-5xl mx-auto space-y-5 text-xs');
+
+      if (activeModule === 'agents-profile') {
+        const card = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-2xs');
+        const head = el('div', undefined, 'flex items-center justify-between border-b border-slate-100 pb-3');
+        head.append(
+          el('strong', `${caseTitle} · 领域数字人稳定身份档案`, 'text-sm text-slate-900'),
+          (() => {
+            const b = el('button', '+ 新增领域数字人', 'px-3 py-1.5 rounded-lg bg-indigo-600 text-white font-semibold');
+            b.type = 'button';
+            b.addEventListener('click', () => {
+              memState.agents.push({
+                id: `AG-0${memState.agents.length + 1}`,
+                name: '安全与权限审计专家',
+                role: '交叉评审员',
+                domain: 'RBAC 权限隔离、接口鉴权',
+                focus: '检查管理员接口越权与跨组数据泄露',
+                history: `新增数字人角色，已绑定「${caseTitle}」基线`
+              });
+              toast('已新增领域数字人角色');
+              renderAll();
+            });
+            return b;
+          })()
+        );
+        card.append(head);
+
+        const grid = el('div', undefined, 'grid grid-cols-1 md:grid-cols-3 gap-4');
+        for (const ag of memState.agents) {
+          const box = el('div', undefined, 'p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2');
+          box.innerHTML = `<div class="flex items-center justify-between"><span class="mono font-bold text-indigo-600">${ag.id}</span><span class="px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 font-semibold">${ag.role}</span></div>`;
+          const nameInp = el('input', undefined, 'w-full font-bold text-slate-900 border border-slate-300 rounded px-2 py-1 bg-white');
+          nameInp.value = ag.name;
+          nameInp.oninput = () => { ag.name = nameInp.value; };
+          const domInp = el('input', undefined, 'w-full text-slate-600 border border-slate-300 rounded px-2 py-1 bg-white');
+          domInp.value = ag.domain;
+          domInp.oninput = () => { ag.domain = domInp.value; };
+          const focusTa = el('textarea', undefined, 'w-full h-16 text-slate-600 border border-slate-300 rounded p-2 bg-white');
+          focusTa.value = ag.focus;
+          focusTa.oninput = () => { ag.focus = focusTa.value; };
+          box.append(nameInp, domInp, focusTa, el('div', ag.history, 'text-[11px] text-slate-500 pt-1'));
+          grid.append(box);
+        }
+        card.append(grid);
+        wrap.append(card);
+
+      } else if (activeModule === 'exp-memory') {
+        const exp = memState.experience;
+        const card = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-2xs');
+        card.innerHTML = `
+          <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+            <strong class="text-sm text-slate-900">${caseTitle} · 经验卡检索与同义词扩充 (${exp.id} / ${exp.version})</strong>
+            <span class="px-2.5 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 font-semibold">${exp.pubStatus} · ${exp.evidStatus}</span>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-slate-600">
+            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200/70"><strong>踩坑现象：</strong>${exp.phenomenon}</div>
+            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200/70"><strong>触发条件：</strong>${exp.trigger}</div>
+            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200/70"><strong>纠正动作：</strong>${exp.action}</div>
+            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200/70"><strong>适用边界与反例：</strong>${exp.counterExample}</div>
+          </div>
+        `;
+
+        const aliasRow = el('div', undefined, 'space-y-1.5');
+        aliasRow.append(el('span', '自由编辑 EXP-012 同义词映射词表：', 'font-semibold text-slate-700 block'));
+        const aliasInp = el('input', undefined, 'w-full border border-slate-300 rounded-lg px-3 py-2 bg-white mono');
+        aliasInp.value = exp.aliases;
+        aliasInp.addEventListener('input', () => { exp.aliases = aliasInp.value; });
+        aliasRow.append(aliasInp);
+        card.append(aliasRow);
+
+        const simRow = el('div', undefined, 'space-y-2 pt-2');
+        simRow.append(el('span', '输入项目讨论问题测试召回与边界判定：', 'font-semibold text-slate-700 block'));
+        const qInp = el('input', undefined, 'w-full border border-indigo-300 rounded-lg px-3 py-2 bg-indigo-50/30 font-medium');
+        qInp.value = memSimQuery;
+        qInp.addEventListener('input', () => {
+          memSimQuery = qInp.value;
+          renderAll();
+        });
+
+        const isCounter = memSimQuery.includes('改名') || memSimQuery.includes('名称') || memSimQuery.includes('不重叠') || memSimQuery.includes('编号');
+        const resBox = el('div', undefined, `p-4 rounded-xl border ${isCounter ? 'bg-slate-100 border-slate-300 text-slate-700' : 'bg-emerald-50 border-emerald-300 text-emerald-900'}`);
+        resBox.innerHTML = isCounter
+          ? `<strong>判定结果：命中适用边界/反例 → 本次不触发已有预约处置检查项</strong><p class="mt-1">原因：输入场景属于「${exp.counterExample}」，记忆服务已记录本次无需触发退订检查。</p>`
+          : `<strong>判定结果：命中 ${exp.id} · 证据层级：${exp.evidStatus}</strong><p class="mt-1">匹配同义词库 [${exp.aliases}] → 自动注入纠正动作：${exp.action}</p>`;
+
+        simRow.append(qInp, resBox);
+        card.append(simRow);
+        wrap.append(card);
+
+      } else if (activeModule === 'model-router') {
+        const card = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-2xs');
+        card.innerHTML = `<strong class="text-sm text-slate-900 block border-b border-slate-100 pb-3">高低配模型路由与并发预算控制</strong>`;
+        const formGrid = el('div', undefined, 'grid grid-cols-1 sm:grid-cols-2 gap-4');
+
+        const lowBox = el('label', undefined, 'space-y-1 block');
+        lowBox.append(el('span', '低成本模型配置 · 需求提取 / 独立出案 / 样板代码', 'font-semibold text-slate-700 block'));
+        const lowInp = el('input', undefined, 'w-full border border-slate-300 rounded-lg px-3 py-2 mono');
+        lowInp.value = modelRouterConfig.lowCostModel;
+        lowInp.oninput = () => { modelRouterConfig.lowCostModel = lowInp.value; };
+        lowBox.append(lowInp);
+
+        const highBox = el('label', undefined, 'space-y-1 block');
+        highBox.append(el('span', '高能力模型配置 · 冲突复核 / 方案取舍 / 跨模块排障', 'font-semibold text-slate-700 block'));
+        const highInp = el('input', undefined, 'w-full border border-slate-300 rounded-lg px-3 py-2 mono');
+        highInp.value = modelRouterConfig.highCapModel;
+        highInp.oninput = () => { modelRouterConfig.highCapModel = highInp.value; };
+        highBox.append(highInp);
+
+        const budgetBox = el('label', undefined, 'space-y-1 block');
+        budgetBox.append(el('span', '单项目模型费用预算上限 (USD)', 'font-semibold text-slate-700 block'));
+        const budgetInp = el('input', undefined, 'w-full border border-slate-300 rounded-lg px-3 py-2 mono');
+        budgetInp.type = 'number';
+        budgetInp.step = '0.5';
+        budgetInp.value = String(modelRouterConfig.budgetLimit);
+        budgetInp.oninput = () => { modelRouterConfig.budgetLimit = Number(budgetInp.value) || 2.0; };
+        budgetBox.append(budgetInp);
+
+        const paraBox = el('label', undefined, 'space-y-1 block');
+        paraBox.append(el('span', '全局 Git Worktree 并发上限', 'font-semibold text-slate-700 block'));
+        const paraInp = el('input', undefined, 'w-full border border-slate-300 rounded-lg px-3 py-2 mono');
+        paraInp.type = 'number';
+        paraInp.min = '1';
+        paraInp.max = '6';
+        paraInp.value = String(modelRouterConfig.maxParallel);
+        paraInp.onchange = () => {
+          modelRouterConfig.maxParallel = Number(paraInp.value) || 2;
+          renderRightStewardSidebar();
+          toast(`已保存全局并发上限 max_parallel = ${modelRouterConfig.maxParallel}`);
+        };
+        paraBox.append(paraInp);
+
+        formGrid.append(lowBox, highBox, budgetBox, paraBox);
+        card.append(formGrid);
+        wrap.append(card);
+
+      } else {
+        const tasks = getAllTasks();
+        const card = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-2xs');
+        card.innerHTML = `
+          <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+            <strong class="text-sm text-slate-900">${caseTitle} · 编排器运行存储、会话恢复与 Git Worktree 沙箱表</strong>
+            <span class="mono text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded font-semibold">GroupChatManager.resume + SQLite</span>
+          </div>
+          <table class="w-full text-left border-collapse">
+            <thead>
+              <tr class="bg-slate-50 border-b border-slate-200 text-slate-500">
+                <th class="py-2 px-3">任务编号</th>
+                <th class="py-2 px-3">任务名称</th>
+                <th class="py-2 px-3">Git Worktree 路径</th>
+                <th class="py-2 px-3">规格与版本引用</th>
+                <th class="py-2 px-3">当前状态</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              ${tasks.map((t) => {
+                const m = statusMeta(t.status);
+                return `<tr>
+                  <td class="py-2 px-3 mono font-bold text-indigo-600">${t.id}</td>
+                  <td class="py-2 px-3 font-medium">${t.name}</td>
+                  <td class="py-2 px-3 mono text-slate-500">${t.worktree}</td>
+                  <td class="py-2 px-3 mono text-slate-600">${t.spec}</td>
+                  <td class="py-2 px-3"><span class="px-2 py-0.5 rounded border text-[10px] font-semibold ${m.badgeCls}">${m.label}</span></td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        `;
+        wrap.append(card);
+      }
+
+      container.append(wrap);
+    }
+
+    // =========================================================================
+    // 4. 渲染默认 Workbench (左侧 Phase 列表 + 右侧 Twin Graph)
+    // =========================================================================
+    function renderPhaseList() {
+      const data = getActiveData();
+      const tasks = getAllTasks();
+      const doneCount = tasks.filter((t) => t.status === 'completed').length;
+      const totalCount = tasks.length;
+      const pct = Math.round((doneCount / totalCount) * 100);
+
+      q('#progress-pct').textContent = `${pct}%`;
+      q('#progress-bar').style.width = `${pct}%`;
+      q('#progress-count').textContent = `${doneCount} / ${totalCount} 项任务已完成`;
+      q('#active-badge').textContent = data.badge;
+
+      const container = q('#phase-list-container');
+      container.replaceChildren();
+
+      for (const phase of data.phases) {
+        const visibleTasks =
+          filterMode === 'all'
+            ? phase.tasks
+            : phase.tasks.filter((t) => t.status !== 'completed');
+
+        const pDone = phase.tasks.filter((t) => t.status === 'completed').length;
+        const pTotal = phase.tasks.length;
+        const pPct = Math.round((pDone / pTotal) * 100);
+        const isCollapsed = collapsedPhases.has(phase.id);
+
+        const section = el('div', undefined, 'space-y-1.5');
+        const headerBtn = el(
+          'button',
+          undefined,
+          'w-full flex items-center justify-between px-1.5 py-1 text-xs font-bold text-slate-700 hover:text-slate-900'
+        );
+        headerBtn.type = 'button';
+        headerBtn.innerHTML = `
+          <span class="flex items-center gap-1.5 truncate pr-2">
+            <span class="text-slate-400 text-[10px]">${isCollapsed ? '▸' : '▾'}</span>
+            <span class="truncate">${phase.title.split(' · ')[0]}</span>
+          </span>
+          <span class="mono text-[11px] font-semibold shrink-0 ${
+            pDone === pTotal ? 'text-emerald-600' : 'text-amber-600'
+          }">${pDone}/${pTotal} (${pPct}%)</span>
+        `;
+        headerBtn.addEventListener('click', () => {
+          if (collapsedPhases.has(phase.id)) collapsedPhases.delete(phase.id);
+          else collapsedPhases.add(phase.id);
+          renderPhaseList();
+        });
+        section.append(headerBtn);
+
+        if (!isCollapsed) {
+          const cardsWrap = el('div', undefined, 'space-y-1.5');
+          for (const t of visibleTasks) {
+            const meta = statusMeta(t.status);
+            const isSelected = t.id === selectedTaskId;
+            const card = el(
+              'button',
+              undefined,
+              `w-full text-left p-2.5 rounded-lg border transition flex items-start gap-2.5 ${
+                isSelected
+                  ? 'bg-indigo-50/70 border-indigo-400 shadow-2xs'
+                  : 'bg-white border-slate-200/90 hover:border-slate-300'
+              }`
+            );
+            card.type = 'button';
+            card.innerHTML = `
+              <span class="mt-0.5 w-4 h-4 rounded-full border flex items-center justify-center text-[10px] font-bold shrink-0 ${meta.iconCls}">
+                ${meta.icon}
+              </span>
+              <div class="min-w-0 flex-1">
+                <div class="text-xs font-semibold text-slate-800 truncate">${t.code}: ${t.name}</div>
+                <div class="mono text-[11px] text-slate-400 mt-0.5 flex items-center justify-between">
+                  <span>${t.id}</span>
+                  <span>${t.estimateMin}m${t.critical ? ' · 关键路径' : ''}</span>
+                </div>
+              </div>
+            `;
+            card.addEventListener('click', () => {
+              selectedTaskId = t.id;
+              renderAll();
+            });
+            cardsWrap.append(card);
+          }
+          section.append(cardsWrap);
+        }
+        container.append(section);
+      }
+    }
+
+    function renderTwinGraph() {
+      const data = getActiveData();
+      const phasesLayer = q('#graph-phases-layer');
+      const nodesLayer = q('#graph-nodes-layer');
+      const svg = q('#graph-edges-svg');
+      phasesLayer.replaceChildren();
+      nodesLayer.replaceChildren();
+      svg.replaceChildren();
+
+      const nodeMap = new Map();
+
+      for (const phase of data.phases) {
+        const box = el('div', undefined, 'phase-group-box');
+        box.style.left = phase.box.x + 'px';
+        box.style.top = phase.box.y + 'px';
+        box.style.width = phase.box.w + 'px';
+        box.style.height = phase.box.h + 'px';
+        box.append(el('div', phase.title, 'px-3 py-1 text-[11px] font-bold text-indigo-600 tracking-wide'));
+        phasesLayer.append(box);
+
+        for (const t of phase.tasks) {
+          nodeMap.set(t.id, t);
+        }
+      }
+
+      const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+      const markerColors = { indigo: '#6366f1', amber: '#f59e0b', red: '#ef4444', slate: '#94a3b8' };
+      for (const [key, color] of Object.entries(markerColors)) {
+        const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+        marker.setAttribute('id', `arrow-${key}`);
+        marker.setAttribute('viewBox', '0 0 10 10');
+        marker.setAttribute('refX', '8');
+        marker.setAttribute('refY', '5');
+        marker.setAttribute('markerWidth', '6');
+        marker.setAttribute('markerHeight', '6');
+        marker.setAttribute('orient', 'auto-start-reverse');
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d', 'M 0 1.5 L 8 5 L 0 8.5 z');
+        path.setAttribute('fill', color);
+        marker.appendChild(path);
+        defs.appendChild(marker);
+      }
+      svg.appendChild(defs);
+
+      const NODE_W = 196;
+      const NODE_H = 58;
+
+      for (const t of nodeMap.values()) {
+        for (const depId of t.deps) {
+          const from = nodeMap.get(depId);
+          if (!from) continue;
+
+          let startX = from.x + NODE_W;
+          let startY = from.y + NODE_H / 2;
+          let endX = t.x;
+          let endY = t.y + NODE_H / 2;
+
+          let d = '';
+          if (t.x > from.x + NODE_W + 14) {
+            const midX = Math.round(startX + (endX - startX) * 0.5);
+            d = `M ${startX} ${startY} L ${midX} ${startY} L ${midX} ${endY} L ${endX} ${endY}`;
+          } else if (t.y > from.y + NODE_H + 10) {
+            startX = from.x + NODE_W / 2;
+            startY = from.y + NODE_H;
+            endX = t.x + NODE_W / 2;
+            endY = t.y;
+            const midY = Math.round(startY + (endY - startY) * 0.5);
+            d = `M ${startX} ${startY} L ${startX} ${midY} L ${endX} ${midY} L ${endX} ${endY}`;
+          } else {
+            startX = from.x;
+            startY = from.y + NODE_H / 2;
+            endX = t.x + NODE_W;
+            endY = t.y + NODE_H / 2;
+            const midX = Math.round((startX + endX) / 2);
+            d = `M ${startX} ${startY} L ${midX} ${startY} L ${midX} ${endY} L ${endX} ${endY}`;
+          }
+
+          const isHighlighted = from.id === selectedTaskId || t.id === selectedTaskId;
+          let colorKey = 'indigo';
+          if (t.status === 'failed' || from.status === 'failed') colorKey = 'red';
+          else if (t.status === 'in_progress') colorKey = 'amber';
+          else if (t.status === 'pending') colorKey = 'slate';
+
+          const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+          pathEl.setAttribute('d', d);
+          pathEl.setAttribute('fill', 'none');
+          pathEl.setAttribute('stroke', markerColors[colorKey]);
+          pathEl.setAttribute('stroke-width', isHighlighted ? '2.2' : '1.5');
+          pathEl.setAttribute('class', t.status === 'in_progress' || isHighlighted ? 'edge-animated' : 'edge-static-dashed');
+          pathEl.setAttribute('marker-end', `url(#arrow-${colorKey})`);
+          svg.appendChild(pathEl);
+        }
+      }
+
+      for (const t of nodeMap.values()) {
+        const meta = statusMeta(t.status);
+        const node = el('div', undefined, `graph-node ${t.id === selectedTaskId ? 'selected' : ''}`);
+        node.dataset.status = t.status;
+        node.style.left = t.x + 'px';
+        node.style.top = t.y + 'px';
+        node.innerHTML = `
+          <div class="flex items-center justify-between gap-1">
+            <span class="flex items-center gap-1.5 min-w-0">
+              <span class="w-2 h-2 rounded-full shrink-0 ${meta.dot}"></span>
+              <span class="mono text-[10px] font-bold text-slate-600 truncate">${t.id} · ${t.estimateMin}m</span>
+            </span>
+            <span class="text-[9px] font-semibold px-1.5 py-0.2 rounded border ${meta.badgeCls}">${meta.label}</span>
+          </div>
+          <div class="text-[11px] font-semibold text-slate-800 truncate mt-1" title="${t.name}">${t.name}</div>
+          <div class="text-[10px] text-slate-400 truncate mt-0.5">${t.output}</div>
+        `;
+        node.addEventListener('click', (e) => {
+          e.stopPropagation();
+          selectedTaskId = t.id;
+          renderAll();
+        });
+        nodesLayer.append(node);
+      }
+
+      const sel = findTask(selectedTaskId);
+      const selMeta = statusMeta(sel.status);
+      const inspector = q('#graph-node-inspector');
+      inspector.innerHTML = `
+        <div class="flex items-center justify-between gap-3">
+          <div class="flex items-center gap-2">
+            <span class="mono font-bold text-indigo-600">${sel.id}</span>
+            <strong class="text-slate-800">${sel.name}</strong>
+          </div>
+          <span class="px-2 py-0.5 rounded border text-[10px] font-semibold ${selMeta.badgeCls}">${selMeta.label}</span>
+        </div>
+        <div class="text-[11px] text-slate-500 flex flex-wrap gap-x-4 gap-y-0.5">
+          <span>执行角色: <strong class="text-slate-700">${sel.owner}</strong></span>
+          <span>来源: <code class="mono text-slate-700">${sel.spec}</code></span>
+          <span>交付物: <code class="mono text-slate-700">${sel.output}</code></span>
+        </div>
+      `;
+      const actionRow = el('div', undefined, 'flex items-center gap-2 pt-1');
+
+      if (sel.id === 'T2.1' && sel.status === 'in_progress') {
+        const reviewBtn = el('button', '🔍 打开交付审阅并放行 v2', 'px-2.5 py-1 rounded bg-amber-500 hover:bg-amber-600 text-white font-semibold text-[11px] transition');
+        reviewBtn.type = 'button';
+        reviewBtn.addEventListener('click', () => {
+          currentTab = 'details';
+          renderAll();
+        });
+        actionRow.append(reviewBtn);
+      } else if (sel.status === 'failed') {
+        const retryBtn = el('button', `🔄 重试 ${sel.id} 预约服务并恢复下游`, 'px-2.5 py-1 rounded bg-red-600 hover:bg-red-500 text-white font-semibold text-[11px] transition');
+        retryBtn.type = 'button';
+        retryBtn.addEventListener('click', () => {
+          sel.status = 'completed';
+          sel.output = '预约服务提交 v1';
+          const t23 = findTask('T2.3');
+          if (t23 && t23.status === 'pending') {
+            t23.status = 'in_progress';
+            t23.output = '读取 T2.2@v1 执行停用处置中';
+          }
+          toast(`${sel.id} 重试成功，下游 T2.3 已解除受阻`);
+          renderAll();
+        });
+        actionRow.append(retryBtn);
+      }
+
+      const cycleBtn = el('button', '切换状态', 'px-2.5 py-1 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold text-[11px] transition');
+      cycleBtn.type = 'button';
+      cycleBtn.addEventListener('click', () => {
+        const order = ['completed', 'in_progress', 'failed', 'pending'];
+        sel.status = order[(order.indexOf(sel.status) + 1) % order.length];
+        renderAll();
+      });
+
+      const detailLink = el('button', '编辑任务字段 / 审阅产物 →', 'px-2 py-1 rounded text-indigo-600 hover:underline font-medium text-[11px]');
+      detailLink.type = 'button';
+      detailLink.addEventListener('click', () => {
+        currentTab = 'details';
+        renderAll();
+      });
+      actionRow.append(cycleBtn, detailLink);
+      inspector.append(actionRow);
+    }
+
+    function renderDetailsTab() {
+      const sel = findTask(selectedTaskId);
+      const meta = statusMeta(sel.status);
+      const panel = q('#panel-details');
+      panel.replaceChildren();
+
+      const wrap = el('div', undefined, 'max-w-4xl space-y-4 text-xs');
+
+      const card = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-6 shadow-2xs space-y-4');
+      card.innerHTML = `
+        <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+          <div>
+            <div class="mono text-xs text-indigo-600 font-semibold">${sel.code} · ${sel.id}</div>
+            <h2 class="text-base font-bold text-slate-900 mt-0.5">${sel.name}</h2>
+          </div>
+          <span class="px-3 py-1 rounded-full border text-xs font-semibold ${meta.badgeCls}">${meta.label}</span>
+        </div>
+      `;
+
+      const editGrid = el('div', undefined, 'grid grid-cols-1 sm:grid-cols-2 gap-3.5');
+      const makeField = (label, val, onChange) => {
+        const box = el('label', undefined, 'space-y-1 block');
+        box.append(el('span', label, 'text-slate-500 font-medium block'));
+        const inp = el('input', undefined, 'w-full border border-slate-300 rounded-lg px-3 py-1.5 bg-white font-medium text-slate-800');
+        inp.value = val;
+        inp.addEventListener('input', () => onChange(inp.value));
+        box.append(inp);
+        return box;
+      };
+
+      editGrid.append(
+        makeField('任务名称', sel.name, (v) => { sel.name = v; renderPhaseList(); }),
+        makeField('执行角色', sel.owner, (v) => { sel.owner = v; }),
+        makeField('隔离工作区路径', sel.worktree, (v) => { sel.worktree = v; }),
+        makeField('规格来源与关联决定', sel.spec, (v) => { sel.spec = v; }),
+        makeField('预期交付产物', sel.output, (v) => { sel.output = v; }),
+        makeField('估时 (分钟)', String(sel.estimateMin), (v) => { sel.estimateMin = Math.max(5, Number(v) || 5); renderPhaseList(); })
+      );
+      card.append(editGrid);
+      wrap.append(card);
+
+      const reviewCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-6 shadow-2xs space-y-4');
+      const origText = sel.originalContent || `${sel.output} · 由 ${sel.owner} 根据 ${sel.spec} 生成的初始产物 (v1)。`;
+      const revText = sel.revisedContent || origText;
+
+      reviewCard.innerHTML = `
+        <div class="flex items-center justify-between">
+          <strong class="text-sm text-slate-900">交付审阅与人工修订</strong>
+          <span class="mono text-slate-500">下游任务消费人工批准的最新版本</span>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+            <strong class="text-slate-700 block">Agent 原始产物 · v1</strong>
+            <pre class="mono text-xs whitespace-pre-wrap text-slate-600 bg-white p-3 rounded border border-slate-200">${origText}</pre>
+          </div>
+          <div class="p-4 rounded-xl bg-blue-50/40 border border-blue-200 space-y-2">
+            <strong class="text-blue-900 block">人工修订内容 · v2</strong>
+            <textarea id="review-editor-ta" rows="4" class="w-full mono text-xs p-2.5 rounded border border-slate-300 bg-white">${revText}</textarea>
+          </div>
+        </div>
+      `;
+
+      const noteInput = el('input', undefined, 'w-full border border-slate-300 rounded-lg px-3 py-1.5');
+      noteInput.value = sel.reviewNote || '补充停用设备的状态展示和预约入口规则。';
+      noteInput.placeholder = '输入审核备注...';
+
+      const btnRow = el('div', undefined, 'flex flex-wrap items-center gap-2');
+      const approveRevBtn = el('button', '批准修订版并生成 v2', 'px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition');
+      approveRevBtn.type = 'button';
+      approveRevBtn.addEventListener('click', () => {
+        sel.revisedContent = q('#review-editor-ta').value.trim();
+        sel.reviewNote = noteInput.value.trim();
+        sel.status = 'completed';
+        sel.output = `${sel.output.split(' ')[0]} · 已放行 v2`;
+        toast(`已批准 ${sel.id} 人工修订版 v2`);
+        renderAll();
+      });
+
+      const approveOrigBtn = el('button', '直接批准原稿 v1', 'px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition');
+      approveOrigBtn.type = 'button';
+      approveOrigBtn.addEventListener('click', () => {
+        sel.status = 'completed';
+        toast(`已直接批准 ${sel.id} 原稿 v1`);
+        renderAll();
+      });
+
+      const rejectBtn = el('button', '退回重做', 'px-3.5 py-2 rounded-lg bg-white hover:bg-red-50 text-red-600 border border-red-300 font-semibold transition');
+      rejectBtn.type = 'button';
+      rejectBtn.addEventListener('click', () => {
+        sel.status = 'pending';
+        toast(`已将 ${sel.id} 退回待派发队列`);
+        renderAll();
+      });
+
+      btnRow.append(approveRevBtn, approveOrigBtn, rejectBtn);
+      reviewCard.append(noteInput, btnRow);
+      wrap.append(reviewCard);
+
+      panel.append(wrap);
+    }
+
+    function renderMonitorTab() {
+      const panel = q('#panel-monitor');
+      panel.replaceChildren();
+      const wrap = el('div', undefined, 'max-w-4xl space-y-4 text-xs');
+
+      const ganttCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-3');
+      ganttCard.innerHTML = `
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+          <div>
+            <strong class="text-sm text-slate-900">甘特图与进度对照 · 并发上限 = ${modelRouterConfig.maxParallel}</strong>
+            <p class="text-slate-500 mt-0.5">原计划关键路径基线 25 分钟；T2.2 预约服务失败重试后总用时顺延至 30 分钟。</p>
+          </div>
+          <span class="mono font-semibold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded">计划 25 分钟 · 实际 30 分钟</span>
+        </div>
+        <div class="space-y-2.5 pt-1">
+          <div class="grid grid-cols-12 items-center gap-2">
+            <div class="col-span-3 font-semibold text-slate-700">T1.1 定义预约状态 <span class="block text-[10px] text-slate-400 font-normal">规划 Agent · 5m</span></div>
+            <div class="col-span-9 bg-slate-100 h-7 rounded relative overflow-hidden">
+              <div class="absolute top-1 left-[0%] w-[16.6%] h-2 bg-blue-200 rounded-xs"></div>
+              <div class="absolute bottom-1 left-[0%] w-[16.6%] h-2.5 bg-emerald-600 rounded-xs"></div>
+            </div>
+          </div>
+          <div class="grid grid-cols-12 items-center gap-2">
+            <div class="col-span-3 font-semibold text-slate-700">T2.1 开发设备查询 <span class="block text-[10px] text-slate-400 font-normal">后端 Agent A · 5m</span></div>
+            <div class="col-span-9 bg-slate-100 h-7 rounded relative overflow-hidden">
+              <div class="absolute top-1 left-[16.6%] w-[16.6%] h-2 bg-blue-200 rounded-xs"></div>
+              <div class="absolute bottom-1 left-[16.6%] w-[16.6%] h-2.5 bg-emerald-600 rounded-xs"></div>
+            </div>
+          </div>
+          <div class="grid grid-cols-12 items-center gap-2">
+            <div class="col-span-3 font-semibold text-slate-700">T2.2 开发预约服务 <span class="block text-[10px] text-slate-400 font-normal">后端 Agent B · 10m</span></div>
+            <div class="col-span-9 bg-slate-100 h-7 rounded relative overflow-hidden">
+              <div class="absolute top-1 left-[16.6%] w-[33.3%] h-2 bg-blue-200 rounded-xs"></div>
+              <div class="absolute bottom-1 left-[16.6%] w-[16.6%] h-2.5 bg-red-600 rounded-xs"></div>
+              <div class="absolute bottom-1 left-[33.3%] w-[33.3%] h-2.5 bg-emerald-600 rounded-xs"></div>
+            </div>
+          </div>
+          <div class="grid grid-cols-12 items-center gap-2">
+            <div class="col-span-3 font-semibold text-slate-700">T2.3 实现停用处置 <span class="block text-[10px] text-slate-400 font-normal">后端 Agent B · 5m</span></div>
+            <div class="col-span-9 bg-slate-100 h-7 rounded relative overflow-hidden">
+              <div class="absolute top-1 left-[50%] w-[16.6%] h-2 bg-blue-200 rounded-xs"></div>
+              <div class="absolute bottom-1 left-[66.6%] w-[16.6%] h-2.5 bg-emerald-600 rounded-xs"></div>
+            </div>
+          </div>
+          <div class="grid grid-cols-12 items-center gap-2">
+            <div class="col-span-3 font-semibold text-slate-700">T3.1 集成工作台 <span class="block text-[10px] text-slate-400 font-normal">集成 Agent · 5m</span></div>
+            <div class="col-span-9 bg-slate-100 h-7 rounded relative overflow-hidden">
+              <div class="absolute top-1 left-[66.6%] w-[16.6%] h-2 bg-blue-200 rounded-xs"></div>
+              <div class="absolute bottom-1 left-[83.3%] w-[16.6%] h-2.5 bg-emerald-600 rounded-xs"></div>
+            </div>
+          </div>
+        </div>
+      `;
+      wrap.append(ganttCard);
+      panel.append(wrap);
+    }
+
+    function renderActivityTab() {
+      const panel = q('#panel-activity');
+      panel.replaceChildren();
+      const wrap = el('div', undefined, 'max-w-4xl space-y-4 text-xs');
+
+      const exp = getMemoryState().experience;
+      const expCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-3');
+      expCard.innerHTML = `
+        <div class="flex items-center justify-between border-b border-slate-100 pb-2.5">
+          <strong class="text-sm text-slate-900">领域数字人经验卡：${exp.id} / ${exp.version}</strong>
+          <span class="px-2.5 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 font-semibold">发布状态：${exp.pubStatus} · 证据层级：${exp.evidStatus}</span>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-slate-600">
+          <div class="p-3 rounded-lg bg-slate-50 border border-slate-200/70"><strong>踩坑现象：</strong>${exp.phenomenon}</div>
+          <div class="p-3 rounded-lg bg-slate-50 border border-slate-200/70"><strong>同义词映射：</strong>${exp.aliases} → 资源转为不可用。</div>
+          <div class="p-3 rounded-lg bg-slate-50 border border-slate-200/70"><strong>纠正动作：</strong>${exp.action}</div>
+          <div class="p-3 rounded-lg bg-slate-50 border border-slate-200/70"><strong>适用边界与反例：</strong>${exp.counterExample}</div>
+        </div>
+      `;
+      wrap.append(expCard);
+
+      const list = el('div', undefined, 'bg-white border border-slate-200 rounded-xl divide-y divide-slate-100');
+      for (const item of activityLogs) {
+        const row = el('div', undefined, 'p-4 flex items-start gap-3');
+        row.innerHTML = `
+          <span class="mono text-[11px] text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded font-semibold">${item.seq}</span>
+          <div class="flex-1">
+            <div class="font-semibold text-slate-800">${item.actor} <span class="text-slate-400 font-normal ml-2 mono">${item.time}</span></div>
+            <p class="text-slate-600 mt-0.5">${item.text}</p>
+          </div>
+        `;
+        list.append(row);
+      }
+      wrap.append(list);
+      panel.append(wrap);
+    }
+
+    // =========================================================================
+    // 5. 全局导航、左右侧边栏控制与案例下拉联动
+    // =========================================================================
+    function applyTransform() {
+      const stageEl = q('#graph-stage');
+      if (stageEl) {
+        stageEl.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+      }
+      q('#zoom-label').textContent = `${Math.round(zoom * 100)}%`;
+    }
+
+    function switchModule(modKey, titleText) {
+      activeModule = modKey;
+      if (titleText) q('#page-title').textContent = titleText;
+
+      document.querySelectorAll('.nav-item').forEach((n) => {
+        const isCurrent = n.dataset.module === modKey;
+        n.className = isCurrent
+          ? 'nav-item active-nav w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-indigo-50/90 text-indigo-600 font-semibold border border-indigo-200/60'
+          : 'nav-item w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-slate-600 hover:bg-slate-200/60';
+      });
+
+      renderAll();
+    }
+
+    function renderAll() {
+      const dedicatedView = q('#module-dedicated-view');
+      const workbenchView = q('#workbench-split-view');
+
+      renderRightStewardSidebar();
+
+      if (activeModule === 'workbench') {
+        dedicatedView.classList.add('hidden');
+        workbenchView.classList.remove('hidden');
+
+        q('#selected-node-indicator').textContent = selectedTaskId;
+        document.querySelectorAll('.ws-tab').forEach((b) => {
+          const active = b.dataset.tab === currentTab;
+          b.className = `ws-tab h-full border-b-2 transition ${
+            active ? 'border-indigo-600 text-indigo-600 font-semibold' : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`;
+        });
+
+        q('#panel-graph').classList.toggle('hidden', currentTab !== 'graph');
+        q('#panel-details').classList.toggle('hidden', currentTab !== 'details');
+        q('#panel-monitor').classList.toggle('hidden', currentTab !== 'monitor');
+        q('#panel-activity').classList.toggle('hidden', currentTab !== 'activity');
+
+        renderPhaseList();
+        if (currentTab === 'graph') renderTwinGraph();
+        else if (currentTab === 'details') renderDetailsTab();
+        else if (currentTab === 'monitor') renderMonitorTab();
+        else if (currentTab === 'activity') renderActivityTab();
+      } else {
+        workbenchView.classList.add('hidden');
+        dedicatedView.classList.remove('hidden');
+        dedicatedView.replaceChildren();
+
+        if (activeModule === 'intake-race') renderModuleIntakeRace(dedicatedView);
+        else if (activeModule === 'review-synthesis') renderModuleReviewSynthesis(dedicatedView);
+        else if (activeModule === 'task-planner') renderModuleTaskPlanner(dedicatedView);
+        else renderModuleSystemPanel(dedicatedView);
+      }
+    }
+
+    document.querySelectorAll('.nav-item').forEach((b) => {
+      b.addEventListener('click', () => {
+        switchModule(b.dataset.module, b.dataset.title);
+      });
+    });
+
+    document.querySelectorAll('.ws-tab').forEach((b) => {
+      b.addEventListener('click', () => {
+        currentTab = b.dataset.tab;
+        renderAll();
+      });
+    });
+
+    // 修复左侧侧边栏收起后无法再展开的问题：收起为窄图标栏并保持 ◧ 按钮居中可点击
+    q('#btn-toggle-sidebar').addEventListener('click', () => {
+      const sb = q('#left-sidebar');
+      sb.classList.toggle('collapsed');
+    });
+
+    // 右侧主理侧边栏显隐切换
+    q('#btn-toggle-right-sidebar').addEventListener('click', () => {
+      q('#right-steward-sidebar').classList.toggle('hidden');
+    });
+
+    // 修复顶部「当前演示案例」下拉栏：切换后所有模块（含数字人档案与经验卡库）立即生效
+    function switchProjectCase(projKey) {
+      currentProjectKey = projKey;
+      q('#select-project').value = projKey;
+      q('#select-engine').value = projKey === 'studyroom' ? 'case_v1' : 'plan_v1';
+      selectedTaskId = getActiveData().phases[0].tasks[0].id;
+      memSimQuery = getMemoryState().experience.defaultQuery;
+      panX = 0;
+      panY = 0;
+      zoom = 1;
+      applyTransform();
+      toast(`已切换演示案例为：${projKey === 'lab' ? '实验室设备预约系统' : '自习室座位预约系统'}`);
+      renderAll();
+    }
+
+    q('#select-project').addEventListener('change', (e) => {
+      switchProjectCase(e.target.value);
+    });
+    q('#select-engine').addEventListener('change', (e) => {
+      switchProjectCase(e.target.value === 'case_v1' ? 'studyroom' : 'lab');
+    });
+
+    q('#filter-all').addEventListener('click', () => {
+      filterMode = 'all';
+      q('#filter-all').className = 'px-1.5 py-0.5 rounded text-[10px] bg-indigo-50 text-indigo-700 font-semibold';
+      q('#filter-异常').className = 'px-1.5 py-0.5 rounded text-[10px] hover:bg-slate-200/60 text-slate-600';
+      renderPhaseList();
+    });
+    q('#filter-异常').addEventListener('click', () => {
+      filterMode = 'active';
+      q('#filter-异常').className = 'px-1.5 py-0.5 rounded text-[10px] bg-indigo-50 text-indigo-700 font-semibold';
+      q('#filter-all').className = 'px-1.5 py-0.5 rounded text-[10px] hover:bg-slate-200/60 text-slate-600';
+      renderPhaseList();
+    });
+
+    q('#btn-step-sim').addEventListener('click', () => {
+      if (activeModule !== 'workbench') {
+        switchModule('workbench', '开发流程工作台');
+      }
+      const tasks = getAllTasks();
+      const target = tasks.find((t) => t.status === 'failed' || t.status === 'in_progress' || t.status === 'pending');
+      const realTask = target ? findTask(target.id) : findTask(tasks[0].id);
+      if (realTask.status === 'failed') realTask.status = 'completed';
+      else if (realTask.status === 'in_progress') realTask.status = 'completed';
+      else if (realTask.status === 'pending') realTask.status = 'in_progress';
+      else realTask.status = 'in_progress';
+
+      selectedTaskId = realTask.id;
+      toast(`已推进任务 ${realTask.id} (${realTask.name}) → ${statusMeta(realTask.status).label}`);
+      renderAll();
+    });
+
+    q('#btn-zoom-in').addEventListener('click', () => {
+      zoom = Math.min(1.5, +(zoom + 0.1).toFixed(2));
+      applyTransform();
+    });
+    q('#btn-zoom-out').addEventListener('click', () => {
+      zoom = Math.max(0.6, +(zoom - 0.1).toFixed(2));
+      applyTransform();
+    });
+    q('#btn-fit-graph').addEventListener('click', () => {
+      zoom = 1;
+      panX = 0;
+      panY = 0;
+      applyTransform();
+    });
+
+    const viewport = q('#graph-viewport');
+    viewport.addEventListener('mousedown', (e) => {
+      if (e.target.closest('.graph-node')) return;
+      isPanning = true;
+      panStartX = e.clientX - panX;
+      panStartY = e.clientY - panY;
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!isPanning) return;
+      panX = e.clientX - panStartX;
+      panY = e.clientY - panStartY;
+      applyTransform();
+    });
+    window.addEventListener('mouseup', () => {
+      isPanning = false;
+    });
+
+    q('#btn-changelog').addEventListener('click', () => {
+      q('#info-modal-title').textContent = '正式联调接口契约 v2';
+      q('#info-modal-body').innerHTML = `
+        <div>• <strong>POST /specs</strong>：导入 Markdown 规格，返回规格版本与原文引用。</div>
+        <div>• <strong>POST /plans &amp; PATCH /plans/{id}</strong>：生成或调整任务草稿与依赖，强制校验 <code class="mono">revision</code> 乐观锁。</div>
+        <div>• <strong>POST /runs &amp; POST /runs/{id}/actions</strong>：启动计划版本，支持暂停、继续、单步、失败重试与人工审核放行。</div>
+        <div>• <strong>GET /runs/{id}/events?after=序号</strong>：按事件序号增量轮询运行状态与产物变更。</div>
+      `;
+      q('#info-modal').classList.remove('hidden');
+    });
+    q('#btn-doc').addEventListener('click', () => {
+      q('#info-modal-title').textContent = '全流程模块功能说明';
+      q('#info-modal-body').innerHTML = `
+        <div>1. <strong>需求输入与赛马出案</strong>：支持需求快照版本锁定、自定义各组提示词与动态增删讨论组。</div>
+        <div>2. <strong>独立盲评与方案整合</strong>：展示三维度独立评分，支持编辑待决项答复写入 DEC-01 与保存方案新版本。</div>
+        <div>3. <strong>任务分解与 DAG 编排</strong>：按交付物拆解任务，分配独立 Git Worktree 沙箱与高低配模型路由。</div>
+      `;
+      q('#info-modal').classList.remove('hidden');
+    });
+    q('#btn-close-modal').addEventListener('click', () => {
+      q('#info-modal').classList.add('hidden');
+    });
+
+    renderAll();
+  })();
+  </script>
+</body>
+</html>

@@ -77,3 +77,19 @@ class StaleAttempt(DomainError):
     code = "STALE_ATTEMPT"
     status = 409
     default_message = "当前尝试已更新"
+
+
+class IdempotencyConflict(DomainError):
+    """The same Idempotency-Key arrived with a different request."""
+
+    code = "IDEMPOTENCY_CONFLICT"
+    status = 409
+    default_message = "同一幂等键提交了不同请求"
+
+
+class NotFound(DomainError):
+    """The referenced project, plan, run or specification does not exist."""
+
+    code = "NOT_FOUND"
+    status = 404
+    default_message = "引用的资源不存在"

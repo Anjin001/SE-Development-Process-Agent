@@ -15,13 +15,15 @@ Concurrency rules that matter here:
 """
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .contracts import (Conflict, InvalidOutput, InvalidReference, InvalidState,
-                        StaleAttempt, VersionConflict)
-from .plan_rules import validate_plan
+                        NotFound, StaleAttempt, VersionConflict)
+from .plan_rules import overlaps, validate_plan
+from .schedule import schedule_plan
 
 SCHEMA = Path(__file__).with_name("schema.sql")
 
@@ -49,18 +51,12 @@ def _load(text, default):
     return default if text in (None, "") else json.loads(text)
 
 
-def _overlaps(first, second):
-    """True when two repository paths contend, comparing whole path segments."""
-    if first == second:
-        return True
-    return (first.startswith(second.rstrip("/") + "/")
-            or second.startswith(first.rstrip("/") + "/"))
-
-
 class Store:
     def __init__(self, path=":memory:", now=None):
         self.now = now or utcnow
-        self.db = sqlite3.connect(str(path), isolation_level=None)
+        self._lock = threading.RLock()
+        self.db = sqlite3.connect(str(path), isolation_level=None,
+                                  check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.executescript(SCHEMA.read_text(encoding="utf-8"))
@@ -76,13 +72,14 @@ class Store:
 
     @contextmanager
     def tx(self):
-        self.db.execute("BEGIN IMMEDIATE")
-        try:
-            yield self.db
-        except BaseException:
-            self.db.execute("ROLLBACK")
-            raise
-        self.db.execute("COMMIT")
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                yield self.db
+            except BaseException:
+                self.db.execute("ROLLBACK")
+                raise
+            self.db.execute("COMMIT")
 
     # ---------- projects, specs ----------
 
@@ -119,6 +116,16 @@ class Store:
                      _dump(item.get("requirement_ids", [])), item.get("resolution")))
         return spec
 
+    def get_spec(self, project_id, version):
+        row = self.db.execute("SELECT * FROM specifications WHERE project_id=? AND version=?",
+                              (project_id, version)).fetchone()
+        if row is None:
+            raise NotFound("规格版本不存在", field="spec_ref", version=version)
+        if row["status"] != "confirmed":
+            raise InvalidState("规格尚未确认", version=version)
+        return {"id": row["id"], "version": row["version"], "status": row["status"],
+                "selection": row["selection"], "markdown": row["markdown"]}
+
     def open_items(self, project_id, spec_version, blocking_only=True):
         rows = self.db.execute(
             "SELECT id, blocking, resolution FROM spec_open_items"
@@ -137,27 +144,65 @@ class Store:
                 "tasks": tasks}
         validate_plan(plan, self._spec_payload(project_id, spec))
         with self.tx() as db:
-            db.execute(
-                "INSERT INTO plans(project_id, id, version, spec_id, spec_version,"
-                " base_commit, max_parallel, created_at) VALUES (?,?,?,?,?,?,?,?)",
-                (project_id, plan["id"], version, spec["id"], spec["version"],
-                 base_commit, max_parallel, _stamp(self.now())))
-            for position, task in enumerate(tasks):
-                db.execute(
-                    "INSERT INTO plan_tasks(project_id, plan_id, plan_version, position,"
-                    " id, title, phase, role, depends_on, write_paths, outputs,"
-                    " requirement_ids, decision_ids, open_item_ids, estimate_seconds,"
-                    " review_required, completion_condition)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (project_id, plan["id"], version, position, task["id"], task["title"],
-                     task["phase"], task["role"], _dump(task.get("depends_on", [])),
-                     _dump(task.get("write_paths", [])), _dump(task.get("outputs", [])),
-                     _dump(task.get("requirement_ids", [])),
-                     _dump(task.get("decision_ids", [])),
-                     _dump(task.get("open_item_ids", [])),
-                     task.get("estimate_seconds"), 1 if task.get("review_required") else 0,
-                     task["completion_condition"]))
+            self._insert_plan(db, project_id, plan)
         return plan
+
+    def _insert_plan(self, db, project_id, plan):
+        db.execute(
+            "INSERT INTO plans(project_id, id, version, spec_id, spec_version,"
+            " base_commit, max_parallel, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            (project_id, plan["id"], plan["version"], plan["spec_ref"]["id"],
+             plan["spec_ref"]["version"], plan["base_commit"], plan["max_parallel"],
+             _stamp(self.now())))
+        for position, task in enumerate(plan["tasks"]):
+            db.execute(
+                "INSERT INTO plan_tasks(project_id, plan_id, plan_version, position,"
+                " id, title, phase, role, depends_on, write_paths, outputs,"
+                " requirement_ids, decision_ids, open_item_ids, estimate_seconds,"
+                " review_required, completion_condition)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (project_id, plan["id"], plan["version"], position, task["id"],
+                 task["title"], task["phase"], task["role"],
+                 _dump(task.get("depends_on", [])), _dump(task.get("write_paths", [])),
+                 _dump(task.get("outputs", [])), _dump(task.get("requirement_ids", [])),
+                 _dump(task.get("decision_ids", [])), _dump(task.get("open_item_ids", [])),
+                 task.get("estimate_seconds"), 1 if task.get("review_required") else 0,
+                 task["completion_condition"]))
+
+    def get_plan(self, project_id, plan_id, version):
+        row = self.db.execute("SELECT * FROM plans WHERE project_id=? AND id=? AND version=?",
+                              (project_id, plan_id, version)).fetchone()
+        if row is None:
+            raise NotFound("计划版本不存在", field="plan_ref",
+                           plan_id=plan_id, version=version)
+        plan = {"id": row["id"], "version": row["version"],
+                "spec_ref": {"id": row["spec_id"], "version": row["spec_version"]},
+                "base_commit": row["base_commit"], "max_parallel": row["max_parallel"],
+                "tasks": self.plan_tasks(project_id, plan_id, version)}
+        return {"plan": plan, "schedule": schedule_plan(plan)}
+
+    def latest_plan_version(self, project_id, plan_id):
+        row = self.db.execute("SELECT MAX(version) AS version FROM plans"
+                              " WHERE project_id=? AND id=?", (project_id, plan_id)).fetchone()
+        if row["version"] is None:
+            raise NotFound("计划不存在", field="plan_id", plan_id=plan_id)
+        return row["version"]
+
+    def patch_plan(self, project_id, plan_id, expected_version, max_parallel=None,
+                   tasks=None):
+        latest = self.latest_plan_version(project_id, plan_id)
+        if expected_version != latest:
+            raise VersionConflict(current_version=latest)
+        current = self.get_plan(project_id, plan_id, latest)["plan"]
+        updated = {**current, "version": latest + 1,
+                   "max_parallel": current["max_parallel"] if max_parallel is None
+                   else max_parallel,
+                   "tasks": current["tasks"] if tasks is None else tasks}
+        spec = self._spec_payload(project_id, dict(current["spec_ref"]))
+        validate_plan(updated, spec)
+        with self.tx() as db:
+            self._insert_plan(db, project_id, updated)
+        return self.get_plan(project_id, plan_id, updated["version"])
 
     def _plan_id(self, project_id):
         total = self.db.execute("SELECT COUNT(DISTINCT id) AS n FROM plans WHERE project_id=?",
@@ -205,8 +250,8 @@ class Store:
         plan = self.db.execute("SELECT * FROM plans WHERE project_id=? AND id=? AND version=?",
                                (project_id, plan_id, plan_version)).fetchone()
         if plan is None:
-            raise InvalidReference("计划版本不存在", field="plan_ref",
-                                   plan_id=plan_id, version=plan_version)
+            raise NotFound("计划版本不存在", field="plan_ref",
+                           plan_id=plan_id, version=plan_version)
         active = self.db.execute("SELECT id FROM runs WHERE project_id=? AND state='active'",
                                  (project_id,)).fetchone()
         if active:
@@ -241,7 +286,7 @@ class Store:
     def _task_map(self, db, run_id):
         run = db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         if run is None:
-            raise InvalidReference("运行不存在", run_id=run_id)
+            raise NotFound("运行不存在", run_id=run_id)
         return run, {row["task_id"]: row for row in db.execute(
             "SELECT * FROM run_tasks WHERE run_id=?", (run_id,))}
 
@@ -319,7 +364,7 @@ class Store:
                 if len(batch) >= slots:
                     break
                 paths = tasks[task_id]["write_paths"]
-                if any(_overlaps(left, right) for left in paths for right in busy + taken):
+                if any(overlaps(left, right) for left in paths for right in busy + taken):
                     continue
                 taken.extend(paths)
                 batch.append(task_id)
@@ -629,7 +674,7 @@ class Store:
     def snapshot(self, run_id):
         run = self.db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         if run is None:
-            raise InvalidReference("运行不存在", run_id=run_id)
+            raise NotFound("运行不存在", run_id=run_id)
         tasks = {}
         for row in self.db.execute("SELECT * FROM run_tasks WHERE run_id=?", (run_id,)):
             tasks[row["task_id"]] = {
@@ -645,8 +690,8 @@ class Store:
                     " based_on_version FROM artifacts WHERE run_id=? AND task_id=?"
                     " ORDER BY output_id, version", (run_id, row["task_id"]))],
             }
-        return {"id": run["id"], "plan_ref": {"id": run["plan_id"],
-                                              "version": run["plan_version"]},
+        return {"id": run["id"], "project_id": run["project_id"],
+                "plan_ref": {"id": run["plan_id"], "version": run["plan_version"]},
                 "mode": run["mode"], "dispatch": run["dispatch"], "state": run["state"],
                 "revision": run["revision"], "started_at": run["started_at"],
                 "ended_at": run["ended_at"], "latest_event_seq": run["latest_event_seq"],

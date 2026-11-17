@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>开发流程工作台 · 赛马与评审</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;color:#18253d;background:#f1f4f9;display:grid;grid-template-rows:auto minmax(0,1fr);height:100dvh;font:15px/1.5 Inter,"Microsoft YaHei UI","Microsoft YaHei",sans-serif}
+header{background:#15243d;color:#fff;padding:15px 24px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+header h1{font-size:20px;margin:0}header span{font-size:12px;color:#c9d8f5}
+main{display:grid;grid-template-columns:190px minmax(0,1fr);min-height:0}
+nav{background:#fff;border-right:1px solid #dbe3ee;padding:16px 11px;overflow:auto}
+nav ul{list-style:none;padding:0;margin:0}nav>ul>li+li{margin-top:8px}
+nav li ul{margin:2px 0 5px 14px;padding-left:8px;border-left:1px solid #dbe3ee}
+button{display:block;width:100%;text-align:left;font:inherit;color:#334968;border:0;background:transparent;padding:5px 7px;border-radius:5px;cursor:pointer}
+button[data-section]{font-weight:650;padding:7px}
+button[data-anchor]{font-size:12px}
+button[aria-current=step]{background:#e6eeff;color:#294da8}
+button:hover:not(:disabled){background:#eef3fc}button:disabled{opacity:.5;cursor:default}
+iframe{width:100%;height:100%;border:0;display:block}
+#workspace{min-width:0;min-height:0}
+[hidden]{display:none}
+@media(max-width:665px){
+  header{padding:12px 14px}header h1{font-size:17px}
+  main{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}
+  nav{border-right:0;border-bottom:1px solid #dbe3ee;padding:6px 8px}
+  nav>ul{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px}
+  nav>ul>li+li{margin-top:0}
+  nav li ul{margin-left:5px;padding-left:3px}
+  button{font-size:12px}
+}
+</style>
+<header><h1>开发流程工作台</h1><span>赛马与评审 · 本地模拟</span></header>
+<main>
+<nav aria-label="流程目录">
+<ul>
+<li><button type="button" data-section="requirements" aria-current="step">1 需求录入</button>
+<ul><li><button type="button" data-anchor="requirements">原文与快照</button></li></ul></li>
+<li><button type="button" data-section="race" disabled>2 赛马出案</button>
+<ul>
+<li><button type="button" data-anchor="race" disabled>提示词与分组</button></li>
+<li><button type="button" data-anchor="progress" disabled>小组进度</button></li>
+<li><button type="button" data-anchor="comparison" disabled>草案对照</button></li>
+</ul></li>
+<li><button type="button" data-section="review">3 评审与整合</button>
+<ul>
+<li><button type="button" data-review-tab="handoff">交接材料</button></li>
+<li><button type="button" data-review-tab="evaluation" disabled>独立评价</button></li>
+<li><button type="button" data-review-tab="spec" disabled>方案与决策</button></li>
+<li><button type="button" data-review-tab="history" disabled>版本与记录</button></li>
+</ul></li>
+</ul>
+</nav>
+<div id="workspace">
+<iframe id="intake" src="/intake?embedded=1" title="需求与赛马"></iframe>
+<iframe id="review" src="/review?embedded=1" title="评审与整合" hidden></iframe>
+</div>
+</main>
+<script>
+const intake = document.querySelector('#intake');
+const review = document.querySelector('#review');
+const nav = document.querySelector('nav');
+const observers = new Map();
+let active = 'intake', intakeStage = 'requirements', lastIntakeStage = 'requirements';
+
+function syncNavigation() {
+  const intakeDoc = intake.contentDocument;
+  const reviewDoc = review.contentDocument;
+  const available = !!intakeDoc?.querySelector('#race:not([hidden])');
+  const nextIntakeStage = available ? 'race' : 'requirements';
+  if (nextIntakeStage !== lastIntakeStage) intakeStage = lastIntakeStage = nextIntakeStage;
+  const stage = active === 'review' ? 'review' : intakeStage;
+  for (const button of nav.querySelectorAll('[data-section]')) {
+    if (button.dataset.section === stage) button.setAttribute('aria-current','step');
+    else button.removeAttribute('aria-current');
+  }
+  nav.querySelector('[data-section=race]').disabled = !intakeDoc?.querySelector('#race:not([hidden])');
+  for (const button of nav.querySelectorAll('[data-anchor]')) {
+    const target = intakeDoc?.getElementById(button.dataset.anchor);
+    button.disabled = !target || !!target.closest('[hidden]');
+  }
+  for (const button of nav.querySelectorAll('[data-review-tab]')) {
+    const target = reviewDoc?.querySelector('[data-tab="'+button.dataset.reviewTab+'"]');
+    button.disabled = !target || target.disabled;
+  }
+}
+
+function show(view) {
+  active = view;
+  intake.hidden = view !== 'intake';
+  review.hidden = view !== 'review';
+  syncNavigation();
+}
+
+for (const frame of [intake,review]) {
+  frame.addEventListener('load', () => {
+    observers.get(frame)?.disconnect();
+    const observer = new MutationObserver(syncNavigation);
+    observer.observe(frame.contentDocument.body,{subtree:true,childList:true,attributes:true,attributeFilter:['hidden','disabled']});
+    observers.set(frame,observer);
+    syncNavigation();
+  });
+}
+
+nav.addEventListener('click', event => {
+  const button = event.target.closest('button');
+  if (!button || button.disabled) return;
+  const {section,anchor,reviewTab} = button.dataset;
+  if (section==='review' || reviewTab) {
+    show('review');
+    if (reviewTab) review.contentDocument.querySelector('[data-tab="'+reviewTab+'"]')?.click();
+  } else {
+    const target = anchor || section;
+    intakeStage = target === 'requirements' ? 'requirements' : 'race';
+    show('intake');
+    intake.contentDocument.getElementById(target)?.scrollIntoView();
+  }
+});
+
+window.openRaceReview = async payload => {
+  const receive = review.contentWindow.receiveRaceHandoff;
+  if (typeof receive!=='function') throw new Error('评审页面还在加载，请稍后重试。');
+  await receive(payload);
+  show('review');
+};
+</script>
+</html>

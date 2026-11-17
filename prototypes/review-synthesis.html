@@ -20,6 +20,8 @@ pre{font:13px/1.8 Consolas,"Microsoft YaHei",monospace;white-space:pre-wrap;over
 @media(max-width:1000px){.layout{grid-template-columns:minmax(0,1fr) 245px}.panel{padding:19px}.step{padding:13px 12px;gap:8px}.step .num{font-size:20px}}
 @media(max-width:760px){main{padding:22px 14px}.layout{grid-template-columns:1fr}aside{position:static;order:-1}.two-col{grid-template-columns:1fr}.intro{align-items:flex-start}.intro h1{font-size:24px}.project-stamp{display:none}.steps{grid-template-columns:1fr 1fr}.step{border-bottom:1px solid var(--line)}.tabs button{padding:8px 11px}.section-top{align-items:flex-start;flex-wrap:wrap}.panel{padding:17px}header{padding:17px}.brand{font-size:16px}.intro p{font-size:12px}}
 @media(prefers-reduced-motion:no-preference){.panel{animation:appear .22s ease-out}@keyframes appear{from{opacity:.5;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}}
+html.embedded header,html.embedded .steps,html.embedded .intro{display:none}
+html.embedded main{padding-top:18px}
 </style>
 </head>
 <body>
@@ -33,6 +35,8 @@ pre{font:13px/1.8 Consolas,"Microsoft YaHei",monospace;white-space:pre-wrap;over
 </main>
 <script>
 const $=id=>document.getElementById(id);
+const embedded = window.parent !== window && new URLSearchParams(location.search).has('embedded');
+if (embedded) document.documentElement.classList.add('embedded');
 const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const clone=x=>JSON.parse(JSON.stringify(x));
 let project=null,tab='handoff',busy=false,selection='merge',buffer=null,historic=null,dirty=false;
@@ -51,7 +55,7 @@ async function api(path,body){
 async function operate(fn){
  if(busy)return;busy=true;$('error').textContent='';$('status').textContent='正在处理…';
  const buttons=[...document.querySelectorAll('button,input,textarea,select')].map(el=>[el,el.disabled]);buttons.forEach(([el])=>el.disabled=true);
- try{await fn();}catch(e){$('error').textContent=e.message;$('status').textContent='操作未完成，当前编辑内容保留。';}
+ try{await fn();return true;}catch(e){$('error').textContent=e.message;$('status').textContent='操作未完成，当前编辑内容保留。';return false;}
  finally{busy=false;buttons.forEach(([el,disabled])=>{if(el.isConnected)el.disabled=disabled;});}
 }
 async function sample(name){await operate(async()=>{const data=await api('/preview/examples/'+name);setProject(await api('/preview/projects',data));tab='handoff';render();$('status').textContent=name==='cly'?'已导入 CLY 实际生成的交接样例。':'已加载已有预约取舍案例。';});}
@@ -159,6 +163,20 @@ document.addEventListener('change',event=>{
  if(el.id==='version-select')viewVersion(el.value);
  if(el.id==='file-input'&&el.files[0])operate(async()=>{const text=await el.files[0].text();const data=JSON.parse(text.replace(/^\uFEFF/,''));setProject(await api('/preview/projects',data));tab='handoff';render();$('status').textContent='交接 JSON 已导入。';});
 });
+if (embedded) window.receiveRaceHandoff = async payload => {
+ if (busy) throw new Error('评审正在处理，请稍后再交接。');
+ const same = project && JSON.stringify([project.requirement,project.drafts])
+   === JSON.stringify([payload.requirement,payload.drafts]);
+ if (same) return;
+ if (dirty) throw new Error('评审页有未保存的编辑，请先保存，再交接新的赛马结果。');
+ const accepted = await operate(async()=>{
+  setProject(await api('/preview/projects',payload));
+  tab='handoff';
+  render();
+  $('status').textContent='已从赛马接收同版本需求与 A/B 草案。';
+ });
+ if (!accepted) throw new Error($('error').textContent || '交接失败，请重试。');
+};
 render();
 </script>
 </body></html>

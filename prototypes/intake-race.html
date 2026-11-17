@@ -39,6 +39,9 @@ button.primary{background:#294dbe;color:#fff}button:disabled{opacity:.45;cursor:
 .badge{display:inline-block;padding:2px 6px;margin:2px 0 7px;background:#e7eefb;color:#304d83;border-radius:4px;font-size:12px}
 .warn{color:#973e2a}.audit{margin-top:10px}
 [hidden]{display:none}
+html.embedded header,html.embedded nav{display:none}
+html.embedded .layout{grid-template-columns:minmax(0,1fr) minmax(190px,220px)}
+@media(max-width:760px){html.embedded .layout{grid-template-columns:1fr}html.embedded aside{grid-column:1}}
 @media(max-width:1050px){.layout{grid-template-columns:165px minmax(0,1fr)}aside{grid-column:2}}
 @media(max-width:650px){.layout,.grid{grid-template-columns:1fr}aside{grid-column:1}nav{position:static}nav>ul{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}nav>ul>li+li{margin-top:0}nav li ul{margin-left:5px;padding-left:6px}}
 </style>
@@ -105,6 +108,8 @@ button.primary{background:#294dbe;color:#fff}button:disabled{opacity:.45;cursor:
 </main>
 <script>
 const q = id => document.getElementById(id);
+const embedded = window.parent !== window && new URLSearchParams(location.search).has('embedded');
+if (embedded) document.documentElement.classList.add('embedded');
 const profiles = new Map();
 const results = new Map();
 let frozen, extraPrompt, version = 0, revision = 0, nextGroup = 3;
@@ -315,10 +320,19 @@ function render() {
   if (!all) return;
   const handoff = q('handoff');
   add(handoff,'h3','下载交接材料');
-  add(handoff,'button','下载 A/B 评审交接 JSON','primary').onclick = () => {
-    const drafts = ['A','B'].map(id=>results.get(id).data.draft);
-    exportJSON({requirement:frozen,drafts},'race-handoff-v'+version+'.json');
-  };
+  const payload = {requirement:frozen,drafts:['A','B'].map(id=>results.get(id).data.draft)};
+  if (embedded) {
+    const proceed = add(handoff,'button','进入评审与整合','primary');
+    proceed.onclick = async () => {
+      proceed.disabled = q('edit').disabled = q('reconfigure').disabled = true;
+      q('error').textContent = '';
+      try { await window.parent.openRaceReview(payload); }
+      catch (error) { q('error').textContent = error.message; }
+      finally { proceed.disabled = q('edit').disabled = q('reconfigure').disabled = false; }
+    };
+  }
+  add(handoff,'button','下载 A/B 评审交接 JSON',embedded?undefined:'primary').onclick =
+    () => exportJSON(payload,'race-handoff-v'+version+'.json');
   if (profiles.size>2) {
     add(handoff,'button','下载全部草案 JSON').onclick = () => {
       const drafts = [...results.values()].map(group=>group.data.draft);

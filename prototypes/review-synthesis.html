@@ -22,6 +22,9 @@ pre{font:13px/1.8 Consolas,"Microsoft YaHei",monospace;white-space:pre-wrap;over
 @media(prefers-reduced-motion:no-preference){.panel{animation:appear .22s ease-out}@keyframes appear{from{opacity:.5;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}}
 html.embedded header,html.embedded .steps,html.embedded .intro{display:none}
 html.embedded main{padding-top:18px}
+aside [aria-label='主理人检查与干预'] select{width:100%;font:inherit}
+aside .notice p{overflow-wrap:anywhere}
+.editor-card.open{scroll-margin-top:14px}
 </style>
 </head>
 <body>
@@ -40,12 +43,13 @@ if (embedded) document.documentElement.classList.add('embedded');
 const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const clone=x=>JSON.parse(JSON.stringify(x));
 let project=null,tab='handoff',busy=false,selection='merge',buffer=null,historic=null,dirty=false;
+let inspection=null, feedbackGroup='A', feedbackNote='';
 const refs=x=>`<div class="refs">${(x||[]).map(esc).join(' · ')}</div>`;
 const badge=(text,style='')=>`<span class="badge ${style}">${esc(text)}</span>`;
 const activeSpec=()=>historic||project?.specification;
 const readOnly=()=>!!historic;
 const splitRefs=text=>text.split(/[,，、\s]+/).filter(Boolean);
-function setProject(data){project=data;historic=null;buffer=data.specification?clone(data.specification):null;dirty=false;selection=data.specification?.selection||selection;render();}
+function setProject(data){if(project?.id!==data.id){feedbackNote='';feedbackGroup='A';}inspection=null;project=data;historic=null;buffer=data.specification?clone(data.specification):null;dirty=false;selection=data.specification?.selection||selection;render();}
 async function api(path,body){
  const response=await fetch(path,body===undefined?{cache:'no-store'}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  const data=await response.json();
@@ -61,7 +65,7 @@ async function operate(fn){
 async function sample(name){await operate(async()=>{const data=await api('/preview/examples/'+name);setProject(await api('/preview/projects',data));tab='handoff';render();$('status').textContent=name==='cly'?'已导入 CLY 实际生成的交接样例。':'已加载已有预约取舍案例。';});}
 async function importData(text){await operate(async()=>{const data=JSON.parse(text.replace(/^\uFEFF/,''));setProject(await api('/preview/projects',data));tab='handoff';render();$('status').textContent='交接材料已导入，请开始独立评审。';});}
 async function action(name,body={}){await operate(async()=>{const data=await api(`/preview/projects/${project.id}/actions/${name}`,body);setProject(data);tab=name==='evaluate'?'evaluation':'spec';render();$('status').textContent={evaluate:'两份独立评价已生成。',propose:'已生成新草稿，请核对正文和决策。',save:'人工编辑已保存为新版本。',confirm:'方案已确认，可以导出交接材料。'}[name];});}
-function markDirty(){dirty=true;$('status').textContent='有未保存编辑，请核对正文和结构化条目后保存。';if($('version-select'))$('version-select').disabled=true;renderSide();}
+function markDirty(){inspection=null;dirty=true;$('status').textContent='有未保存编辑，请核对正文和结构化条目后保存。';if($('version-select'))$('version-select').disabled=true;renderSide();}
 function field(collection,index,key,label,value,multiline=false,disabled=false){return `<label class="field">${esc(label)}${multiline?`<textarea rows="3" data-collection="${collection}" data-index="${index}" data-key="${key}" ${disabled?'disabled':''}>${esc(value)}</textarea>`:`<input data-collection="${collection}" data-index="${index}" data-key="${key}" value="${esc(value)}" ${disabled?'disabled':''}>`}</label>`;}
 function handoff(){
  let html=`<section class="panel"><div class="section-top"><div><div class="kicker">01 / HANDOFF</div><h2>从同一份需求开始</h2><div class="muted">保留原文、行号和主张来源，接收 CLY 导出的 JSON。</div></div>${badge(project?'已导入':'等待材料')}</div><div class="actions"><button class="btn primary" data-action="sample-conflict">加载取舍演示</button><button class="btn" data-action="sample-cly">加载 CLY 样例</button><button class="btn" data-action="choose-file">导入交接 JSON</button><input id="file-input" type="file" accept=".json,application/json" hidden></div><details><summary>粘贴交接 JSON</summary><textarea class="json-input" id="handoff-json" aria-label="交接 JSON" spellcheck="false" placeholder='{"requirement": {...}, "drafts": [...]} '></textarea><button class="btn" data-action="import-text">导入粘贴内容</button></details>`;
@@ -86,7 +90,7 @@ function specView(){
  html+=b.decisions.length?b.decisions.map((d,i)=>`<article class="editor-card"><div class="row-head"><strong>${esc(d.id)}</strong>${!ro?`<button class="btn small danger" data-action="remove-decision" data-index="${i}">移除决策</button>`:''}</div>${field('decisions',i,'scope','决策范围',d.scope,false,ro)}${field('decisions',i,'choice','采用的规则',d.choice,true,ro)}${field('decisions',i,'reason','采用理由',d.reason,true,ro)}<div class="two-col">${field('decisions',i,'requirement_ids','需求来源（逗号分隔）',d.requirement_ids.join(', '),false,ro)}${field('decisions',i,'draft_ids','草案来源（A / B）',d.draft_ids.join(', '),false,ro)}</div></article>`).join(''):`<p class="muted">暂无已整理的决策，请补充或在未决事项中说明原因。</p>`;
  if(!ro)html+=`<button class="btn small" data-action="add-decision">＋ 添加决策</button>`;
  html+=`<h3 style="margin-top:26px">待处理事项</h3>`;
- html+=b.open_items.length?b.open_items.map((o,i)=>`<article class="editor-card open"><div class="row-head"><strong>${esc(o.id)}</strong>${badge(o.resolution?'已填写答复':o.blocking?'待决定 · 阻塞相关任务':'待决定',o.resolution?'green':'amber')}</div>${field('open_items',i,'question','问题与选项',o.question,true,ro)}${field('open_items',i,'affected_requirement_ids','影响的需求（逗号分隔）',o.affected_requirement_ids.join(', '),false,ro)}<label class="check"><input type="checkbox" data-collection="open_items" data-index="${i}" data-key="blocking" ${o.blocking?'checked':''} ${ro?'disabled':''}> 未解决时阻塞相关任务</label>${field('open_items',i,'resolution','人工答复（空白表示仍待决定）',o.resolution||'',true,ro)}${!ro?`<button class="btn small" data-action="resolve-decision" data-index="${i}">将答复写入决策并更新正文</button> <button class="btn small danger" data-action="remove-open" data-index="${i}">移除此事项</button>`:''}</article>`).join(''):`<p class="muted">暂无登记的未决事项，仍需人工复查整体方案。</p>`;
+ html+=b.open_items.length?b.open_items.map((o,i)=>`<article class="editor-card open" data-open-id="${esc(o.id)}"><div class="row-head"><strong>${esc(o.id)}</strong>${badge(o.resolution?'已填写答复':o.blocking?'待决定 · 阻塞相关任务':'待决定',o.resolution?'green':'amber')}</div>${field('open_items',i,'question','问题与选项',o.question,true,ro)}${field('open_items',i,'affected_requirement_ids','影响的需求（逗号分隔）',o.affected_requirement_ids.join(', '),false,ro)}<label class="check"><input type="checkbox" data-collection="open_items" data-index="${i}" data-key="blocking" ${o.blocking?'checked':''} ${ro?'disabled':''}> 未解决时阻塞相关任务</label>${field('open_items',i,'resolution','人工答复（空白表示仍待决定）',o.resolution||'',true,ro)}${!ro?`<button class="btn small" data-action="resolve-decision" data-index="${i}">将答复写入决策并更新正文</button> <button class="btn small danger" data-action="remove-open" data-index="${i}">移除此事项</button>`:''}</article>`).join(''):`<p class="muted">暂无登记的未决事项，仍需人工复查整体方案。</p>`;
  if(!ro)html+=`<button class="btn small" data-action="add-open">＋ 添加待处理事项</button>`;
  html+=`<div class="toolbar"><h3>方案正文 · Markdown</h3>${!ro?'<button class="btn small subtle" data-action="sync-markdown">根据当前决策更新正文</button>':''}</div><label class="muted" for="markdown-editor">正文将随结构化条目一起保存。更新正文按钮会重新生成下面的文本。</label><textarea id="markdown-editor" class="md-editor" ${ro?'disabled':''}>${esc(b.markdown)}</textarea>`;
  const records=project.review_records.filter(r=>r.version===spec.version);
@@ -107,6 +111,73 @@ function renderSide(){
  if(project)html+=`<button class="btn subtle" data-action="refresh">${dirty?'放弃未保存编辑并刷新':'刷新当前快照'}</button>`;
  html+='<details><summary>本轮演示范围</summary><p>默认使用离线模拟回调；来源覆盖不等于方案质量。具体语义、技术与预算由人工复查。公开的方案内容不替代用户的关键业务决定。</p></details>';
  $('supervisor').innerHTML=html;
+ renderStewardPanel();
+}
+function renderStewardPanel() {
+ if (!project) return;
+ const panel=document.createElement('section');
+ panel.className='rule';
+ panel.setAttribute('aria-label','主理人检查与干预');
+ $('supervisor').append(panel);
+ const append=(tag,text,parent=panel)=>{
+  const node=document.createElement(tag);
+  node.textContent=text;
+  parent.append(node);
+  return node;
+ };
+ const control=(text,action,parent=panel)=>{
+  const button=append('button',text,parent);
+  button.type='button';
+  button.className='btn subtle';
+  button.dataset.action=action;
+  return button;
+ };
+ append('h3','主理人检查');
+ if (buffer && !historic) control('检查当前方案','inspect');
+ if (inspection) append('p',dirty?'检查对象：当前未保存的编辑':'检查对象：当前方案 v'+inspection.version);
+ const findings=inspection?.findings || (!dirty&&!historic?project.findings:[]);
+ if (!findings.length) append('p',dirty?'编辑发生变化。重新检查可核对当前输入。':'生成草稿后检查需求来源和未决事项。');
+ for (const finding of findings) {
+  const item=append('div','');
+  item.className=finding.severity==='info'?'notice blue':'notice';
+  append('strong',finding.severity==='error'?'发现问题':finding.severity==='warning'?'待人工处理':'来源检查通过',item);
+  append('p',finding.summary,item);
+  if (finding.evidence_refs?.length) append('p','依据 '+finding.evidence_refs.join(' · '),item);
+  if (finding.suggestion) append('p',finding.suggestion,item);
+  if (finding.ref_id) {
+   const button=control('定位 '+finding.ref_id,'locate-finding',item);
+   button.dataset.refId=finding.ref_id;
+  }
+ }
+ if (!embedded) return;
+ const feedback=append('details','');
+ append('summary','退回小组补充',feedback);
+ if (feedbackNote) feedback.open=true;
+ const groupLabel=append('label','返工小组',feedback);
+ groupLabel.className='field';
+ const select=append('select','',groupLabel);
+ for (const draft of project.drafts) {
+  const option=append('option',draft.id+' 组',select);
+  option.value=draft.id;
+ }
+ select.value=feedbackGroup;
+ select.onchange=()=>{feedbackGroup=select.value;};
+ const noteLabel=append('label','返工指令',feedback);
+ noteLabel.className='field';
+ const note=append('textarea','',noteLabel);
+ note.rows=3;
+ note.value=feedbackNote;
+ note.oninput=()=>{feedbackNote=note.value;};
+ control('发送返工指令','return-race',feedback);
+}
+async function inspectCurrent(){
+ await operate(async()=>{
+  inspection=await api('/preview/projects/'+project.id+'/actions/inspect',{
+   expected_version:buffer.version,markdown:buffer.markdown,decisions:buffer.decisions,open_items:buffer.open_items
+  });
+  renderSide();
+  $('status').textContent='主理检查已完成。';
+ });
 }
 function render(){
  const spec=project?.specification;
@@ -124,7 +195,7 @@ function regenerateMarkdown(){
  for(const o of buffer.open_items)parts.push(`- ${o.id} · ${o.question}\n  影响：${o.affected_requirement_ids.join('、')}；${o.blocking?'阻塞相关任务':'非阻塞'}；处理结果：${o.resolution||'待人工决定'}`);
  if(!buffer.open_items.length)parts.push('无已登记的未决事项，仍需人工复查业务语义。');buffer.markdown=parts.join('\n\n');
 }
-async function viewVersion(version){await operate(async()=>{if(version==='latest'||Number(version)===project.specification.version){historic=null;buffer=clone(project.specification);}else{historic=await api(`/preview/projects/${project.id}/specifications/${project.specification.id}/versions/${version}`);buffer=clone(historic);}dirty=false;tab='spec';render();$('status').textContent=historic?'正在查看历史版本，仅可阅读。':'已返回当前最新版本。';});}
+async function viewVersion(version){await operate(async()=>{inspection=null;if(version==='latest'||Number(version)===project.specification.version){historic=null;buffer=clone(project.specification);}else{historic=await api(`/preview/projects/${project.id}/specifications/${project.specification.id}/versions/${version}`);buffer=clone(historic);}dirty=false;tab='spec';render();$('status').textContent=historic?'正在查看历史版本，仅可阅读。':'已返回当前最新版本。';});}
 function download(kind){const spec=activeSpec();if(!spec||spec.status!=='confirmed'||dirty)return;const payload={requirement:project.requirement,drafts:project.drafts,evaluations:project.evaluations,specification:spec,review_records:project.review_records.filter(r=>r.version<=spec.version)};const text=kind==='json'?JSON.stringify(payload,null,2):spec.markdown;const url=URL.createObjectURL(new Blob([text],{type:kind==='json'?'application/json':'text/markdown;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download=`review-handoff-${spec.id}-v${spec.version}.${kind==='json'?'json':'md'}`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);$('status').textContent='已导出 v'+spec.version+'，未决事项随方案保留。';}
 document.addEventListener('click',async event=>{
  const el=event.target.closest('button[data-action]');if(!el||el.disabled||busy)return;const a=el.dataset.action;
@@ -136,6 +207,26 @@ document.addEventListener('click',async event=>{
  if(a==='propose')return action('propose',{selection,expected_version:project.specification?.version||0});
  if(a==='save')return action('save',{expected_version:buffer.version,markdown:buffer.markdown,decisions:buffer.decisions,open_items:buffer.open_items});
  if(a==='confirm')return action('confirm',{expected_version:project.specification.version});
+ if(a==='inspect')return inspectCurrent();
+ if(a==='locate-finding'){
+  tab='spec';render();
+  const target=[...document.querySelectorAll('[data-open-id]')].find(item=>item.dataset.openId===el.dataset.refId);
+  target?.querySelector('textarea[data-key=resolution]')?.focus();
+  target?.scrollIntoView({block:'center'});
+  return;
+ }
+ if(a==='return-race'){
+  $('error').textContent='';
+  const note=feedbackNote.trim();
+  if(!note){$('error').textContent='请填写返工指令。';return;}
+  try {
+   window.parent.returnToRace({groupId:feedbackGroup,note,requirement:project.requirement});
+   feedbackNote='';
+   renderSide();
+   $('status').textContent='返工指令已送到赛马主理人，等待人工应用。';
+  } catch(error){$('error').textContent=error.message;}
+  return;
+ }
  if(a==='refresh')return operate(async()=>{setProject(await api('/preview/projects/'+project.id));$('status').textContent='已刷新到最新快照。';});
  if(a==='view-version')return viewVersion(el.dataset.version);
  if(a==='export-json'||a==='export-md')return download(a==='export-json'?'json':'md');

@@ -24,6 +24,15 @@ nav a[aria-disabled=true]{opacity:.48;cursor:default;text-decoration:none}
 .config-card label{margin-bottom:0}
 .config-card textarea{font-size:13px;margin-top:4px}
 .prompt-record{white-space:pre-wrap;color:#465b7b}
+.steward{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto}
+.steward h3{margin-top:12px}
+.steward select{width:100%;padding:4px;border:1px solid #b9c9e0;background:#fff;font:inherit}
+.steward textarea{font-size:13px}
+.steward .evidence{font-size:13px}
+.steward summary{cursor:pointer;color:#294da8}
+.steward details{margin-top:12px}
+.steward ol{padding-left:20px;margin:6px 0;font-size:12px;overflow-wrap:anywhere}
+@media(max-width:760px){.steward{position:static;max-height:none}}
 section,aside{border:1px solid #dbe3ee;background:#fff;border-radius:10px;padding:16px}
 main section+section{margin-top:12px}
 aside{background:#f8faff}
@@ -100,10 +109,24 @@ html.embedded .layout{grid-template-columns:minmax(0,1fr) minmax(190px,220px)}
 <div id="handoff"></div>
 </section>
 </div>
-<aside>
-<h2>阶段主理</h2>
+<aside id="race-steward" class="steward" aria-label="赛马主理人">
+<h2>赛马主理人</h2>
 <p id="guidance" aria-live="polite">先检查需求原文。确认后，为各组设置提示词，各组都会读取同一版快照。</p>
 <p class="warn" id="error" role="alert"></p>
+<div id="steward-controls" hidden>
+  <button type="button" id="toggle-dispatch">暂停派发</button>
+  <p id="dispatch-status" aria-live="polite"></p>
+  <h3>给小组补充指令</h3>
+  <label for="steward-group">目标小组</label>
+  <select id="steward-group"></select>
+  <label for="steward-note">补充指令</label>
+  <textarea id="steward-note" rows="3" placeholder="补充约束、优先级或要检查的问题"></textarea>
+  <button type="button" id="apply-instruction">写入小组提示词</button>
+  <p id="instruction-status" aria-live="polite"></p>
+  <h3>主理检查</h3>
+  <div id="steward-findings" aria-live="polite"></div>
+  <details><summary>查看操作记录</summary><ol id="steward-log"></ol></details>
+</div>
 </aside></div>
 </main>
 <script>
@@ -112,6 +135,7 @@ const embedded = window.parent !== window && new URLSearchParams(location.search
 if (embedded) document.documentElement.classList.add('embedded');
 const profiles = new Map();
 const results = new Map();
+let dispatchPaused = false;
 let frozen, extraPrompt, version = 0, revision = 0, nextGroup = 3;
 const labels = {idle:'待启动',running:'组内生成中',done:'已提交',failed:'失败'};
 function add(parent, tag, text, css) {
@@ -160,6 +184,7 @@ q('freeze').onclick = async () => {
     frozen = await post('snapshot',{markdown:editor.value,version:version+1});
     version = frozen.version;
     revision++;
+    recordSteward('确认需求快照 v'+version+'，'+frozen.items.length+' 条需求。');
     q('editor').hidden = true;
     q('edit').hidden = false;
     q('race').hidden = false;
@@ -168,7 +193,9 @@ q('freeze').onclick = async () => {
     for (const item of frozen.items) {
       const {section,start_line,end_line} = item.source;
       const lines=start_line===end_line?start_line:start_line+'–'+end_line;
-      add(q('snapshot'),'div',item.id+' · '+section+' · 第 '+lines+' 行\n'+item.text,'evidence');
+      const row = add(q('snapshot'),'div',item.id+' · '+section+' · 第 '+lines+' 行\n'+item.text,'evidence');
+      row.id = 'source-'+item.id;
+      row.tabIndex = -1;
     }
     render();
   } catch (error) {
@@ -184,6 +211,8 @@ q('edit').onclick = () => {
   q('editor').hidden = false;
   q('snapshot').replaceChildren();
   q('guidance').textContent = '修改后重新确认。新赛马使用新快照。';
+  q('steward-controls').hidden = true;
+  q('comparison').hidden = true;
   setStage('input');
   q('markdown').focus();
 };
@@ -204,6 +233,7 @@ function renderConfig() {
     input.oninput = () => {
       input.setCustomValidity('');
       profile.prompt = input.value;
+      renderSteward();
     };
     if (id!=='A' && id!=='B') {
       add(box,'button','移除 '+id+' 组').onclick = () => {
@@ -213,6 +243,7 @@ function renderConfig() {
       };
     }
   }
+  renderSteward();
 }
 
 q('add-group').onclick = () => {
@@ -237,6 +268,7 @@ q('reconfigure').onclick = () => {
   q('prompt-A').focus();
 };
 q('start').onclick = () => {
+  if (dispatchPaused || results.size) return;
   for (const [id, profile] of profiles) {
     if (!profile.prompt.trim()) {
       const input = q('prompt-'+id);
@@ -247,11 +279,13 @@ q('start').onclick = () => {
   }
   const fail = q('fail').checked;
   q('fail').checked = false;
+  recordSteward('派发 '+profiles.size+' 个小组，统一使用需求 v'+version+'。');
   for (const [id, profile] of profiles) results.set(id,{state:'running',prompt:profile.prompt.trim()});
   render();
   for (const id of profiles.keys()) run(id, id==='B' && fail);
 };
 async function run(id, fail=false) {
+  if (dispatchPaused) return;
   const epoch = revision;
   const {prompt} = results.get(id);
   results.set(id,{state:'running',prompt});
@@ -264,12 +298,100 @@ async function run(id, fail=false) {
     if (data.draft.id!==id || data.draft.requirement_ref.id!==frozen.id || data.draft.requirement_ref.version!==frozen.version)
       throw new Error('草案与当前需求快照不匹配，请重试。');
     results.set(id,{state:'done',data,prompt});
+    recordSteward(id+' 组草案已提交，需求版本核对通过。');
   } catch (error) {
     if (epoch !== revision) return;
     results.set(id,{state:'failed',error:error.message,prompt});
+    recordSteward(id+' 组失败。可保留其他结果并单独重试。');
   }
   render();
 }
+function recordSteward(message) {
+  add(q('steward-log'),'li','v'+version+' · '+message);
+}
+function renderSteward() {
+  q('steward-controls').hidden = !frozen;
+  if (!frozen) return;
+  q('start').disabled = dispatchPaused;
+  q('toggle-dispatch').textContent = dispatchPaused ? '继续派发' : '暂停派发';
+  q('dispatch-status').textContent = dispatchPaused ? '派发已暂停。已发出的请求仍可提交结果。' : '';
+  const select = q('steward-group');
+  const ids = [...profiles.keys()];
+  if ([...select.options].map(option=>option.value).join(',') !== ids.join(',')) {
+    const selected = select.value;
+    select.replaceChildren();
+    for (const id of ids) {
+      const option = add(select,'option',id+' 组');
+      option.value = id;
+    }
+    if (profiles.has(selected)) select.value = selected;
+  }
+  const target = results.get(select.value);
+  q('apply-instruction').textContent = target ? '应用指令并重跑该组' : '写入小组提示词';
+  q('apply-instruction').disabled = target?.state === 'running' || (!!target && dispatchPaused);
+  const panel = q('steward-findings');
+  panel.replaceChildren();
+  for (const item of frozen.items) {
+    if (!/[？?]\s*$/.test(item.text) && !/澄清|待确认/.test(item.source.section)) continue;
+    const finding = add(panel,'div',undefined,'evidence');
+    add(finding,'p',item.id+' 仍需人工澄清。');
+    add(finding,'button','查看 '+item.id).onclick = () => q('source-'+item.id)?.focus();
+  }
+  const seen = new Set();
+  for (const prompt of [...profiles.values()].map(profile=>profile.prompt.trim())) {
+    if (prompt && seen.has(prompt)) {
+      add(panel,'p','部分小组提示词相同。建议明确各组的探索重点。','warn');
+      break;
+    }
+    seen.add(prompt);
+  }
+  for (const [id, result] of results) {
+    if (result.state !== 'done') continue;
+    const covered = new Set(result.data.draft.claims.flatMap(claim=>claim.requirement_ids));
+    const missing = frozen.items.filter(item=>!covered.has(item.id)).map(item=>item.id);
+    if (missing.length) add(panel,'p',id+' 组未引用 '+missing.join('、')+'。可补充指令要求说明覆盖或留作未决。','warn');
+  }
+  if (!panel.children.length) add(panel,'small','暂未发现缺少来源覆盖或待澄清项。');
+}
+q('steward-group').onchange = renderSteward;
+q('toggle-dispatch').onclick = () => {
+  dispatchPaused = !dispatchPaused;
+  recordSteward(dispatchPaused ? '暂停后续派发。' : '恢复派发。');
+  render();
+};
+q('apply-instruction').onclick = () => {
+  const id = q('steward-group').value;
+  const field = q('steward-note');
+  const note = field.value.trim();
+  const result = results.get(id);
+  if (!note) {
+    q('instruction-status').textContent = '请填写补充指令。';
+    field.focus();
+    return;
+  }
+  if (result?.state === 'running' || (result && dispatchPaused)) return;
+  const profile = profiles.get(id);
+  profile.prompt = profile.prompt.trim()+'\n\n负责人补充指令：'+note;
+  recordSteward(id+' 组补充指令：'+note);
+  field.value = '';
+  q('instruction-status').textContent = result ? '已按补充指令重跑 '+id+' 组。' : '已写入 '+id+' 组提示词。';
+  renderConfig();
+  if (result) {
+    result.prompt = profile.prompt;
+    run(id);
+  }
+};
+if (embedded) window.receiveReviewInstruction = ({groupId, note, requirement}) => {
+  if (!frozen || requirement.id !== frozen.id || requirement.version !== frozen.version
+      || requirement.markdown !== frozen.markdown || !profiles.has(groupId))
+    throw new Error('当前赛马与评审绑定的需求版本不同，未写入返工指令。');
+  q('steward-group').value = groupId;
+  q('steward-note').value = note;
+  q('instruction-status').textContent = '已收到评审反馈。核对后应用指令。';
+  recordSteward('收到评审对 '+groupId+' 组的反馈。');
+  renderSteward();
+  q('steward-note').focus();
+};
 function exportJSON(payload, filename) {
   const url = URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));
   const link = document.createElement('a');
@@ -290,6 +412,7 @@ function render() {
   q('drafts').replaceChildren();
   q('handoff').replaceChildren();
   setStage(all?'review':'race');
+  renderSteward();
   if (!started) {
     q('guidance').textContent = '需求 v'+version+' 已确认。为各组设置不同的探索重点，再启动赛马。';
     return;
@@ -303,7 +426,9 @@ function render() {
     add(progress,'span',labels[group.state],'badge');
     if (group.state==='failed') {
       add(progress,'p',group.error,'warn');
-      add(progress,'button','重试 '+id+' 组').onclick = () => run(id);
+      const retry = add(progress,'button','重试 '+id+' 组');
+      retry.disabled = dispatchPaused;
+      retry.onclick = () => run(id);
     }
     if (!all) continue;
     const {draft,ideas,challenge} = group.data;

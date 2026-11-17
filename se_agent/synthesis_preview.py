@@ -78,11 +78,15 @@ class PreviewStore:
 
     @staticmethod
     def findings(project, spec):
-        findings = [{"code": "MOCK_REVIEW", "version": spec["version"],
-                     "summary": "这是来源整理与固定示例复查；其他语义冲突、技术可行性和预算须人工核实。"}]
+        required = [item["id"] for item in project["requirement"]["items"]]
+        findings = [{"code": "REFERENCES_OK", "version": spec["version"], "severity": "info",
+                     "summary": f"{len(required)} 条需求都能追溯到决策或待处理事项。",
+                     "evidence_refs": required, "suggestion": "请人工核对规则含义和取舍。"}]
         findings.extend({"code": "OPEN_ITEM", "version": spec["version"], "ref_id": item["id"],
-                         "summary": item["question"], "blocking": item["blocking"],
-                         "requirement_ids": item["affected_requirement_ids"]}
+                         "summary": item["question"], "blocking": item["blocking"], "severity": "warning",
+                         "requirement_ids": item["affected_requirement_ids"],
+                         "evidence_refs": [item["id"], *item["affected_requirement_ids"]],
+                         "suggestion": "请填写人工答复；也可保留未决并交给后续环节。"}
                         for item in spec["open_items"] if item["resolution"] is None)
         return findings
 
@@ -102,7 +106,7 @@ class PreviewStore:
             evaluations = [synthesis.evaluate_draft(project["requirement"], d) for d in project["drafts"]]
             project["evaluations"] = evaluations
             return self.snapshot(project)
-        if action not in ("propose", "save", "confirm"):
+        if action not in ("propose", "save", "confirm", "inspect"):
             raise PreviewError("NOT_FOUND", "操作不存在", 404)
         current = latest["version"] if latest else 0
         expected = payload.get("expected_version")
@@ -110,6 +114,19 @@ class PreviewStore:
             raise PreviewError("INVALID_REQUEST", "expected_version 必须是非负整数", 400)
         if expected != current:
             raise PreviewError("VERSION_CONFLICT", "方案已变化，请刷新后核对；本次修改未保存。", current_version=current)
+        if action == "inspect":
+            if not latest:
+                raise PreviewError("INVALID_STATE", "请先生成方案草稿。")
+            content = {key: payload.get(key) for key in ("markdown", "decisions", "open_items")}
+            try:
+                synthesis.validate_proposal(project["requirement"], project["drafts"], content)
+            except synthesis.SynthesisError as error:
+                return {"version": current, "findings": [
+                    {"code": error.code, "severity": "error", "summary": str(error),
+                     "evidence_refs": [error.path] if error.path else [],
+                     "suggestion": "检查对应字段和需求来源，修正后再保存。"}
+                ]}
+            return {"version": current, "findings": self.findings(project, {**content, "version": current})}
         if action == "confirm":
             if not latest or latest["status"] != "draft":
                 raise PreviewError("INVALID_STATE", "只有最新草稿可以确认。")

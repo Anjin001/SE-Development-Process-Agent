@@ -88,6 +88,21 @@ class PreviewStoreTest(unittest.TestCase):
         self.assertEqual(final["requirement"], project["requirement"])
 
 
+    def test_steward_inspects_current_edits_without_saving(self):
+        before = self.propose()
+        spec = before["specification"]
+        request = {"expected_version": 1, **{k: deepcopy(spec[k]) for k in ("markdown", "decisions", "open_items")}}
+        good = self.store.change(self.id, "inspect", request)
+        self.assertEqual(good["version"], 1)
+        self.assertTrue(any(f["ref_id"] == "OPEN-01" and "REQ-02" in f["evidence_refs"]
+                            for f in good["findings"] if f["code"] == "OPEN_ITEM"))
+        request["decisions"][0]["requirement_ids"] = ["REQ-999"]
+        invalid = self.store.change(self.id, "inspect", request)
+        self.assertEqual(invalid["findings"][0]["severity"], "error")
+        self.assertEqual(invalid["findings"][0]["evidence_refs"], ["proposal.decisions[0].requirement_ids"])
+        self.assertEqual(before, self.store.snapshot(self.store.get(self.id)))
+
+
 class PreviewHttpTest(unittest.TestCase):
     def setUp(self):
         self.server = make_preview_server(0)

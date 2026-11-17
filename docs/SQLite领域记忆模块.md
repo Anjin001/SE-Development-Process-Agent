@@ -45,3 +45,47 @@ python -m unittest discover -s tests -v
 4. 内容版本冲突拒绝覆盖，悬空来源导致事务回滚，不留半条记录。
 
 运行编排的 attempts/events/lease/idempotency 继续由朱新棋的 Store 负责，本服务不替代该存储。
+
+## 完善版增量（本节替代前述已过时的能力限制）
+
+### 新增能力
+
+- bootstrap/grant：服务端初始化项目和 admin/member/reviewer 角色；公开复查与状态变更校验角色，独立审核拒绝作者自己批准。
+- publish：保留候选原稿，审核生成下一内容版本并记录审核人和理由；set_state 管理 published/review/retired/superseded 放行元数据；revoke 撤回所有版本来源，关联经验读取及检索会重新检查来源，历史基线不会绕过撤权。
+- commit_stage：阶段产物与 checkpoint 在一个 BEGIN IMMEDIATE 事务内提交；按项目和 key 记录请求摘要，原请求重试直接返回原结果，不重复生成版本；同 key 不同内容拒绝。checkpoint 冲突会回滚前面写入的全部产物。
+- MemorySession：固定项目、身份、阶段的 Agent 工具适配器，提供 read/search/propose；Agent 只能提交私有候选，不能通过参数伪造他人或审核者。DomainMemory 原始接口是可信控制器边界，不允许直接暴露给 Agent 或任意客户端。
+- context/history/list_records：按访问权限重新组装上下文和浏览版本；checklist 记录 pending/passed/failed/not_applicable 与依据；usage 保留采用、拒用与证据；audit 为审核管理者提供带游标的操作记录。
+- WAL、busy_timeout、多连接版本冲突、索引、加法迁移、SQLite backup API 备份。每个线程/请求使用独立连接；事务内部的嵌套调用参加外层事务。
+- 检索按完整触发、命中数量、证据质量及稳定编号排序。短中文词与同义词走显式标签，不要求额外 FTS/向量库。业务反例用 required_tags、scope/exceptions 及 not_applicable 理由保留，不能让旧项目偏好覆盖当前需求。
+
+### 演示与浏览
+
+```bash
+python -m se_agent.memory_demo
+python -m se_agent.memory_server --db memory.sqlite --project PROJECT-01 --agent AGENT-01 --stage review --port 8004
+```
+
+memory_demo 在临时数据库中演示：座位预约案例 → 经验候选 → 独立审核发布 → 设备项目固定基线 → “周五送修”召回 → 检查项 → 产物和检查点原子提交 → 同请求重放 → 恢复待人工确认位置。演示结束清理临时数据。
+
+浏览器打开 http://127.0.0.1:8004。浏览现有数据库之前需由控制器 join/bootstrap 创建对应成员。页面提供受权限过滤的记录列表、领域标签检索；GET /api/memory/record?id=...&version=... 精确读取。项目/身份/阶段由启动参数固定，请求传入 agent 不会覆盖。该本机浏览接口只读；生产环境需要统一应用认证后构造 MemorySession，不能把本地演示当成互联网多用户认证系统。
+
+### AutoGen 接入
+
+不强制安装 AutoGen。控制器在每次切换阶段时创建新的 MemorySession，注册 read/search/propose 作为受限工具，将 context 返回的事实及经验附到新的会话上下文；按消息原有 sender/phase/conversation_id 将正文保存在 message 记录中，checkpoint 只保存引用、阶段、已完成和待处理事项。恢复时先 resume 校验引用，再按 read 取出允许的消息，将转换后的会话消息传给实际 AutoGen GroupChatManager.resume。模块不反序列化不可信 Python 对象，也不自动重放外部模型调用。
+
+### 迁移与集成
+
+旧版 QLM 数据库重新打开时自动新增 dm_roles/status/revoked/audit/operations/checks 表和索引，不覆盖 dm_records，不改动朱新棋数据库的 PRAGMA user_version。旧系统的 join/save 是控制器兼容入口，需由统一服务认证保护；新 Agent 一律使用 MemorySession。ZXQ 的 memory.py 仍独立存在于其分支，组长可选择此模块并对其 Store 增加适配，不应同时把两份经验库作为事实来源。
+
+### 学习参考
+
+实现为本项目自行编写，未复制第三方源码，也未增加第三方运行依赖。参考：
+
+- LangGraph SQLite Checkpointer：检查点存储、线程作用域和生命周期分离设计。https://github.com/langchain-ai/langgraph/tree/main/libs/checkpoint-sqlite
+- SQLite WAL 官方说明：读写并发、WAL 文件生命周期与备份注意事项。https://sqlite.org/wal.html
+
+### 验收范围
+
+测试覆盖角色审核、间接来源撤回、退役经验不再推荐但保留历史、固定基线、不适用边界、别名、跨组隔离、原子回滚、幂等冲突、重启恢复、双连接旧版本拒绝、备份可读、固定身份适配和 HTTP 身份不可覆盖。实际模型输出质量、AutoGen 特定版本集成以及全项目统一身份系统需在对应集成环境验证。
+
+完善版最终验收：20 项完整回归测试全部通过（已去除继承造成的重复用例），memory_demo 生命周期演示通过，git diff --check 通过。

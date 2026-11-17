@@ -1,0 +1,240 @@
+{
+  "requirement": {
+    "id": "REQSET-01",
+    "version": 1,
+    "markdown": "# 设备预约\n停用设备保留在列表，显示停用状态。\n禁止对停用设备发起新预约。",
+    "items": [
+      {
+        "id": "REQ-01",
+        "title": "展示停用状态",
+        "text": "停用设备保留在列表，显示停用状态。",
+        "source": {
+          "section": "设备预约",
+          "start_line": 2,
+          "end_line": 2
+        }
+      },
+      {
+        "id": "REQ-02",
+        "title": "阻止新预约",
+        "text": "禁止对停用设备发起新预约。",
+        "source": {
+          "section": "设备预约",
+          "start_line": 3,
+          "end_line": 3
+        }
+      }
+    ]
+  },
+  "drafts": [
+    {
+      "id": "A",
+      "requirement_ref": {
+        "id": "REQSET-01",
+        "version": 1
+      },
+      "title": "统一设备状态",
+      "summary": "先统一状态定义，再实现列表。",
+      "claims": [
+        {
+          "id": "A-01",
+          "text": "列表保留停用设备",
+          "requirement_ids": [
+            "REQ-01"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B",
+      "requirement_ref": {
+        "id": "REQSET-01",
+        "version": 1
+      },
+      "title": "先限制预约入口",
+      "summary": "把停用状态作为预约服务的准入条件。",
+      "claims": [
+        {
+          "id": "B-01",
+          "text": "服务端拒绝停用设备的新预约",
+          "requirement_ids": [
+            "REQ-02"
+          ]
+        },
+        {
+          "id": "B-02",
+          "text": "设备停用后自动取消受影响的已有预约。",
+          "requirement_ids": [
+            "REQ-02"
+          ]
+        }
+      ]
+    }
+  ],
+  "evaluations": [
+    {
+      "draft_id": "A",
+      "criteria": [
+        {
+          "criterion": "value",
+          "score": 3,
+          "reason": "模拟：主张引用覆盖 1/2 项需求，仅衡量来源覆盖，不代表真实用户价值。",
+          "claim_ids": [
+            "A-01"
+          ]
+        },
+        {
+          "criterion": "feasibility",
+          "score": 3,
+          "reason": "模拟中性值：尚未核实技术和外部依赖，须人工复查。",
+          "claim_ids": [
+            "A-01"
+          ]
+        },
+        {
+          "criterion": "cost",
+          "score": 3,
+          "reason": "模拟中性值：缺少可信工时和预算依据，不能据此断言更省。",
+          "claim_ids": [
+            "A-01"
+          ]
+        }
+      ]
+    },
+    {
+      "draft_id": "B",
+      "criteria": [
+        {
+          "criterion": "value",
+          "score": 3,
+          "reason": "模拟：主张引用覆盖 1/2 项需求，仅衡量来源覆盖，不代表真实用户价值。",
+          "claim_ids": [
+            "B-01",
+            "B-02"
+          ]
+        },
+        {
+          "criterion": "feasibility",
+          "score": 3,
+          "reason": "模拟中性值：尚未核实技术和外部依赖，须人工复查。",
+          "claim_ids": [
+            "B-01",
+            "B-02"
+          ]
+        },
+        {
+          "criterion": "cost",
+          "score": 3,
+          "reason": "模拟中性值：缺少可信工时和预算依据，不能据此断言更省。",
+          "claim_ids": [
+            "B-01",
+            "B-02"
+          ]
+        }
+      ]
+    }
+  ],
+  "specification": {
+    "id": "SPEC-07a6afd5",
+    "version": 2,
+    "status": "confirmed",
+    "requirement_ref": {
+      "id": "REQSET-01",
+      "version": 1
+    },
+    "selection": "merge",
+    "markdown": "# 综合开发方案\n\n## 需求原文与约束\n\n# 设备预约\n停用设备保留在列表，显示停用状态。\n禁止对停用设备发起新预约。\n\n## 方案决策\n\n### DEC-01 · 展示停用状态\n列表保留停用设备\n\n理由：模拟整合：按人工选择整理候选主张 A-01，未自动判定语义一致性；确认前需人工复查。\n\n来源：REQ-01、A\n\n### DEC-02 · 阻止新预约\n服务端拒绝停用设备的新预约\n\n理由：模拟整合：按人工选择整理候选主张 B-01，未自动判定语义一致性；确认前需人工复查。\n\n来源：REQ-02、B\n\n### DEC-03 · 人工取舍 · OPEN-01\n本轮保留仍可履约的预约；受停用影响的预约标记待改期，并在我的预约显示原因。\n\n理由：人工处理 OPEN-01：示例复查：B-02提出自动取消已有预约，原需求未确认该规则。请选择保留仍可履约的预约并处理改期、取消受影响预约并告知用户，或暂缓决定；补充理由。\n\n来源：REQ-02、A、B\n\n## 待处理事项\n\n- OPEN-01 · 示例复查：B-02提出自动取消已有预约，原需求未确认该规则。请选择保留仍可履约的预约并处理改期、取消受影响预约并告知用户，或暂缓决定；补充理由。\n  影响：REQ-02；阻塞相关任务；处理结果：本轮保留仍可履约的预约；受停用影响的预约标记待改期，并在我的预约显示原因。",
+    "decisions": [
+      {
+        "id": "DEC-01",
+        "scope": "展示停用状态",
+        "choice": "列表保留停用设备",
+        "reason": "模拟整合：按人工选择整理候选主张 A-01，未自动判定语义一致性；确认前需人工复查。",
+        "requirement_ids": [
+          "REQ-01"
+        ],
+        "draft_ids": [
+          "A"
+        ]
+      },
+      {
+        "id": "DEC-02",
+        "scope": "阻止新预约",
+        "choice": "服务端拒绝停用设备的新预约",
+        "reason": "模拟整合：按人工选择整理候选主张 B-01，未自动判定语义一致性；确认前需人工复查。",
+        "requirement_ids": [
+          "REQ-02"
+        ],
+        "draft_ids": [
+          "B"
+        ]
+      },
+      {
+        "id": "DEC-03",
+        "scope": "人工取舍 · OPEN-01",
+        "choice": "本轮保留仍可履约的预约；受停用影响的预约标记待改期，并在我的预约显示原因。",
+        "reason": "人工处理 OPEN-01：示例复查：B-02提出自动取消已有预约，原需求未确认该规则。请选择保留仍可履约的预约并处理改期、取消受影响预约并告知用户，或暂缓决定；补充理由。",
+        "requirement_ids": [
+          "REQ-02"
+        ],
+        "draft_ids": [
+          "A",
+          "B"
+        ]
+      }
+    ],
+    "open_items": [
+      {
+        "id": "OPEN-01",
+        "question": "示例复查：B-02提出自动取消已有预约，原需求未确认该规则。请选择保留仍可履约的预约并处理改期、取消受影响预约并告知用户，或暂缓决定；补充理由。",
+        "blocking": true,
+        "affected_requirement_ids": [
+          "REQ-02"
+        ],
+        "resolution": "本轮保留仍可履约的预约；受停用影响的预约标记待改期，并在我的预约显示原因。"
+      }
+    ],
+    "confirmed_by": "lead-demo",
+    "confirmed_at": "2026-11-17T13:16:39.970010+00:00"
+  },
+  "review_records": [
+    {
+      "version": 1,
+      "action": "保留",
+      "source_refs": [
+        "A",
+        "A-01",
+        "REQ-01"
+      ],
+      "reason": "依据需求和草案编号关联到候选决策，具体语义须人工复查。"
+    },
+    {
+      "version": 1,
+      "action": "保留",
+      "source_refs": [
+        "B",
+        "B-01",
+        "REQ-02"
+      ],
+      "reason": "依据需求和草案编号关联到候选决策，具体语义须人工复查。"
+    },
+    {
+      "version": 1,
+      "action": "延期",
+      "source_refs": [
+        "B",
+        "B-02",
+        "REQ-02"
+      ],
+      "reason": "尚待人工决定或补齐，查看相关未决事项。"
+    },
+    {
+      "version": 2,
+      "action": "修改",
+      "source_refs": [
+        "SPEC-07a6afd5@1"
+      ],
+      "reason": "人工保存了正文、决策和未决事项；请查看两个版本核对具体修改。"
+    }
+  ]
+}

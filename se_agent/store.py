@@ -317,6 +317,52 @@ class Store:
         if len(done) == len(rows):
             db.execute("UPDATE runs SET state='completed', ended_at=? WHERE id=?",
                        (_stamp(self.now()), run_id))
+        self._refresh_findings(db, run_id, rows, tasks)
+
+    def _refresh_findings(self, db, run_id, rows, tasks):
+        """Rebuild the supervisor prompts; they are derived, never hand-edited."""
+        found = []
+        for task_id, row in rows.items():
+            downstream = self._descendants(tasks, task_id)
+            if row["state"] == FAILED:
+                found.append(("TASK_FAILED", task_id, "execution", "error",
+                              f"{task_id} 失败，下游等待重试", [f"task:{task_id}"],
+                              [task_id] + downstream, "查看尝试记录后重试或退回重做"))
+            elif row["state"] == BLOCKED:
+                found.append(("TASK_BLOCKED", task_id, "execution", "warning",
+                              f"{task_id} 因上游失败受阻", [f"task:{task_id}"],
+                              [task_id], "先处理失败的上游任务"))
+            elif row["state"] == REVIEW:
+                found.append(("REVIEW_WAITING", task_id, "execution", "info",
+                              f"{task_id} 等待人工审核，下游暂停", [f"task:{task_id}"],
+                              [task_id] + downstream, "审阅产物并放行"))
+            elif row["state"] == INPUT_REQUIRED:
+                found.append(("INPUT_REQUIRED", task_id, "execution", "warning",
+                              f"{task_id} 缺少输入：{'、'.join(_load(row['missing_input_ids'], []))}",
+                              [f"task:{task_id}"], [task_id] + downstream,
+                              "在任务详情补充缺项"))
+        db.execute("DELETE FROM findings WHERE run_id=?", (run_id,))
+        for code, ref_id, stage, severity, summary, evidence, affected, action in found:
+            db.execute(
+                "INSERT INTO findings(run_id, code, ref_id, stage, severity, summary,"
+                " evidence_refs, affected_task_ids, suggested_action)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                (run_id, code, ref_id, stage, severity, summary, _dump(evidence),
+                 _dump(affected), action))
+
+    def _descendants(self, tasks, task_id):
+        children = {}
+        for task in tasks.values():
+            for dep in task["depends_on"]:
+                children.setdefault(dep, []).append(task["id"])
+        seen, queue = [], [task_id]
+        while queue:
+            current = queue.pop(0)
+            for child in children.get(current, []):
+                if child not in seen:
+                    seen.append(child)
+                    queue.append(child)
+        return sorted(seen)
 
     def _settle(self, rows, task):
         """Failure first, then unfinished predecessors, then input."""
@@ -346,7 +392,7 @@ class Store:
             run, rows = self._task_map(db, run_id)
             if run["state"] != "active" or run["dispatch"] != "active":
                 return []
-            plan = db.execute("SELECT max_parallel FROM plans WHERE project_id=? AND id=?"
+            plan = db.execute("SELECT * FROM plans WHERE project_id=? AND id=?"
                               " AND version=?", (run["project_id"], run["plan_id"],
                                                  run["plan_version"])).fetchone()
             tasks = {task["id"]: task for task in self.plan_tasks(
@@ -387,10 +433,43 @@ class Store:
                            (RUNNING, run_id, task_id))
                 self._emit(db, run_id, "task.dispatched", task_id=task_id,
                            attempt_id=attempt_id)
-                requests.append({"attempt_id": attempt_id, "task": tasks[task_id],
-                                 "inputs": inputs})
+                requests.append(self._worker_request(db, run, plan, tasks[task_id],
+                                                    attempt_id, inputs))
             self._bump(db, run_id)
             return requests
+
+    def _worker_request(self, db, run, plan, task, attempt_id, inputs):
+        """The WorkerRequest shape from docs/接口契约-v2.md §5."""
+        supplied = {row["item_id"]: row["value"] for row in db.execute(
+            "SELECT item_id, value FROM input_submissions WHERE run_id=? AND task_id=?",
+            (run["id"], task["id"]))}
+        return {"project_id": run["project_id"], "run_id": run["id"],
+                "attempt_id": attempt_id, "task": task,
+                "spec_ref": {"id": plan["spec_id"], "version": plan["spec_version"]},
+                "spec_context": self._spec_context(run["project_id"],
+                                                   plan["spec_version"], task),
+                "base_commit": plan["base_commit"],
+                "workspace_id": f"{run['id']}/{task['id']}",
+                "inputs": inputs, "supplied_inputs": supplied}
+
+    def _spec_context(self, project_id, spec_version, task):
+        decisions = [dict(row) for row in self.db.execute(
+            "SELECT id, scope, choice, reason FROM spec_decisions"
+            " WHERE project_id=? AND spec_version=?", (project_id, spec_version))]
+        open_items = [dict(row) for row in self.db.execute(
+            "SELECT id, question, blocking, resolution FROM spec_open_items"
+            " WHERE project_id=? AND spec_version=?", (project_id, spec_version))]
+        wanted_requirements = set(task.get("requirement_ids", []))
+        wanted_decisions = set(task.get("decision_ids", []))
+        wanted_items = set(task.get("open_item_ids", []))
+        requirements = [dict(row) for row in self.db.execute(
+            "SELECT id, title, text FROM requirement_items WHERE project_id=?"
+            " AND requirement_version=(SELECT COALESCE(MAX(version), 0) FROM requirements"
+            " WHERE project_id=?)", (project_id, project_id))
+            if row["id"] in wanted_requirements]
+        return {"requirements": requirements,
+                "decisions": [item for item in decisions if item["id"] in wanted_decisions],
+                "open_items": [item for item in open_items if item["id"] in wanted_items]}
 
     def _next_attempt_number(self, db, run_id, task_id):
         row = db.execute("SELECT COALESCE(MAX(number), 0) AS last FROM attempts"
@@ -423,7 +502,8 @@ class Store:
 
     # ---------- reports ----------
 
-    def report(self, run_id, attempt_id, worker_id, status, artifacts=None, error=None):
+    def report(self, run_id, attempt_id, worker_id, status, artifacts=None, error=None,
+               provider=None, model=None, usage=None, checkout_commit=None):
         if status not in ("succeeded", "failed", "input_required"):
             raise InvalidReference("回报状态无效", field="status", status=status)
         payload_hash = _dump({"status": status, "artifacts": artifacts or [],
@@ -476,11 +556,28 @@ class Store:
                          _dump([{"code": "MISSING_INPUT", "ref_id": item,
                                  "message": "等待补充输入"} for item in missing]),
                          run_id, task_id))
+                db.execute("UPDATE attempts SET provider=?, model=?, usage=?,"
+                           " checkout_commit=? WHERE id=?",
+                           (provider, model, _dump(usage) if usage else None,
+                            checkout_commit, attempt_id))
                 self._recompute(db, run_id)
                 self._bump(db, run_id)
         if expired:
             raise StaleAttempt(current_attempt_id=stale_id)
         return self.snapshot(run_id)
+
+    def submit(self, run_id, result, worker_id):
+        """Route a WorkerResult dict (contract §5) through report()."""
+        if not isinstance(result, dict) or not result.get("attempt_id"):
+            raise InvalidReference("回报缺少尝试编号", field="attempt_id")
+        return self.report(run_id, result["attempt_id"], worker_id,
+                           result.get("status", "failed"),
+                           result.get("artifacts") or [],
+                           result.get("error"),
+                           provider=result.get("provider"),
+                           model=result.get("model"),
+                           usage=result.get("usage"),
+                           checkout_commit=result.get("checkout_commit"))
 
     def _accept(self, db, run_id, task, attempt, artifacts, now, report_hash):
         task_id = task["id"]
@@ -638,7 +735,7 @@ class Store:
             self._bump(db, run_id)
             return self.snapshot(run_id)
 
-    def supply_input(self, run_id, task_id, values):
+    def supply_input(self, run_id, task_id, values, submitted_by=None):
         with self.tx() as db:
             run, rows = self._task_map(db, run_id)
             row = rows.get(task_id)
@@ -654,6 +751,12 @@ class Store:
             db.execute("UPDATE run_tasks SET missing_input_ids=?, state=? WHERE run_id=?"
                        " AND task_id=?", (_dump(left), WAITING, run_id, task_id))
             for item, text in values.items():
+                db.execute(
+                    "INSERT INTO input_submissions(run_id, task_id, item_id, value,"
+                    " submitted_by, created_at) VALUES (?,?,?,?,?,?)"
+                    " ON CONFLICT(run_id, task_id, item_id) DO UPDATE SET"
+                    " value=excluded.value, submitted_by=excluded.submitted_by",
+                    (run_id, task_id, item, text, submitted_by, _stamp(self.now())))
                 self._emit(db, run_id, "task.input_supplied", task_id=task_id,
                            payload={"item_id": item})
             self._recompute(db, run_id)
@@ -683,7 +786,8 @@ class Store:
                 "missing_input_ids": _load(row["missing_input_ids"], []),
                 "attempts": [dict(attempt) for attempt in self.db.execute(
                     "SELECT id, number, state, worker_id, lease_until, created_at,"
-                    " started_at, ended_at, error FROM attempts WHERE run_id=? AND task_id=?"
+                    " started_at, ended_at, error, provider, model, usage,"
+                    " checkout_commit FROM attempts WHERE run_id=? AND task_id=?"
                     " ORDER BY number", (run_id, row["task_id"]))],
                 "artifacts": [dict(artifact) for artifact in self.db.execute(
                     "SELECT id, output_id, version, kind, origin, status, commit_sha,"
@@ -695,7 +799,16 @@ class Store:
                 "mode": run["mode"], "dispatch": run["dispatch"], "state": run["state"],
                 "revision": run["revision"], "started_at": run["started_at"],
                 "ended_at": run["ended_at"], "latest_event_seq": run["latest_event_seq"],
-                "tasks": tasks, "findings": []}
+                "tasks": tasks,
+                "findings": [{"code": row["code"], "ref_id": row["ref_id"],
+                              "stage": row["stage"], "severity": row["severity"],
+                              "summary": row["summary"],
+                              "evidence_refs": _load(row["evidence_refs"], []),
+                              "affected_task_ids": _load(row["affected_task_ids"], []),
+                              "suggested_action": row["suggested_action"]}
+                             for row in self.db.execute(
+                                 "SELECT * FROM findings WHERE run_id=?"
+                                 " ORDER BY severity, code, ref_id", (run_id,))]}
 
     def events(self, run_id, after=0, limit=100):
         rows = self.db.execute(

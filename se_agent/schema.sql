@@ -179,6 +179,10 @@ CREATE TABLE IF NOT EXISTS attempts (
   error       TEXT,
   input_refs  TEXT NOT NULL DEFAULT '[]',
   report_hash TEXT,
+  provider    TEXT,
+  model       TEXT,
+  usage       TEXT,
+  checkout_commit TEXT,
   UNIQUE (run_id, task_id, number),
   FOREIGN KEY (run_id, task_id) REFERENCES run_tasks(run_id, task_id)
 );
@@ -200,6 +204,31 @@ CREATE TABLE IF NOT EXISTS artifacts (
   created_at     TEXT NOT NULL,
   PRIMARY KEY (id, version),
   UNIQUE (run_id, task_id, output_id, version)
+);
+
+-- text supplied for a blocking open item, per task
+CREATE TABLE IF NOT EXISTS input_submissions (
+  run_id       TEXT NOT NULL REFERENCES runs(id),
+  task_id      TEXT NOT NULL,
+  item_id      TEXT NOT NULL,
+  value        TEXT NOT NULL,
+  submitted_by TEXT,
+  created_at   TEXT NOT NULL,
+  PRIMARY KEY (run_id, task_id, item_id)
+);
+
+-- supervisor prompts, kept apart from run state as the contract asks
+CREATE TABLE IF NOT EXISTS findings (
+  run_id     TEXT NOT NULL REFERENCES runs(id),
+  code       TEXT NOT NULL,
+  ref_id     TEXT NOT NULL,
+  stage      TEXT,
+  severity   TEXT NOT NULL,                     -- info / warning / error
+  summary    TEXT NOT NULL,
+  evidence_refs     TEXT NOT NULL DEFAULT '[]',
+  affected_task_ids TEXT NOT NULL DEFAULT '[]',
+  suggested_action  TEXT,
+  PRIMARY KEY (run_id, code, ref_id)
 );
 
 CREATE TABLE IF NOT EXISTS review_records (

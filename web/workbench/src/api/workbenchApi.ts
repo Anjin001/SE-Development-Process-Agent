@@ -100,8 +100,7 @@ export function createV2ReadApi(projectId: string, request: typeof fetch = fetch
 }
 
 export function createHttpWorkbenchApi(projectId: string, request: typeof fetch = fetch): WorkbenchApi {
-  const writeKeys = new Map<string, string>()
-  const pendingWrites = new Map<string, Promise<WorkbenchSnapshot>>()
+  const write = createV2Writer<WorkbenchSnapshot>(request)
 
   async function loadProject(project: ProjectSnapshot, updated?: PlanResponse, returnedRun?: Run): Promise<WorkbenchSnapshot> {
     const api = createV2ReadApi(project.id, request)
@@ -126,34 +125,6 @@ export function createHttpWorkbenchApi(projectId: string, request: typeof fetch 
 
   async function getSnapshot(id = projectId) {
     return loadProject(await createV2ReadApi(id, request).getProject())
-  }
-
-  function write(path: string, body: object, apply: (response: Response) => Promise<WorkbenchSnapshot>, method = 'POST') {
-    const payload = JSON.stringify(body)
-    const operation = `${method} ${path}\n${payload}`
-    const pending = pendingWrites.get(operation)
-    if (pending) return pending
-    const key = writeKeys.get(operation) ?? crypto.randomUUID()
-    writeKeys.set(operation, key)
-    const submission = withApiDeadline(async (signal) => {
-      const response = await request(path, {
-        method, signal,
-        headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': key },
-        body: payload,
-      })
-      if (!response.ok) {
-        if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
-          writeKeys.delete(operation)
-        }
-        throw await responseError(response, method, path)
-      }
-      return apply(response)
-    }).then((snapshot) => {
-      writeKeys.delete(operation)
-      return snapshot
-    }).finally(() => pendingWrites.delete(operation))
-    pendingWrites.set(operation, submission)
-    return submission
   }
 
   const projectResponse = async (response: Response) => loadProject(await response.json() as ProjectSnapshot)
@@ -188,4 +159,38 @@ export function createHttpWorkbenchApi(projectId: string, request: typeof fetch 
       ),
     },
   }
+}
+
+export function createV2Writer<T>(request: typeof fetch) {
+  const writeKeys = new Map<string, string>()
+  const pendingWrites = new Map<string, Promise<T>>()
+
+  return function write(path: string, body: object, apply: (response: Response) => Promise<T>, method = 'POST') {
+    const payload = JSON.stringify(body)
+    const operation = `${method} ${path}\n${payload}`
+    const pending = pendingWrites.get(operation)
+    if (pending) return pending
+    const key = writeKeys.get(operation) ?? crypto.randomUUID()
+    writeKeys.set(operation, key)
+    const submission = withApiDeadline(async (signal) => {
+      const response = await request(path, {
+        method, signal,
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': key },
+        body: payload,
+      })
+      if (!response.ok) {
+        if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
+          writeKeys.delete(operation)
+        }
+        throw await responseError(response, method, path)
+      }
+      return apply(response)
+    }).then((snapshot) => {
+      writeKeys.delete(operation)
+      return snapshot
+    }).finally(() => pendingWrites.delete(operation))
+    pendingWrites.set(operation, submission)
+    return submission
+  }
+
 }

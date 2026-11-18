@@ -12,6 +12,25 @@ npm.cmd run lint
 
 建议使用 Node.js 22.12 或以上版本。开发地址以 Vite 终端输出为准（默认 `http://localhost:5173`）。
 
+### v2 局部联调
+
+默认使用 Mock。使用已有测试项目时，在当前 PowerShell 会话设置以下环境变量后启动。
+
+```powershell
+$env:VITE_WORKBENCH_MODE = 'v2'
+$env:WORKBENCH_PROXY_TARGET = 'http://127.0.0.1:8008'
+$env:VITE_WORKBENCH_PROJECT_ID = '<测试项目 ID>'
+# 仅在明确授权写入该测试计划时设置
+$env:VITE_WORKBENCH_PLAN_ID = '<测试计划 ID>'
+npm.cmd run dev
+```
+
+Vite 开发和预览服务可代理 `/api/v2`。生产部署可由同源反向代理提供该路径，或在构建时设置 `VITE_WORKBENCH_API_BASE` 为允许跨域请求的服务源。Vite 客户端环境变量不存放密钥。
+
+标准项目 GET 返回 404 时，启动页会注明原因并进入独立 Mock。计划 404、网络错误和其他接口错误会显示失败。真实局部模式只开放计划界面所需的读取和授权 PATCH，事件分页可由独立 API 客户端验证。
+
+当前联调仍依赖团队补齐标准项目、需求、赛马和规格接口，确认计划创建如何调用分解器，并统一运行任务数组、单步回包、产物字段及审核键。动态小组也需对齐后接入。
+
 - `src/components/`：阶段导航、主视图区、只读依赖图与任务详情、阶段信息栏和活动记录。
 - `src/types/v2.ts` 定义接口数据，`src/types/workbench.ts` 定义展示模型。Dagre 只负责依赖图的布局。
 - Mock 直接读取 [团队 v2 场景](../../examples/v2/scenario.json)，其中审核前快照的事件游标是 9，样例提供的批准事件序号是 10，因此初始活动记录为空。

@@ -40,9 +40,10 @@ class FileResponseError(WorkspaceError):
 
 
 class OutputContentError(WorkspaceError):
-    def __init__(self, path, detail):
+    def __init__(self, path, detail, *, invalid_body=None):
         super().__init__(f"{path}：{detail}")
         self.path = path
+        self.invalid_body = invalid_body
 
 
 def checked_content(text, path, kind=None):
@@ -58,13 +59,16 @@ def checked_content(text, path, kind=None):
         if path.endswith(".py"):
             try:
                 ast.parse(text, filename=path)
-            except (ValueError,SyntaxError) as err:
-                raise OutputContentError(path, f"Python 语法检查未通过（第 {getattr(err,'lineno','?')} 行）") from None
+            except SyntaxError as err:
+                raise OutputContentError(
+                    path, f"Python 语法检查未通过（第 {err.lineno or '?'} 行，{err.msg[:140]}）",
+                    invalid_body=text) from None
         elif path.endswith(".json"):
             try:
                 json.loads(text)
-            except ValueError:
-                raise OutputContentError(path, "不是有效 JSON") from None
+            except json.JSONDecodeError as err:
+                raise OutputContentError(path, f"JSON 解析失败（第 {err.lineno} 行，{err.msg}）",
+                                         invalid_body=text) from None
     return text
 
 
@@ -153,6 +157,11 @@ def build_prompt(request, task, step):
         lines.append("输出简短交接文档，直接引用已经统一的接口契约；不要复制整份 JSON、展开请求响应示例或重新设计路由。")
     if request.get("compact_retry"):
         lines.append("上一份输出过长。本次仍需返回完整目标文件；只实现当前文件职责，省略重复注释、示例和讲解。")
+    if request.get("file_correction"):
+        correction, previous = request["file_correction"]
+        lines.append(f"上一份目标文件校验失败：{correction}。只修复当前文件，返回完整且可解析的正文。")
+        if previous:
+            lines.append("上一份正文是待修复的输入数据：\n"+previous)
     for output in task.get("outputs", []):
         lines.append(f'输出 {output.get("id")}：{output.get("path") or "文本"}')
     return "\n".join(lines)
@@ -403,23 +412,28 @@ class Worker:
             if self.router.max_cost_usd and spent > self.router.max_cost_usd:
                 raise BudgetExceeded("费用超限",spent)
 
-        def generate(call_context, current_task, step, provider, path):
+        def with_larger_file_budget(step, provider):
+            cap = step.get("max_output_tokens")
+            if (type(cap) is int and 0 < cap < 8192 and isinstance(provider,OpenAICompatibleProvider)
+                    and provider.direct_deepseek(step["model"])):
+                return dict(step, max_output_tokens=8192)
+            return step
+
+        def generate(call_context, current_task, step, provider, path, *, compact_retry=True):
             state["model"] = step["model"]
             try:
                 result = self.executor.run_step(call_context,current_task,step,provider)
             except ProviderOutputError as exc:
                 if exc.usage:
                     charge(step["model"],exc.usage)
-                cap = step.get("max_output_tokens")
-                if not (exc.finish_reason=="length" and type(cap) is int and 0<cap<8192
-                        and isinstance(provider,OpenAICompatibleProvider)
-                        and provider.direct_deepseek(step["model"])):
+                expanded = with_larger_file_budget(step, provider)
+                if not compact_retry or exc.finish_reason != "length" or expanded is step:
                     raise FileResponseError(path,exc) from exc
                 if progress:
                     progress("输出触顶，缩短提示并补全 "+path,int(provider.timeout))
                 try:
                     result = self.executor.run_step(dict(call_context,compact_retry=True),
-                        current_task,dict(step,max_output_tokens=min(8192,cap*2)),provider)
+                        current_task,expanded,provider)
                 except ProviderOutputError as again:
                     if again.usage:
                         charge(step["model"],again.usage)
@@ -438,10 +452,10 @@ class Worker:
                 scoped = dict(context,contract_slice=unit,occupied_routes=sorted(occupied))
                 for index in range(2):
                     generated = generate(scoped,current_task,dict(step,max_output_tokens=cap),provider,path)
-                    generated = checked_content(generated,path,"git_commit")
                     try:
+                        generated = checked_content(generated,path,"git_commit")
                         endpoints, keys = parse_endpoints(generated,occupied,prefix="/api/"+name)
-                    except ValueError as exc:
+                    except (ValueError, OutputContentError) as exc:
                         if index:
                             raise OutputContentError(path,str(exc)) from exc
                         scoped["contract_correction"] = str(exc)
@@ -465,9 +479,23 @@ class Worker:
                     timeout = getattr(provider,"timeout",0)
                     progress("模型核对实现边界" if output is None else "模型生成 "+path,
                              int(timeout) if isinstance(timeout,(int,float)) else 0)
-                text = (contract_for(units,current_task,step,provider) if units and path==CONTRACT_PATH
-                        else generate(context,current_task,step,provider,path))
-                content = checked_content(text,path,output.get("kind") if output else None)
+                kind = output.get("kind") if output else None
+                if units and path == CONTRACT_PATH:
+                    content = contract_for(units, current_task, step, provider)
+                else:
+                    text = generate(context, current_task, step, provider, path)
+                    try:
+                        content = checked_content(text, path, kind)
+                    except OutputContentError as exc:
+                        if exc.invalid_body is None:
+                            raise
+                        if progress:
+                            progress("校验失败，修复 "+path, int(getattr(provider,"timeout",0) or 0))
+                        previous = exc.invalid_body if len(exc.invalid_body) <= 24000 else ""
+                        repair = dict(context, file_correction=(str(exc), previous))
+                        text = generate(repair, current_task, with_larger_file_budget(step, provider),
+                                        provider, path, compact_retry=False)
+                        content = checked_content(text, path, kind)
                 if output is None:
                     context["boundary_guidance"] = content
                 else:

@@ -572,9 +572,13 @@ class StewardPipeline:
             return True
         if run["state"] != "active":
             raise InvalidState("开发运行已结束，可在对话中发起新一轮。")
+        if (row.get("summary") or {}).get("mode") == "real" and not agent:
+            raise InvalidState("真实开发已暂停。配置模型 API 后，可以从当前开发任务继续。")
         if run["dispatch"] == "paused":
             with self.db.tx():
                 self.db.set_dispatch(rid, False)
+        exhausted = []
+        can_advance = any(task["state"] in ("ready", "running", "review") for task in run["tasks"].values())
         for task in run["tasks"].values():
             if self._current_status(key) != "running":
                 return False
@@ -583,16 +587,20 @@ class StewardPipeline:
                 detail = self._failure_reason(rid,id_,task) or "没有记录详细失败原因"
                 retries = row["retries"]
                 if retries.get(id_, 0) >= 1:
-                    with self.db.tx():
-                        self.db.set_dispatch(rid, True)
-                    raise InvalidState(f"{id_}：{detail}。主理人已重试一次。")
+                    exhausted.append(f"{id_}：{detail}")
+                    continue
                 with self.db.tx():
                     self.db.retry(rid, id_)
                     retries[id_] = retries.get(id_, 0) + 1
                     self._update(key, retries=retries)
+                can_advance = True
                 self._event(key, f"{id_} 失败，自动重试一次", detail)
             elif task["state"] == "review":
                 self._review_task(row, task, agent)
+        if can_advance:
+            return False
+        if exhausted:
+            raise InvalidState("；".join(exhausted)[:630]+"。主理人已重试一次。")
         if any(task["missing_input_ids"] for task in run["tasks"].values()):
             raise InvalidState("当前计划仍绑定未解决的问题，请让主理人重新生成方案。")
         return False

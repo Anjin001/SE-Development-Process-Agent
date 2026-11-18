@@ -115,6 +115,27 @@ class StewardPipelineTest(unittest.TestCase):
         self.assertTrue(origins)
         self.assertTrue(all(row["actor_id"] == "steward" for row in origins))
 
+    def test_other_modules_finish_when_one_exhausts_retries(self):
+        class OneFailingModule(Worker):
+            def execute(self, request):
+                result = super().execute(request)
+                if request["task"]["title"] == "图文笔记发布":
+                    result.update(status="failed", artifacts=[], error={
+                        "code": "OUTPUT_INVALID", "message": "笔记模块语法校验失败",
+                        "retryable": False, "details": {},
+                    })
+                return result
+
+        self.workspace.dispatch.worker = OneFailingModule(mode="mock")
+        job = self.pipeline.start("做一个图文笔记应用，用户可以发布笔记，关注点赞作者",
+                                  {"mode": "mock", "parallel": 1})
+        result = self.wait(job, "failed")
+        run = self.workspace.run(result["project_id"], result["run_id"])
+        self.assertEqual(run["tasks"]["T2"]["state"], "failed")
+        self.assertEqual(len(run["tasks"]["T2"]["attempts"]), 2)
+        self.assertEqual([run["tasks"][key]["state"] for key in ("T3", "T4", "T5")], ["done"]*3)
+        self.assertEqual(run["tasks"]["T6"]["state"], "blocked")
+
     def test_optional_confirmation_can_be_removed_without_restarting(self):
         job = self.pipeline.start("# 做一个待办应用", {"gates":["plan"], "group_count":3,
             "prompts":["A：先做清单与排序"]})

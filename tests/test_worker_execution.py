@@ -228,7 +228,7 @@ class RealWorktreeTest(unittest.TestCase):
 
         provider = OpenAICompatibleProvider("https://api.deepseek.com", api_key="fixture")
         router = ModelRouter({"tiers":{"low_cost":{"provider":"openai_compatible","model":"deepseek-flash",
-                                  "max_output_tokens":4096}},
+                                  "max_output_tokens":2048}},
                               "routing":{"default_tier":"low_cost"}})
         worker = Worker(mode="real", repo_root=str(self.root),
                         worktree_root=str(self.root / ".worktrees"), provider=provider, router=router)
@@ -236,11 +236,42 @@ class RealWorktreeTest(unittest.TestCase):
             result = execute_task(self.request([]), worker)
         self.assertEqual(requests[0]["thinking"], {"type":"disabled"})
         self.assertEqual(result["error"]["details"]["path"],"app/integration.py")
-        self.assertEqual([b["max_tokens"] for b in requests],[4096,8192])
+        self.assertEqual([b["max_tokens"] for b in requests],[2048,8192])
         self.assertEqual(result["error"]["details"]["max_tokens"],8192)
-        self.assertEqual(result["usage"],{"input_tokens":520,"output_tokens":12288})
+        self.assertEqual(result["usage"],{"input_tokens":520,"output_tokens":10240})
         self.assertEqual(result["artifacts"],[])
         self.assertNotIn("not file content",result["error"]["message"])
+
+    def test_invalid_python_repairs_only_target_file_before_committing(self):
+        request = self.request([])
+        task = request["task"]
+        task["outputs"].append({"id": "OUT-02", "kind": "git_commit", "path": "app/entry.py"})
+        task["write_paths"].append("app/entry.py")
+        calls = []
+
+        class RepairExecutor:
+            def run_step(self, request, task, step, provider):
+                path = task["outputs"][0]["path"]
+                correction = request.get("file_correction")
+                calls.append((path, correction))
+                if path == "app/integration.py":
+                    return LLMResult("VALUE = 1\n", 10, 5)
+                if correction:
+                    return LLMResult("from app.integration import VALUE\n", 10, 5)
+                return LLMResult("from app.integration import (\n", 10, 5)
+
+        result = execute_task(request, self.worker(RepairExecutor()))
+        self.assertEqual(result["status"], "succeeded", result["error"])
+        self.assertEqual([path for path, _ in calls], [
+            "app/integration.py", "app/entry.py", "app/entry.py",
+        ])
+        message, invalid = calls[-1][1]
+        self.assertIn("第 1 行", message)
+        self.assertEqual(invalid, "from app.integration import (\n")
+        self.assertEqual(result["usage"], {"input_tokens": 30, "output_tokens": 15})
+        sha = result["artifacts"][0]["commit_sha"]
+        self.assertEqual(git(self.root, "show", f"{sha}:app/integration.py"), "VALUE = 1")
+        self.assertEqual(git(self.root, "show", f"{sha}:app/entry.py"), "from app.integration import VALUE")
 
     def test_blank_output_is_rejected_before_writing_or_committing(self):
         result = execute_task(self.request([]), self.worker(StubExecutor("   \n")))

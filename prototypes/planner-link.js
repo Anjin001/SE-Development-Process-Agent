@@ -1,5 +1,5 @@
 /* Connect the QLM workbench to the local intake, review, and task planner. */
-window.createPlannerLink = function ({ q, el, switchModule, toast }) {
+window.createPlannerLink = function ({ q, el, switchModule, toast, showTask }) {
   const dedicated = q('#module-dedicated-view');
   const workbench = q('#workbench-split-view');
   const sidebar = q('#right-steward-sidebar');
@@ -19,7 +19,7 @@ window.createPlannerLink = function ({ q, el, switchModule, toast }) {
   const makeFrame = (src, title) => {
     const frame = el('iframe');
     frame.title = title;
-    frame.src = src + '?embedded=1';
+    if (!window.createWorkspaceLink) frame.src = src + '?embedded=1';
     frame.style.cssText = 'display:none; border:0; width:100%; height:100%';
     frames.append(frame);
     return frame;
@@ -32,6 +32,8 @@ window.createPlannerLink = function ({ q, el, switchModule, toast }) {
   let dirty = false;
   let busy = false;
   let mode = '本地模拟';
+  let parallel = 2;
+  let extension = null;
 
   const open = key => switchModule(key, q('.nav-item[data-module="' + key + '"]').dataset.title);
   const action = (title, handler, primary = false) => {
@@ -52,6 +54,7 @@ window.createPlannerLink = function ({ q, el, switchModule, toast }) {
     snapshot = data;
     draft = structuredClone(data.plan.tasks);
     dirty = false;
+    parallel = data.plan.max_parallel;
   }
   function ready() {
     return snapshot && specification?.review_id === snapshot.review_id
@@ -105,6 +108,85 @@ window.createPlannerLink = function ({ q, el, switchModule, toast }) {
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   }
 
+  function renderGantt(plan, schedule) {
+    const card = el('section', null, cardClass);
+    card.dataset.testid = 'task-gantt';
+    card.setAttribute('aria-label', '任务甘特图');
+    card.append(el('h3', '任务甘特图', 'text-sm font-bold text-slate-900'));
+    const finish = Math.max(...schedule.map(row => row.early_finish_seconds), 1);
+    card.append(el('p', '已保存计划 v' + plan.version + ' · 预计 ' + Number((finish / 60).toFixed(2)) +
+      ' 分钟 · 并发上限 ' + plan.max_parallel + ' · 琥珀色表示关键路径', 'text-xs text-slate-600'));
+    const scroller = el('div', null, 'overflow-x-auto');
+    const chart = el('div', null, 'relative');
+    chart.style.minWidth = '760px';
+    const axis = el('div', null, 'relative h-7 ml-52 text-xs mono text-slate-500');
+    for (let tick = 0; tick <= 5; tick++) {
+      const label = el('span', Number((finish * tick / 300).toFixed(2)) + 'm');
+      label.style.cssText = 'position:absolute;left:' + tick * 20 + '%;transform:translateX(' +
+        (tick === 0 ? '0' : tick === 5 ? '-100%' : '-50%') + ')';
+      axis.append(label);
+    }
+    chart.append(axis);
+    const rows = el('div', null, 'relative');
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 1000 ' + plan.tasks.length * 52);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.style.cssText = 'position:absolute;left:208px;top:0;width:calc(100% - 208px);height:100%;pointer-events:none;z-index:2';
+    const slots = new Map(schedule.map(row => [row.task_id, row]));
+    const indices = new Map(plan.tasks.map((task, index) => [task.id, index]));
+    for (const [index, task] of plan.tasks.entries()) {
+      const slot = slots.get(task.id);
+      if (!slot) continue;
+      const row = el('div', null, 'flex items-center border-t border-slate-100');
+      row.style.height = '52px';
+      const label = el('div', null, 'w-52 shrink-0 pr-3 text-xs');
+      label.append(el('strong', task.id + ' · ' + task.title, 'block truncate text-slate-700'));
+      label.append(el('span', task.depends_on.length ? '前置 ' + task.depends_on.join(', ') : '无前置任务', 'text-slate-500'));
+      const track = el('div', null, 'relative flex-1 h-full');
+      track.style.backgroundImage = 'repeating-linear-gradient(to right,#e2e8f0 0,#e2e8f0 1px,transparent 1px,transparent 20%)';
+      const bar = action(Number((task.estimate_seconds / 60).toFixed(2)) + 'm', () => {
+        if (q('#linked-task-' + task.id.slice(1))) {
+          q('#linked-task-' + task.id.slice(1)).scrollIntoView({block:'center',behavior:'smooth'});
+          q('#linked-task-' + task.id.slice(1)).focus();
+        } else extension?.inspect(task.id);
+      });
+      bar.className = 'absolute rounded text-white text-xs font-semibold overflow-hidden whitespace-nowrap ' +
+        (slot.critical ? 'bg-amber-600' : 'bg-indigo-500');
+      bar.style.cssText = 'top:14px;height:24px;left:' + slot.early_start_seconds / finish * 100 +
+        '%;width:' + (slot.early_finish_seconds - slot.early_start_seconds) / finish * 100 + '%;min-width:3px';
+      const caption = task.id + ' · ' + task.title + ' · ' + Number((slot.early_start_seconds / 60).toFixed(2)) +
+        '—' + Number((slot.early_finish_seconds / 60).toFixed(2)) + ' 分钟' + (slot.critical ? ' · 关键路径' : '');
+      bar.title = caption;
+      bar.setAttribute('aria-label', caption);
+      track.append(bar);
+      row.append(label, track);
+      rows.append(row);
+      for (const predecessor of task.depends_on) {
+        const before = slots.get(predecessor);
+        if (!before) continue;
+        const startX = before.early_finish_seconds / finish * 1000;
+        const startY = indices.get(predecessor) * 52 + 26;
+        const endX = slot.early_start_seconds / finish * 1000;
+        const endY = index * 52 + 26;
+        const offset = Math.min(startX + 9, 998);
+        const path = document.createElementNS(svg.namespaceURI, 'path');
+        path.setAttribute('d', 'M ' + startX + ' ' + startY + ' H ' + offset + ' V ' + endY + ' H ' + endX);
+        path.setAttribute('stroke', '#64748b');
+        path.setAttribute('stroke-width', '1');
+        path.setAttribute('fill', 'none');
+        const title = document.createElementNS(svg.namespaceURI, 'title');
+        title.textContent = predecessor + ' → ' + task.id;
+        path.append(title);
+        svg.append(path);
+      }
+    }
+    rows.append(svg);
+    chart.append(rows);
+    scroller.append(chart);
+    card.append(scroller);
+    return card;
+  }
+
   function renderPlanner(container) {
     const form = el('form', null, 'max-w-5xl mx-auto space-y-4 text-sm');
     const header = el('div', null, cardClass);
@@ -121,6 +203,16 @@ window.createPlannerLink = function ({ q, el, switchModule, toast }) {
     const availableRefs = [...new Set(plan.tasks.flatMap(task => task.requirement_ids))];
     header.append(el('p', '规格 ' + plan.spec_ref.id + '@' + plan.spec_ref.version + ' · 计划 ' + plan.id + '@' + plan.version,
       'mono text-xs text-slate-600'));
+    const parallelLabel = el('label', '并发上限', 'text-xs text-slate-600 flex items-center gap-2');
+    const parallelInput = el('input', null, inputClass);
+    parallelInput.type = 'number';
+    parallelInput.min = '1';
+    parallelInput.step = '1';
+    parallelInput.value = parallel;
+    parallelInput.style.width = '90px';
+    parallelInput.oninput = () => { parallel = Number(parallelInput.value); changed(); };
+    parallelLabel.append(parallelInput);
+    header.append(parallelLabel);
     const buttons = el('div', null, 'flex flex-wrap gap-2');
     const add = action('＋ 新增任务', () => {
       const next = 1 + Math.max(...draft.map(task => Number(task.id.slice(1).split('.')[0])));
@@ -143,9 +235,12 @@ window.createPlannerLink = function ({ q, el, switchModule, toast }) {
     const status = el('p', null, 'text-xs text-slate-600');
     status.setAttribute('role', 'status');
     header.append(status);
+    if (snapshot.schedule) form.append(renderGantt(snapshot.plan, snapshot.schedule));
+    if (extension) extension.planActions(header, snapshot, () => dirty);
     function updateActions(message) {
       for (const control of [graph, json, markdown]) control.disabled = busy || dirty;
       add.disabled = busy;
+      parallelInput.disabled = busy;
       save.disabled = busy || !dirty;
       form.querySelectorAll('fieldset').forEach(fieldset => { fieldset.disabled = busy; });
       status.textContent = message || (dirty ? '有未保存的修改。保存后可查看新依赖与下载文件。' : '已保存 · 可查看依赖图和导出计划');
@@ -161,7 +256,7 @@ window.createPlannerLink = function ({ q, el, switchModule, toast }) {
       updateActions('正在保存…');
       try {
         accept(await post('/preview/plans/edit', {
-          review_id: snapshot.review_id, expected_version: plan.version, tasks: draft,
+          review_id: snapshot.review_id, expected_version: plan.version, tasks: draft, max_parallel: parallel,
         }));
         busy = false;
         toast('已保存任务清单 v' + snapshot.plan.version);
@@ -223,6 +318,36 @@ window.createPlannerLink = function ({ q, el, switchModule, toast }) {
           }));
         }
         row.append(fields);
+        if (extension && task.outputs) {
+          const details = el('details', null, 'text-xs text-slate-600 space-y-2');
+          details.append(el('summary', '交付物、来源与完成条件'));
+          const editField = (label, value, update, multiline = false) => {
+            const wrapper = el('label', label, 'block text-xs text-slate-600 space-y-1');
+            const input = el(multiline ? 'textarea' : 'input', null, inputClass);
+            input.value = value || '';
+            input.oninput = () => { update(input.value); changed(); };
+            wrapper.append(input); details.append(wrapper);
+          };
+          const list = value => value.split(/[,，、\\s]+/).filter(Boolean);
+          editField('写入范围', task.write_paths.join(', '), value => { task.write_paths = list(value); });
+          editField('关联需求编号', task.requirement_ids.join(', '), value => { task.requirement_ids = list(value); });
+          editField('关联决策编号', task.decision_ids.join(', '), value => { task.decision_ids = list(value); });
+          editField('关联未决项编号', task.open_item_ids.join(', '), value => { task.open_item_ids = list(value); });
+          editField('完成条件', task.completion_condition, value => { task.completion_condition = value; }, true);
+          for (const output of task.outputs) {
+            editField(output.id + ' 输出路径', output.path || '', value => { output.path = value || null; });
+            const label = el('label', output.id + ' 输出类型', 'block text-xs text-slate-600 space-y-1');
+            const select = el('select', null, inputClass);
+            for (const kind of ['text', 'git_commit']) {
+              const option = el('option', kind === 'text' ? '文本' : 'Git 提交');
+              option.value = kind; select.append(option);
+            }
+            select.value = output.kind;
+            select.onchange = () => { output.kind = select.value; changed(); };
+            label.append(select); details.append(label);
+          }
+          row.append(details);
+        }
         const sources = [...task.requirement_ids, ...(task.decision_ids || []), ...(task.open_item_ids || [])];
         if (sources.length) row.append(el('p', '来源 ' + sources.join(' · '), 'mono text-xs text-slate-600'));
         if (task.write_paths?.length) row.append(el('p', '预计产物 ' + task.write_paths.join(' · '), 'mono text-xs text-slate-600'));
@@ -234,17 +359,18 @@ window.createPlannerLink = function ({ q, el, switchModule, toast }) {
   }
 
   function graphData() {
-    if (!ready()) return null;
+    const view = extension?.executionSnapshot() || snapshot;
+    if (!view || (!extension?.executionSnapshot() && !ready())) return null;
     const layers = new Map();
     const positions = new Map();
-    const tasksById = new Map(snapshot.plan.tasks.map(task => [task.id, task]));
+    const tasksById = new Map(view.plan.tasks.map(task => [task.id, task]));
     function layer(task) {
       if (!layers.has(task.id)) {
         layers.set(task.id, Math.max(-1, ...task.depends_on.map(id => layer(tasksById.get(id)))) + 1);
       }
       return layers.get(task.id);
     }
-    for (const task of snapshot.plan.tasks) {
+    for (const task of view.plan.tasks) {
       const col = layer(task);
       const items = positions.get(col) || [];
       items.push(task);
@@ -254,22 +380,24 @@ window.createPlannerLink = function ({ q, el, switchModule, toast }) {
       id: 'layer-' + col, title: '依赖层级 ' + (col + 1),
       box: { x: 18 + col * 234, y: 22, w: 214, h: 37 + items.length * 80 },
       tasks: items.map((task, row) => ({
-        id: task.id, code: task.id, name: task.title, owner: task.role, status: 'planned',
+        id: task.id, code: task.id, name: task.title, owner: task.role, status: extension?.taskStatus(task.id) || 'planned',
         estimateMin: Number((task.estimate_seconds / 60).toFixed(2)),
         spec: [...task.requirement_ids, ...task.decision_ids, ...task.open_item_ids].join(' · '),
         output: task.write_paths.join(' · '), deps: task.depends_on,
+        critical: view.schedule?.find(row => row.task_id === task.id)?.critical || false,
         x: 27 + col * 234, y: 54 + row * 80,
       })),
     }));
-    return { phases, badge: '计划 v' + snapshot.plan.version };
+    return { phases, badge: '计划 v' + view.plan.version };
   }
 
   function render(module) {
+    if (extension?.render(module)) return true;
     const frame = module === 'intake-race' ? intake : module === 'review-synthesis' ? review : null;
     frames.style.display = frame ? 'block' : 'none';
     intake.style.display = frame === intake ? 'block' : 'none';
     review.style.display = frame === review ? 'block' : 'none';
-    const graph = module === 'workbench' && ready();
+    const graph = module === 'workbench' && !!graphData();
     q('#btn-fit-graph').style.display = graph ? '' : 'none';
     q('#btn-toggle-right-sidebar').style.display = frame ? 'none' : '';
     sidebar.style.display = frame ? 'none' : '';
@@ -290,7 +418,10 @@ window.createPlannerLink = function ({ q, el, switchModule, toast }) {
       q('#steward-case-label').textContent = ready() ? snapshot.plan.spec_ref.id : '待确认规格';
       q('#steward-parallel-label').textContent = ready() ? 'max_parallel = ' + snapshot.plan.max_parallel : '—';
     }
-    if (graph) return false;
+    if (graph) {
+      extension?.sidebar(module);
+      return false;
+    }
     workbench.classList.add('hidden');
     dedicated.classList.remove('hidden');
     dedicated.replaceChildren();
@@ -302,8 +433,16 @@ window.createPlannerLink = function ({ q, el, switchModule, toast }) {
       dedicated.append(card);
       sidebar.style.display = 'none';
     }
+    extension?.sidebar(module);
     return true;
   }
 
-  return { render, graphData, open };
+  if (window.createWorkspaceLink) {
+    extension = window.createWorkspaceLink({ q, el, open, action, post, download, toast,
+      getPlan: () => snapshot, accept, setSpecification: value => { specification = value; },
+      renderGantt, showTask, isDirty: () => dirty, clearPlan: () => { snapshot = null; draft = []; dirty = false; },
+    });
+  }
+  return { render, graphData, open, renderTab: tab => extension?.renderTab(tab) || false,
+    inspect: id => extension?.inspect(id), isFullWorkspace: !!extension };
 };

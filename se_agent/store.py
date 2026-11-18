@@ -249,13 +249,20 @@ class Store:
         if "decisions" in spec:
             return spec
         version = spec["version"]
-        return {"id": spec["id"], "version": version,
+        payload = {"id": spec["id"], "version": version,
                 "decisions": [dict(row) for row in self.db.execute(
                     "SELECT id FROM spec_decisions WHERE project_id=? AND spec_version=?",
                     (project_id, version))],
                 "open_items": [dict(row) for row in self.db.execute(
                     "SELECT id, blocking FROM spec_open_items"
                     " WHERE project_id=? AND spec_version=?", (project_id, version))]}
+        requirements = [dict(row) for row in self.db.execute(
+            "SELECT id FROM requirement_items WHERE project_id=?"
+            " AND requirement_version=(SELECT requirement_version FROM specifications"
+            " WHERE project_id=? AND version=?)", (project_id, project_id, version))]
+        if requirements:
+            payload["requirements"] = requirements
+        return payload
 
     def plan_tasks(self, project_id, plan_id, version):
         rows = self.db.execute(
@@ -286,9 +293,9 @@ class Store:
             raise InvalidState("同一项目已有活动运行", run_id=active["id"])
         tasks = self.plan_tasks(project_id, plan_id, plan_version)
         pending = set(self.open_items(project_id, plan["spec_version"]))
-        run_id = self._run_id(project_id)
         now = _stamp(self.now())
         with self.tx() as db:
+            run_id = self._run_id(project_id)
             db.execute(
                 "INSERT INTO runs(id, project_id, plan_id, plan_version, mode, dispatch,"
                 " state, revision, started_at, latest_event_seq) VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -305,8 +312,7 @@ class Store:
         return self.snapshot(run_id)
 
     def _run_id(self, project_id):
-        total = self.db.execute("SELECT COUNT(*) AS n FROM runs WHERE project_id=?",
-                                (project_id,)).fetchone()["n"]
+        total = self.db.execute("SELECT COUNT(*) AS n FROM runs").fetchone()["n"]
         return "RUN-%02d" % (total + 1)
 
     # ---------- state machine ----------
@@ -496,6 +502,8 @@ class Store:
             for task_id in batch:
                 number = self._next_attempt_number(db, run_id, task_id)
                 attempt_id = f"{task_id}.{number}"
+                if db.execute("SELECT 1 FROM attempts WHERE id=?", (attempt_id,)).fetchone():
+                    attempt_id = f"{run_id}.{task_id}.{number}"
                 inputs = self._approved_inputs(db, run_id, tasks[task_id]["depends_on"])
                 db.execute(
                     "INSERT INTO attempts(id, run_id, task_id, number, state, worker_id,"
@@ -503,7 +511,8 @@ class Store:
                     " VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (attempt_id, run_id, task_id, number, "running", worker_id,
                      _stamp(now + timedelta(seconds=lease_seconds)),
-                     _stamp(now), _stamp(now), _dump(inputs)))
+                     _stamp(now), _stamp(now), _dump([
+                         {key: item[key] for key in ("id", "version", "commit_sha")} for item in inputs])))
                 db.execute("UPDATE run_tasks SET state=?, blockers='[]' WHERE run_id=? AND task_id=?",
                            (RUNNING, run_id, task_id))
                 self._emit(db, run_id, "task.dispatched", task_id=task_id,
@@ -539,8 +548,8 @@ class Store:
         wanted_items = set(task.get("open_item_ids", []))
         requirements = [dict(row) for row in self.db.execute(
             "SELECT id, title, text FROM requirement_items WHERE project_id=?"
-            " AND requirement_version=(SELECT COALESCE(MAX(version), 0) FROM requirements"
-            " WHERE project_id=?)", (project_id, project_id))
+            " AND requirement_version=(SELECT requirement_version FROM specifications"
+            " WHERE project_id=? AND version=?)", (project_id, project_id, spec_version))
             if row["id"] in wanted_requirements]
         return {"requirements": requirements,
                 "decisions": [item for item in decisions if item["id"] in wanted_decisions],
@@ -554,13 +563,15 @@ class Store:
     def _approved_inputs(self, db, run_id, deps):
         inputs = []
         for task_id in deps:
-            row = db.execute(
-                "SELECT id, version, commit_sha FROM artifacts"
-                " WHERE run_id=? AND task_id=? AND status='approved'"
-                " ORDER BY version DESC LIMIT 1", (run_id, task_id)).fetchone()
-            if row:
-                inputs.append({"id": task_id, "version": row["version"],
-                               "commit_sha": row["commit_sha"]})
+            rows = db.execute(
+                "SELECT a.* FROM artifacts a WHERE a.run_id=? AND a.task_id=? AND a.status='approved'"
+                " AND a.version=(SELECT MAX(b.version) FROM artifacts b WHERE b.run_id=a.run_id"
+                " AND b.task_id=a.task_id AND b.output_id=a.output_id AND b.status='approved')"
+                " ORDER BY a.output_id", (run_id, task_id)).fetchall()
+            for row in rows:
+                artifact = dict(row)
+                artifact["changed_paths"] = _load(row["changed_paths"], [])
+                inputs.append(artifact)
         return inputs
 
     def renew(self, run_id, attempt_id, worker_id, lease_seconds=300):
@@ -710,7 +721,10 @@ class Store:
             version = self._next_artifact_version(db, run_id, task_id, output["id"])
             approved = not task["review_required"]
             needs_review = needs_review or task["review_required"]
-            artifact_id = f"ART-{task_id}-{output['id']}"
+            previous = db.execute(
+                "SELECT id FROM artifacts WHERE run_id=? AND task_id=? AND output_id=? LIMIT 1",
+                (run_id, task_id, output["id"])).fetchone()
+            artifact_id = previous["id"] if previous else f"ART-{run_id}-{task_id}-{output['id']}"
             db.execute(
                 "INSERT INTO artifacts(id, run_id, task_id, attempt_id, output_id, version,"
                 " based_on_version, kind, origin, status, commit_sha, changed_paths, content,"
@@ -850,9 +864,13 @@ class Store:
         with self.tx() as db:
             run, rows = self._task_map(db, run_id)
             row = rows.get(task_id)
-            if row is None or row["state"] != INPUT_REQUIRED:
+            if row is None or row["state"] not in OPEN_STATES:
                 raise InvalidState("该任务当前不需要补充输入", task_id=task_id)
             missing = _load(row["missing_input_ids"], [])
+            if not missing:
+                raise InvalidState("该任务当前不需要补充输入", task_id=task_id)
+            if not isinstance(values, dict) or not values:
+                raise InvalidReference("请提供至少一项补充输入", field="values")
             unknown = [key for key in values if key not in missing]
             if unknown:
                 raise InvalidReference("提交了非当前缺项的编号", field="values", unknown=unknown)

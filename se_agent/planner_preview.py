@@ -4,6 +4,7 @@ from graphlib import CycleError, TopologicalSorter
 import re
 
 from .planner import decompose_tasks, render_plan_markdown
+from .schedule import schedule_plan
 from .synthesis_preview import PreviewError
 
 
@@ -13,7 +14,7 @@ class PlanPreviewStore:
 
     @staticmethod
     def _response(review_id, plan):
-        return {"review_id": review_id, "plan": deepcopy(plan), "task_markdown": render_plan_markdown(plan)}
+        return {"review_id": review_id, "plan": deepcopy(plan), "task_markdown": render_plan_markdown(plan), "schedule": schedule_plan(plan)}
 
     def generate(self, review, version):
         spec = review["specification"]
@@ -31,7 +32,7 @@ class PlanPreviewStore:
         self.plans[review_id] = plan
         return self._response(review_id, plan)
 
-    def save(self, review, expected_version, tasks):
+    def save(self, review, expected_version, tasks, max_parallel=None):
         review_id = review["id"]
         plan = self.plans.get(review_id)
         if not plan:
@@ -90,6 +91,9 @@ class PlanPreviewStore:
             tuple(TopologicalSorter(graph).static_order())
         except CycleError as error:
             raise PreviewError("PLAN_CYCLE", "任务依赖成环", 422, cycle=error.args[1]) from error
-        revised = {**plan, "version": plan["version"] + 1, "tasks": list(edited.values())}
+        parallel = plan["max_parallel"] if max_parallel is None else max_parallel
+        if type(parallel) is not int or parallel < 1:
+            raise ValueError("并发上限应为正整数")
+        revised = {**plan, "version": plan["version"] + 1, "tasks": list(edited.values()), "max_parallel": parallel}
         self.plans[review_id] = revised
         return self._response(review_id, revised)

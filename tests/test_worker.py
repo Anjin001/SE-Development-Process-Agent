@@ -88,8 +88,13 @@ class RequestShapeTest(WorkerTestCase):
         self.store.submit(run_id, worker.simulated(first[0]), "w1")
         second = self.store.claim(run_id, "w1", limit=1)
         self.assertEqual(second[0]["task"]["id"], "T2")
-        self.assertEqual(second[0]["inputs"],
-                         [{"id": "T1", "version": 1, "commit_sha": "0" * 40}])
+        upstream = second[0]["inputs"]
+        self.assertEqual(len(upstream), 1)
+        self.assertEqual(upstream[0]["task_id"], "T1")
+        self.assertEqual(upstream[0]["output_id"], "OUT-01")
+        self.assertEqual(upstream[0]["version"], 1)
+        self.assertEqual(upstream[0]["commit_sha"], "0" * 40)
+        self.assertEqual(upstream[0]["status"], "approved")
 
 
 class AdapterTest(WorkerTestCase):

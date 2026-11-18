@@ -47,7 +47,7 @@ def in_scope(path, write_paths):
     """按路径段比较写入范围，避免把 app 与 app2 判成同一个前缀。"""
     target = PurePosixPath(str(path))
     parts = target.parts
-    if not parts or target.is_absolute() or ".." in parts:
+    if not parts or target.is_absolute() or ".." in parts or "\\" in str(path) or ":" in str(path):
         return False
     for prefix in write_paths or []:
         prefix_parts = PurePosixPath(str(prefix)).parts
@@ -76,6 +76,10 @@ def build_prompt(request, task, step):
             lines.append(f'上游 {artifact.get("task_id")} 文本：{artifact.get("content")}')
         else:
             lines.append(f'上游 {artifact.get("task_id")} 提交：{artifact.get("commit_sha")}')
+    if request.get("boundary_guidance"):
+        lines.append("已确认的实现边界：" + request["boundary_guidance"])
+    for path, content in request.get("existing_files", {}).items():
+        lines.append(f"现有文件 {path}：\n{content}")
     for output in task.get("outputs", []):
         lines.append(f'输出 {output.get("id")}：{output.get("path") or "文本"}')
     return "\n".join(lines)
@@ -171,7 +175,7 @@ class Worker:
                                 error=error(EXECUTION_FAILED, "超出单次尝试费用上限",
                                             {"limit_usd": self.router.max_cost_usd,
                                              "spent_usd": round(exc.args[1], 6)}))
-        except (ProviderError, WorkspaceError) as exc:
+        except (ProviderError, WorkspaceError, OSError) as exc:
             return self._result(request, "failed", started_at, state=state,
                                 error=error(EXECUTION_FAILED, str(exc)))
         except ImportError as exc:
@@ -245,7 +249,19 @@ class Worker:
         workspace.prepare(request["run_id"], request["attempt_id"], request.get("base_commit"))
         state["checkout_commit"] = workspace.include(self._upstream_commits(request))
 
-        produced = self._run_steps(request, task, steps, state)
+        existing = {}
+        for output in task.get("outputs", []):
+            path = output.get("path")
+            if not path:
+                continue
+            if not in_scope(path, task.get("write_paths")):
+                raise WorkspaceError("输出路径不在本任务写入范围内")
+            target = (workspace.path / PurePosixPath(path)).resolve()
+            if not target.is_relative_to(workspace.path.resolve()):
+                raise WorkspaceError("输出路径超出本次工作区")
+            if target.is_file():
+                existing[path] = target.read_text(encoding="utf-8")[:64000]
+        produced = self._run_steps(dict(request, existing_files=existing), task, steps, state)
         outputs = task.get("outputs", [])
         git_outputs = [o for o in outputs if o.get("kind") == "git_commit"]
         changed = []
@@ -282,18 +298,23 @@ class Worker:
         produced = {}
         spent = 0.0
         total = {"input_tokens": 0, "output_tokens": 0}
+        context = dict(request)
         for step in steps:
-            result = self.executor.run_step(request, task, step, self._provider(step))
-            total["input_tokens"] += result.input_tokens
-            total["output_tokens"] += result.output_tokens
-            state["usage"] = dict(total)
-            state["model"] = step["model"]
-            spent += self.router.cost_usd(step["model"], result.usage)
-            if self.router.max_cost_usd and spent > self.router.max_cost_usd:
-                raise BudgetExceeded("费用超限", spent)
-            # 骨架实现：一步产出同时作为本任务各输出的内容，真实实现按输出分别生成。
-            for output in task.get("outputs", []):
-                produced[output["id"]] = result.text
+            outputs = [None] if step["stage"] == "boundary" else task.get("outputs", [])
+            for output in outputs:
+                current_task = task if output is None else dict(task, outputs=[output])
+                result = self.executor.run_step(context, current_task, step, self._provider(step))
+                total["input_tokens"] += result.input_tokens
+                total["output_tokens"] += result.output_tokens
+                state["usage"] = dict(total)
+                state["model"] = step["model"]
+                spent += self.router.cost_usd(step["model"], result.usage)
+                if self.router.max_cost_usd and spent > self.router.max_cost_usd:
+                    raise BudgetExceeded("费用超限", spent)
+                if output is None:
+                    context["boundary_guidance"] = result.text
+                else:
+                    produced[output["id"]] = result.text
         return produced
 
     def _provider(self, step):

@@ -5,6 +5,7 @@
 上游提交自身已经包含它执行时纳入的更早依赖，所以只合直接上游即可。
 合并冲突按路径回报，工作区不可读时同样回报错误。
 """
+import re
 import subprocess
 from pathlib import Path
 
@@ -39,6 +40,9 @@ class WorktreeAdapter:
 
     def prepare(self, run_id, attempt_id, base_commit):
         """从基线创建本次尝试的分支与工作目录，返回工作目录。"""
+        if any(not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", value)
+               or value in (".", "..") for value in (run_id, attempt_id)):
+            raise WorkspaceError("运行和尝试编号格式无效")
         if not base_commit:
             raise WorkspaceError("真实执行需要 base_commit")
         if not (self.repo_root / ".git").exists():

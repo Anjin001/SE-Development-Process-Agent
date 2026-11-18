@@ -9,7 +9,6 @@ retried with a structured reason.
 import subprocess
 
 from .contracts import OutputInvalid
-from .plan_rules import overlaps
 
 
 class CommitVerifier:
@@ -61,7 +60,8 @@ class CommitVerifier:
                                 missing=missing)
         if allowed_paths:
             outside = [path for path in self.changed_paths(commit_sha, checkout_commit)
-                       if not any(overlaps(path, allowed) for allowed in allowed_paths)]
+                       if not any(path == allowed or path.startswith(allowed.rstrip("/") + "/")
+                                  for allowed in allowed_paths)]
             if outside:
                 raise OutputInvalid("变更超出允许的写入范围", field="changed_paths",
                                     paths=outside)

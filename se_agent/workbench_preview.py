@@ -13,7 +13,8 @@ from .synthesis_preview import PreviewError, PreviewHandler as ReviewHandler, Pr
 PROTOTYPES = Path(__file__).resolve().parent.parent / "prototypes"
 PAGES = {"/": "se-development-process-agent-ui.html", "/legacy-preview": "workbench.html",
          "/intake": "intake-race.html", "/review": "review-synthesis.html",
-         "/planner-link.js": "planner-link.js"}
+         "/planner-link.js": "planner-link.js",
+         "/vendor/tailwindcss-3.4.17.js": "vendor/tailwindcss-3.4.17.js"}
 
 
 class WorkbenchHandler(ReviewHandler):
@@ -44,7 +45,7 @@ class WorkbenchHandler(ReviewHandler):
                 raise ValueError("请求体必须为 JSON 对象")
             review = self.server.store.snapshot(self.server.store.get(payload.get("review_id")))
             if path.endswith("/edit"):
-                data = self.server.planner.save(review, payload.get("expected_version"), payload.get("tasks"))
+                data = self.server.planner.save(review, payload.get("expected_version"), payload.get("tasks"), payload.get("max_parallel"))
                 self.respond(200, data)
             else:
                 data = self.server.planner.generate(review, payload.get("version"))

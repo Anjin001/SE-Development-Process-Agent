@@ -4,10 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SE-Agent · 开发流程工作台</title>
-  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="vendor/tailwindcss-3.4.17.js"></script>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -190,7 +187,7 @@
     <div class="p-3 border-t border-slate-200/80 text-[11px] text-slate-500 flex items-center justify-between sb-hide-on-collapse">
       <span class="flex items-center gap-1.5">
         <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-        <span>FastAPI · SQLite 就绪</span>
+        <span>Python · SQLite</span>
       </span>
       <span id="sidebar-req-ver" class="mono">REQ-01@v1</span>
     </div>
@@ -224,7 +221,7 @@
       <div class="flex flex-wrap items-center gap-2.5 text-xs">
         <span class="flex items-center gap-1.5 font-semibold text-slate-700">
           <span class="text-indigo-600">⊞</span>
-          <span>当前演示案例</span>
+          <span>当前项目</span>
         </span>
 
         <select id="select-project" aria-label="选择演示案例" class="bg-white border border-slate-300 rounded-md px-2.5 py-1 text-xs font-medium text-slate-700 focus:outline-none focus:border-indigo-500">
@@ -238,7 +235,7 @@
         </select>
 
         <span id="active-badge" class="mono text-[11px] font-semibold px-2 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-200">
-          DEC-01 · EXP-012
+          版本化规格与经验
         </span>
       </div>
 
@@ -265,7 +262,7 @@
         <div id="workbench-split-view" class="flex-1 flex min-h-0 overflow-hidden">
 
           <!-- 2A. 左侧任务完成进度与 Phase 列表 -->
-          <section class="w-76 border-r border-slate-200 flex flex-col h-full bg-[#fbfcfe] shrink-0">
+          <section class="w-[304px] border-r border-slate-200 flex flex-col h-full bg-[#fbfcfe] shrink-0">
             <div class="p-4 border-b border-slate-200/80 space-y-2">
               <div class="flex items-center justify-between">
                 <span class="text-xs font-bold text-slate-700">整体任务进度</span>
@@ -637,7 +634,7 @@
     // 1.4 编排与工作台 DAG 数据集 (保持上一版主体结构，精简括号与人名)
     const datasets = {
       lab: {
-        badge: 'DEC-01 · EXP-012',
+        badge: '版本化规格与经验',
         baseDone: 0,
         baseTotal: 0,
         phases: [
@@ -698,7 +695,7 @@
                 status: 'completed',
                 owner: '评审与整合模块',
                 worktree: 'wt/review-synthesis',
-                spec: 'DEC-01 · EXP-012/V1',
+                spec: '版本化规格与经验/V1',
                 output: '综合方案 SPEC-01@v2',
                 estimateMin: 5,
                 critical: true,
@@ -790,7 +787,7 @@
                 status: 'pending',
                 owner: '后端 Agent B',
                 worktree: 'wt/t2-3-deactivation',
-                spec: 'REQ-03 · DEC-01 · EXP-012',
+                spec: 'REQ-03 · 版本化规格与经验',
                 output: '停用处置提交 · 等待 T2.2',
                 estimateMin: 5,
                 critical: true,
@@ -910,6 +907,8 @@
 
     function statusMeta(status) {
       switch (status) {
+        case 'running':
+          return { label: '执行中', dot: 'bg-blue-500', icon: '◔', iconCls: 'text-blue-600 bg-blue-50 border-blue-200', badgeCls: 'bg-blue-50 text-blue-700 border-blue-200' };
         case 'planned':
           return { label: '已规划', dot: 'bg-indigo-500', icon: '○', iconCls: 'text-indigo-600 bg-indigo-50 border-indigo-200', badgeCls: 'bg-indigo-50 text-indigo-700 border-indigo-200' };
         case 'completed':
@@ -1547,7 +1546,7 @@
           status: 'pending',
           owner: '后端 Agent C',
           worktree: `wt/${newId.toLowerCase()}-notify`,
-          spec: 'DEC-01 · EXP-012',
+          spec: '版本化规格与经验',
           output: '通知服务提交',
           estimateMin: 5,
           critical: false,
@@ -1817,7 +1816,8 @@
 
       q('#progress-pct').textContent = `${pct}%`;
       q('#progress-bar').style.width = `${pct}%`;
-      q('#progress-count').textContent = plannerLink ? `${totalCount} 项已规划任务` : `${doneCount} / ${totalCount} 项任务已完成`;
+      const planningOnly = plannerLink && tasks.every((task) => task.status === 'planned');
+      q('#progress-count').textContent = planningOnly ? `${totalCount} 项已规划任务` : `${doneCount} / ${totalCount} 项任务已完成`;
       q('#active-badge').textContent = data.badge;
 
       const container = q('#phase-list-container');
@@ -2041,6 +2041,12 @@
         edit.type = 'button';
         edit.addEventListener('click', () => plannerLink.open('task-planner'));
         inspector.append(edit);
+        if (plannerLink.isFullWorkspace) {
+          const details = el('button', '查看任务详情', 'ml-3 text-indigo-700 hover:underline');
+          details.type = 'button';
+          details.addEventListener('click', () => plannerLink.inspect(sel.id));
+          inspector.append(details);
+        }
         return;
       }
       const actionRow = el('div', undefined, 'flex items-center gap-2 pt-1');
@@ -2295,6 +2301,7 @@
     }
 
     function switchModule(modKey, titleText) {
+      if (activeModule !== modKey) q('#module-dedicated-view').scrollTop = 0;
       activeModule = modKey;
       if (titleText) q('#page-title').textContent = titleText;
 
@@ -2317,7 +2324,7 @@
 
       if (activeModule === 'workbench') {
         if (plannerLink) {
-          currentTab = 'graph';
+          if (!plannerLink.isFullWorkspace) currentTab = 'graph';
           if (!getAllTasks().some(task => task.id === selectedTaskId)) selectedTaskId = getAllTasks()[0].id;
         }
         dedicatedView.classList.add('hidden');
@@ -2338,6 +2345,7 @@
 
         renderPhaseList();
         if (currentTab === 'graph') renderTwinGraph();
+        else if (plannerLink?.renderTab(currentTab)) { /* Live panels rendered by the linked workspace. */ }
         else if (currentTab === 'details') renderDetailsTab();
         else if (currentTab === 'monitor') renderMonitorTab();
         else if (currentTab === 'activity') renderActivityTab();
@@ -2377,7 +2385,7 @@
       q('#right-steward-sidebar').classList.toggle('hidden');
     });
 
-    // 修复顶部「当前演示案例」下拉栏：切换后所有模块（含数字人档案与经验卡库）立即生效
+    // 修复顶部「当前项目」下拉栏：切换后所有模块（含数字人档案与经验卡库）立即生效
     function switchProjectCase(projKey) {
       currentProjectKey = projKey;
       q('#select-project').value = projKey;
@@ -2485,7 +2493,11 @@
     });
 
     if (window.createPlannerLink) {
-      plannerLink = window.createPlannerLink({ q, el, switchModule, toast });
+      plannerLink = window.createPlannerLink({ q, el, switchModule, toast, showTask: id => {
+        selectedTaskId = id;
+        currentTab = 'details';
+        switchModule('workbench', '开发流程工作台');
+      } });
       plannerLink.open('intake-race');
     } else renderAll();
   })();

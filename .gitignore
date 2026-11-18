@@ -9,3 +9,4 @@ __pycache__/
 *.sqlite-shm
 *.db-wal
 *.db-shm
+.se_agent_worktrees/

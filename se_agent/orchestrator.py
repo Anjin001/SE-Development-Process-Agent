@@ -2,6 +2,7 @@
 from graphlib import CycleError, TopologicalSorter
 
 from .contracts import Conflict
+from .plan_rules import validate_plan  # noqa: F401  v2 entry point; v1 keeps validate() below
 
 
 def validate(plan):

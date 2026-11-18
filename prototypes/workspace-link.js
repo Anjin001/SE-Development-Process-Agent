@@ -4,9 +4,16 @@ window.createWorkspaceLink = function (hooks) {
     clearPlan, isDirty, renderGantt, download, showTask } = hooks;
   const dedicated = q('#module-dedicated-view');
   const nav = q('#left-sidebar nav');
-  const manualNav = Array.from(nav.children);
-  if (window.createStewardLink) manualNav.forEach(node=>node.style.display='none');
-  const primaryNav = action('项目主理人',()=>open('steward'),true);
+  const stageBounds = {
+    'intake-race':[0,1], 'review-synthesis':[2,5], 'task-planner':[6,7], workbench:[8,9],
+  };
+  const stages = ['groups','race','evaluate','merge','decisions','confirm','plan','start','develop','delivery'];
+  const stageBadges = new Map(Object.keys(stageBounds).map(key=>{
+    const navItem=q('.nav-item[data-module="'+key+'"]');
+    const badge=el('span',null,'sb-hide-on-collapse text-[10px] shrink-0');
+    navItem?.append(badge); return [key,badge];
+  }));
+  const primaryNav = action('项目主理人',()=>{state.followSteward=true;open('steward');},true);
   primaryNav.dataset.module='steward';
   primaryNav.dataset.title='项目主理人';
   primaryNav.classList.add('nav-item','w-full');
@@ -27,6 +34,7 @@ window.createWorkspaceLink = function (hooks) {
     simulateFailure: false, selectedTask: null, edits: new Map(), feedback: '', feedbackGroup: '',
     target: null, runQuestions: [], activity: null, eventTrail: [], statusError: '',
     memory: null, domain: '', terms: '', projects: [], memoryDraft: {},
+    followSteward: true, selectedJobId: null, syncedJob: '', syncInFlight: null, syncError: '',
   };
   let epoch = 0;
   let polling = false;
@@ -39,13 +47,13 @@ window.createWorkspaceLink = function (hooks) {
   const steward = window.createStewardLink?.({
     q,el,action,get,post,open,modelMode:()=>state.config?.discussion_mode,
     existingProject:()=>state.project,
-    showManual:()=>manualNav.forEach(node=>node.style.display=''),
-    openProject: id=>operate(async()=>{
-      await updateProjects();
-      await load(id);
-      manualNav.forEach(node=>node.style.display='');
-      state.module=state.run?'workbench':getPlan()?'task-planner':'review-synthesis';
-    }),
+    onJobChange:handleJobChange,
+    canContinue:()=>!(state.dirty || isDirty()),
+    openProject: id=>{
+      if(state.dirty || isDirty()){toast('请先保存当前编辑。');return;}
+      state.followSteward=true;
+      open(steward.current()?.run_id?'workbench':'task-planner');
+    },
   });
   const split = value => value.split(/[,，、\s]+/).filter(Boolean);
   const text = (value, cls = 'text-xs text-slate-600 leading-relaxed') => el('p', value, cls);
@@ -108,6 +116,101 @@ window.createWorkspaceLink = function (hooks) {
     };
   }
   function refresh() { open(state.module); }
+  function linkedJob() { return state.followSteward ? steward?.current() : null; }
+  function jobKey(job) {
+    return [job.id,job.project_id,job.stage,job.status,job.gate,job.run_id].join(':');
+  }
+  function handleJobChange() {
+    const selected=steward?.current();
+    if(selected?.id && selected.id!==state.selectedJobId) {
+      state.selectedJobId=selected.id;state.followSteward=true;state.syncError='';state.reviewTab='spec';
+    }else if(!selected){
+      state.selectedJobId=null;state.syncedJob='';
+    }
+    updateStageBadges();
+    const job=linkedJob();
+    if(job?.project_id && !state.dirty && !isDirty()) syncLinkedProject(job);
+    if(job && state.module!=='steward' && stageBounds[state.module] && !state.dirty && !isDirty()) refresh();
+  }
+  function updateStageBadges() {
+    const job=linkedJob();
+    const phase=job?stages.indexOf(job.stage):-1;
+    for(const [module,badge] of stageBadges){
+      if(!job){badge.textContent='';continue;}
+      const [start,end]=stageBounds[module];
+      const done=phase>end || job.status==='completed';
+      const current=phase>=start && phase<=end && !done;
+      badge.textContent=done?'完成':current?(job.status==='gate'?'待确认':job.status==='paused'?'暂停':
+        job.status==='failed'?'卡住':job.status==='cancelled'?'停止':job.status==='pausing'?'收尾':'进行中'):'待开始';
+      badge.className='sb-hide-on-collapse text-[10px] shrink-0 rounded px-1 '+(done?'text-emerald-700 bg-emerald-50':
+        current?'text-indigo-700 bg-indigo-50':'text-slate-500');
+    }
+  }
+  function syncLinkedProject(job) {
+    if(!job?.project_id || state.dirty || isDirty() || state.pending) return;
+    const key=jobKey(job);
+    if(state.syncedJob===key || state.syncInFlight || state.syncError===key) return;
+    const current=()=>linkedJob()?.id===job.id && linkedJob()?.project_id===job.project_id &&
+      !state.dirty && !isDirty() && !state.pending;
+    state.syncInFlight=key;
+    load(job.project_id,current).then(loaded=>{
+      if(loaded)state.syncedJob=key;
+    }).catch(()=>{if(current())state.syncError=key;}).finally(()=>{
+      state.syncInFlight=null;
+      if(linkedJob()?.id===job.id && !state.dirty && !isDirty() && !state.pending) refresh();
+    });
+  }
+  function clearStageError() {state.syncError='';refresh();}
+  function permission(module) {
+    const job=linkedJob();
+    if(!job) return true;
+    if(!job.project_id || state.project?.id!==job.project_id || state.syncedJob!==jobKey(job)) return false;
+    if(module==='review-synthesis') return state.spec?.status==='draft' &&
+      (job.status==='gate' && job.gate==='spec' || job.status==='paused' && job.stage==='confirm');
+    if(module==='task-planner') return !!getPlan() &&
+      (job.status==='gate' && job.gate==='plan' || job.status==='paused' || job.status==='completed');
+    if(module==='workbench') return job.status==='paused' && state.run?.dispatch==='paused';
+    return false;
+  }
+  function stageActions(module) {
+    const job=linkedJob();
+    if(!job) return [];
+    const display=({running:'主理人正在推进',gate:'已停在你设置的确认点',paused:'主理人已暂停',
+      pausing:'主理人正在收尾',failed:'执行遇到问题',completed:'本轮已交付',cancelled:'本轮已停止'})[job.status] || job.status;
+    const controls=[text(display+' · '+job.activity,'text-xs font-semibold text-indigo-800')];
+    if(permission(module)) {
+      controls.push(text(module==='review-synthesis'?'可编辑方案，保存后主理人会使用新版本。':
+        module==='task-planner'?(job.run_id?'可保存新的计划版本；已启动的运行继续使用原计划。':
+          '可编辑任务、依赖和估时；保存后主理人将使用最新计划。'):'暂停期间可审阅或修订待审核产物。'));
+    } else if(module!=='intake-race'){
+      controls.push(text('此处可查看结果。需要修改时，可以回主理人对话提出要求，或在相应确认点手动编辑。'));
+    }
+    const actions=[];
+    if(job.status==='running'){
+      const phase=stages.indexOf(job.stage);
+      if(module==='review-synthesis' && phase<=5 && !job.settings.gates.includes('spec'))
+        actions.push(action('在方案确认前暂停让我编辑',()=>steward.enableGate('spec'),true));
+      if(module==='task-planner' && phase<=7 && !job.settings.gates.includes('plan'))
+        actions.push(action('在开工前暂停让我编辑',()=>steward.enableGate('plan'),true));
+      actions.push(action('暂停主理人',()=>steward.control('pause')));
+    }
+    if(job.status==='paused' || job.status==='gate')
+      actions.push(action('交回主理人继续',()=>{
+        if(state.dirty || isDirty()){toast('请先保存手动修改。');return;}
+        steward.control('continue');
+      },true));
+    actions.push(action('返回主理人对话',()=>open('steward')));
+    controls.push(line(...actions));
+    return controls;
+  }
+  function linkedStageWaiting(module) {
+    const job=linkedJob();
+    if(!job || !stageBounds[module] || module==='intake-race')return false;
+    if(!job.project_id || state.project?.id!==job.project_id || !state.syncedJob.startsWith(job.id+':'))return true;
+    if(module==='task-planner' && !getPlan())return true;
+    if(module==='workbench' && !getPlan())return true;
+    return false;
+  }
   async function operate(callback) {
     if (state.pending) return;
     state.pending = true; state.error = ''; refresh();
@@ -133,20 +236,24 @@ window.createWorkspaceLink = function (hooks) {
     return '/workspace/projects/' + state.project.id + suffix;
   }
   async function reviewAction(name, body = {}) {
+    if(linkedJob() && (!permission('review-synthesis') || name!=='save'))
+      throw new Error('请在方案确认点编辑并保存，由主理人负责确认。');
     const path = '/preview/projects/' + state.project.id + '/actions/' + name;
     const labels = {evaluate: '主理人组织独立评审', propose: '主理人汇总各组建议', confirm: '保存确认版方案'};
     setProject(await tracked(labels[name] || '核对方案修改', path, body));
     state.reviewTab = name === 'evaluate' ? 'eval' : 'spec';
   }
-  async function load(projectId) {
-    epoch++;
+  async function load(projectId, current = () => true) {
     const data = await get('/workspace/projects/' + projectId);
+    const runPlan = data.run ? await get('/api/v2/projects/' + projectId + '/plans/' +
+      data.run.plan_ref.id + '/versions/' + data.run.plan_ref.version) : null;
+    if(!current())return false;
+    epoch++;
     setProject(data.review); clearPlan();
     if (data.planning) accept(data.planning);
     state.run = data.run; state.target = data.target || null;
     state.selectedTask = null; state.runQuestions = []; state.eventTrail = []; state.statusError = ''; state.activity = null;
-    state.runPlan = data.run ? await get('/api/v2/projects/' + projectId + '/plans/' +
-      data.run.plan_ref.id + '/versions/' + data.run.plan_ref.version) : null;
+    state.runPlan = runPlan;
     state.markdown = data.review.requirement.markdown;
     state.version = data.review.requirement.version;
     state.frozen = data.review.requirement;
@@ -154,8 +261,13 @@ window.createWorkspaceLink = function (hooks) {
       id: draft.id, prompt: '复核本组既有草案，逐条对齐需求并补充边界情况。',
       status: 'done', result: { draft, ideas: [], challenge: '' },
     }));
+    if (!Array.from(picker.options).some(option=>option.value===projectId)) {
+      const option=el('option',data.review.requirement.items[0].title+' · '+projectId.slice(0,6));
+      option.value=projectId;picker.append(option);
+    }
     picker.value = projectId; state.memory = null;
     if (state.run) await readRunDetails(state.run);
+    return true;
   }
   async function updateProjects() {
     state.config = await get('/workspace/config');
@@ -180,10 +292,13 @@ window.createWorkspaceLink = function (hooks) {
     }
     operate(async () => {
       if (id) {
+        state.followSteward = !steward?.current()?.project_id || steward.current().project_id===id;
+        state.syncedJob='';state.syncError='';
         await load(id);
         if(state.module!=='steward') state.module = state.run ? 'workbench' : getPlan() ? 'task-planner' : 'review-synthesis';
       }
       else {
+        state.followSteward=true;state.syncedJob='';state.syncError='';
         epoch++; state.project = state.run = state.runPlan = state.spec = state.frozen = null;
         state.memory = null; state.version = 1; state.target = null;
         state.runQuestions = []; state.eventTrail = []; state.selectedTask = null; state.activity = null;
@@ -329,7 +444,7 @@ window.createWorkspaceLink = function (hooks) {
   }
   function reviewButton(title, callback, primary = false, clean = false) {
     const button = action(title, () => operate(callback), primary);
-    button.disabled = state.pending || (clean && state.dirty);
+    button.disabled = state.pending || (clean && state.dirty) || (linkedJob() && !permission('review-synthesis'));
     if (clean) button.dataset.requiresCleanSpec = '';
     return button;
   }
@@ -340,7 +455,9 @@ window.createWorkspaceLink = function (hooks) {
       wrap.append(empty); return;
     }
     const project = state.project;
-    if (!project.specification || project.specification.status !== 'confirmed') {
+    const job=linkedJob();
+    const canEdit=permission('review-synthesis');
+    if (!job && (!project.specification || project.specification.status !== 'confirmed')) {
       const shortcut = card('主理人整合方案');
       shortcut.append(text('自动组织独立评审、融合各组可取的做法，再把需要你确认的方案交给你。'));
       if (!state.spec) shortcut.append(reviewButton('主理人整合方案', async () => {
@@ -390,23 +507,28 @@ window.createWorkspaceLink = function (hooks) {
       }
       for (const record of project.review_records) versions.append(text('v' + record.version + ' · ' + record.action + ' · ' + record.reason));
       wrap.append(versions);
-    } else if (!state.spec) wrap.append(text('在右侧选择方案起点并生成草稿。'));
+    } else if (!state.spec) wrap.append(text(job?'主理人还没生成综合方案。':'在右侧选择方案起点并生成草稿。'));
     else {
       const spec = state.spec;
-      const openItems = card('待决事项 · 人工答复与取舍');
+      const openItems = el('details',null,cardClass);
+      openItems.open=!job;
+      openItems.append(el('summary',job?'主理人已处理的待决事项及其来源':'待决事项 · 人工答复与取舍',
+        'cursor-pointer text-sm font-bold text-slate-900'));
       for (const item of spec.open_items) {
         const row = el('div', null, 'p-3 border border-amber-200 rounded-lg bg-amber-50 space-y-2');
         row.id = 'open-' + item.id;
         row.append(el('strong', item.id + ' · ' + item.question, 'text-xs text-amber-950'));
         row.append(text('关联需求 ' + item.affected_requirement_ids.join(', ')));
         for (const option of item.options || []) row.append(text(option.draft_id + ' · ' + option.claim_id + ' · ' + (option.text || option.choice || '')));
-        const response = field(row, '人工答复 ' + item.id, item.resolution || '', value => {
+        const response = field(row, '处理答复 ' + item.id, item.resolution || '', value => {
           item.resolution = value.trim() || null; dirty();
         }, true);
+        response.readOnly=!canEdit;
         const apply = action('将答复写入决策', () => {
           if (!response.value.trim()) { toast('请填写具体答复。'); return; }
           item.resolution = response.value.trim();
-          const id = 'DEC-HUMAN-' + item.id;
+          const id = item.decision_id || 'DEC-HUMAN-' + item.id;
+          item.decision_id=id;
           const prior = spec.decisions.find(decision => decision.id === id);
           const decision = {id,scope:item.question,choice:item.resolution,reason:'负责人确认待决问题',
             requirement_ids:[...item.affected_requirement_ids],draft_ids:[...new Set((item.options || []).map(option => option.draft_id))]};
@@ -414,12 +536,12 @@ window.createWorkspaceLink = function (hooks) {
           if (prior) Object.assign(prior,decision); else spec.decisions.push(decision);
           dirty(); refresh();
         });
-        apply.disabled = state.pending; row.append(apply); openItems.append(row);
+        if(canEdit){apply.disabled = state.pending; row.append(apply);} openItems.append(row);
       }
       if (!spec.open_items.length) openItems.append(text('当前没有待决事项。'));
       wrap.append(openItems);
       const decisions = card('方案取舍与决策编辑');
-      decisions.append(action('＋ 新增决策', () => {
+      if(canEdit)decisions.append(action('＋ 新增决策', () => {
         spec.decisions.push({id:'DEC-HUMAN-' + crypto.randomUUID().slice(0,8),scope:'',choice:'',reason:'',
           requirement_ids:[project.requirement.items[0].id],draft_ids:project.drafts.map(draft=>draft.id)});
         dirty();refresh();
@@ -427,25 +549,35 @@ window.createWorkspaceLink = function (hooks) {
       for (const decision of spec.decisions) {
         const row = el('fieldset', null, 'grid grid-cols-1 md:grid-cols-2 gap-2 p-3 bg-slate-50 border border-slate-200 rounded-lg');
         row.append(el('legend', decision.id, 'mono text-xs text-indigo-700'));
-        field(row, '取舍范围', decision.scope, value => { decision.scope = value; dirty(); });
-        field(row, '采用做法', decision.choice, value => { decision.choice = value; dirty(); }, true);
-        field(row, '决策理由', decision.reason, value => { decision.reason = value; dirty(); }, true);
-        field(row, '关联需求', decision.requirement_ids.join(', '), value => { decision.requirement_ids = split(value); dirty(); });
-        row.append(action('删除决策 ' + decision.id, () => {
+        field(row, '取舍范围', decision.scope, value => { decision.scope = value; dirty(); }).readOnly=!canEdit;
+        field(row, '采用做法', decision.choice, value => {
+          const prior=decision.choice;
+          decision.choice=value;
+          for(const item of spec.open_items){
+            if(item.decision_id===decision.id || (!item.decision_id && prior?.trim()===item.resolution?.trim()
+                && item.affected_requirement_ids.every(ref=>decision.requirement_ids.includes(ref)))) {
+              item.decision_id=decision.id;item.resolution=value.trim() || null;
+            }
+          }
+          dirty();
+        }, true).readOnly=!canEdit;
+        field(row, '决策理由', decision.reason, value => { decision.reason = value; dirty(); }, true).readOnly=!canEdit;
+        field(row, '关联需求', decision.requirement_ids.join(', '), value => { decision.requirement_ids = split(value); dirty(); }).readOnly=!canEdit;
+        if(canEdit && !spec.open_items.some(item=>item.decision_id===decision.id))row.append(action('删除决策 ' + decision.id, () => {
           spec.decisions = spec.decisions.filter(item => item !== decision); dirty(); refresh();
         }));
         decisions.append(row);
       }
-      field(decisions, '人工补充说明', spec.notes_markdown || '', value => { spec.notes_markdown = value; dirty(); }, true);
-      decisions.append(reviewButton('保存人工编辑为新版本', () => reviewAction('save', {
+      field(decisions, '人工补充说明', spec.notes_markdown || '', value => { spec.notes_markdown = value; dirty(); }, true).readOnly=!canEdit;
+      if(canEdit)decisions.append(reviewButton('保存人工编辑为新版本', () => reviewAction('save', {
         expected_version:spec.version,markdown:spec.markdown,notes_markdown:spec.notes_markdown || '',
         decisions:spec.decisions,open_items:spec.open_items,
       }), true));
       const confirm = reviewButton('确认当前方案', () => reviewAction('confirm', {
         expected_version:state.project.specification.version,
       }), true, true);
-      confirm.disabled ||= spec.status === 'confirmed'; decisions.append(confirm);
-      if (state.project.specification.status === 'confirmed') decisions.append(reviewButton('进入任务分解 →', async () => {
+      confirm.disabled ||= spec.status === 'confirmed'; if(!job)decisions.append(confirm);
+      if (!job && state.project.specification.status === 'confirmed') decisions.append(reviewButton('进入任务分解 →', async () => {
         await localStep('分解任务，检查依赖并计算甘特排期',
           () => window.openTaskPlanner({review_id:project.id,version:state.project.specification.version}));
         state.module = 'task-planner';
@@ -467,6 +599,27 @@ window.createWorkspaceLink = function (hooks) {
   }
   function planActions(parent, snapshot, draftDirty) {
     const controls = el('div', null, 'pt-3 border-t border-slate-200 space-y-2');
+    const job=linkedJob();
+    if(job) {
+      const form=parent.closest('form');
+      if(!permission('task-planner') && form) {
+        queueMicrotask(()=>{
+          for(const input of form.querySelectorAll('input,textarea,select,fieldset,button[type="submit"]')) input.disabled=true;
+          for(const button of form.querySelectorAll('button')){
+            if(/新增任务|移除未保存的任务/.test(button.textContent))button.disabled=true;
+          }
+        });
+        form.addEventListener('submit',event=>{
+          if(permission('task-planner'))return;
+          event.preventDefault();event.stopImmediatePropagation();
+          toast('请在开工确认点手动修改任务。');
+        },true);
+      }
+      controls.append(...stageActions('task-planner'));
+      if(state.run)controls.append(action('查看本次运行',()=>open('workbench')));
+      parent.append(controls);
+      return;
+    }
     const real = !!snapshot.plan.base_commit && (!!state.target?.repo || state.config?.mode === 'real');
     controls.append(text(real ? '真实代码执行 · '+(state.target?.repo || '启动时配置的 Git 仓库')
       : '模拟执行 · 不会生成应用源码。'));
@@ -494,6 +647,7 @@ window.createWorkspaceLink = function (hooks) {
     state.selectedTask ||= plan.tasks[0].id;
     const task = plan.tasks.find(task => task.id === state.selectedTask) || plan.tasks[0];
     const taskRun = state.run?.tasks[task.id];
+    const canEdit=permission('workbench');
     const box = card(task.id + ' · ' + task.title);
     box.append(text('来源 ' + [...task.requirement_ids,...task.decision_ids,...task.open_item_ids].join(' · ')));
     box.append(text('完成条件 ' + task.completion_condition), text('预计产物 ' + task.write_paths.join(' · ')));
@@ -505,13 +659,13 @@ window.createWorkspaceLink = function (hooks) {
     if (taskRun.activity?.length) box.append(text(taskRun.activity.at(-1).label));
     if (taskRun.missing_input_ids.length) {
       const item = state.runQuestions.find(item => item.tasks.includes(task.id));
-      if (item && state.run.state === 'active') renderQuestion(box, item);
+      if (item && state.run.state === 'active' && canEdit) renderQuestion(box, item);
       else box.append(text('本次运行已停止或问题待加载；不会向下派发。'));
     }
     if (taskRun.state==='failed') {
       const note=taskRun.attempts.at(-1)?.error;
       if(note) box.append(text(errorMessage(note),'text-xs text-red-700'));
-      box.append(action('重试任务',()=>operate(()=>runAction('retry',{task_id:task.id})),true));
+      if(canEdit)box.append(action('重试任务',()=>operate(()=>runAction('retry',{task_id:task.id})),true));
     }
     const candidate=taskRun.artifacts.filter(artifact=>artifact.status==='draft');
     const expected=Object.fromEntries(candidate.map(artifact=>[artifact.output_id,artifact.version]));
@@ -526,7 +680,7 @@ window.createWorkspaceLink = function (hooks) {
         const input=field(entry,'产物正文 '+artifact.output_id,original,value=>{
           state.edits.set(key,value);revisions[artifact.output_id]={content:value};
         },true);
-        input.rows=6; input.readOnly=artifact.status!=='draft';
+        input.rows=6; input.readOnly=artifact.status!=='draft' || !canEdit;
         if(state.edits.has(key))revisions[artifact.output_id]={content:original};
       } else {
         entry.append(el('code',artifact.commit_sha || '','mono block text-xs break-all'));
@@ -536,7 +690,7 @@ window.createWorkspaceLink = function (hooks) {
             text('任务分支：attempt/'+state.run.id+'/'+attempt.id));
         } else if (!attempt?.checkout_commit) entry.append(text('模拟提交，不对应本地源码。'));
         entry.append(text('改动文件 '+artifact.changed_paths.join(', ')));
-        if(artifact.status==='draft' && (state.target?.repo || state.config?.real_available)) {
+        if(canEdit && artifact.status==='draft' && (state.target?.repo || state.config?.real_available)) {
           field(entry,'人工修订提交 '+artifact.output_id,artifact.commit_sha,value=>{
             revisions[artifact.output_id]={commit_sha:value.trim()};
           });
@@ -544,7 +698,7 @@ window.createWorkspaceLink = function (hooks) {
       }
       box.append(entry);
     }
-    if(candidate.length && state.run.state === 'active') {
+    if(candidate.length && state.run.state === 'active' && canEdit) {
       let note=''; field(box,'审核备注','',value=>{note=value;});
       box.append(line(
         action('批准产物',()=>operate(()=>runAction('review',{task_id:task.id,decision:'approve',expected_versions:expected,note})),true),
@@ -586,6 +740,15 @@ window.createWorkspaceLink = function (hooks) {
     q('#steward-parallel-label').textContent='max_parallel = '+(getPlan()?.plan.max_parallel || 2);
     if(state.error)sidebarBody.append(text(state.error,'text-xs p-3 rounded-lg bg-red-50 text-red-700'));
     if(state.pending)sidebarBody.append(text('正在处理…'));
+    if(linkedJob() && stageBounds[module]) {
+      sidebarBody.append(...stageActions(module));
+      if(module==='workbench' && state.run){
+        sidebarBody.append(text(runStatus().title));
+        const review=Object.values(state.run.tasks).find(task=>task.state==='review');
+        if(review)sidebarBody.append(action('查看待审核产物 '+review.task_id,()=>inspect(review.task_id)));
+      }
+      return;
+    }
     if(module==='intake-race') {
       sidebarBody.append(el('h3','赛马出案主理 AI','text-sm font-bold'),text('独立调用按组隔离。全部小组提交后公开草案并交接评审。'));
       sidebarBody.append(action(state.paused?'恢复赛马派发':'暂停后续派发',()=>{
@@ -1009,7 +1172,9 @@ window.createWorkspaceLink = function (hooks) {
   }
 
   function render(module) {
-    state.module=module; renderStatus();
+    state.module=module; renderStatus(); updateStageBadges();
+    const job=linkedJob();
+    if(job?.project_id)syncLinkedProject(job);
     const conversation=module==='steward' && steward;
     statusBar.hidden=!!conversation;
     targetButton.hidden=!!conversation;
@@ -1033,11 +1198,36 @@ window.createWorkspaceLink = function (hooks) {
     q('#progress-bar').parentElement.style.display = state.run ? '' : 'none';
     q('#btn-toggle-right-sidebar').style.display='';q('#right-steward-sidebar').style.display='';
     document.querySelectorAll('.ws-tab').forEach(tab=>{tab.style.display='';});
+    if(linkedStageWaiting(module)){
+      q('#workbench-split-view').classList.add('hidden');dedicated.classList.remove('hidden');dedicated.replaceChildren();
+      const wrap=el('div',null,'max-w-5xl mx-auto p-5');dedicated.append(wrap);
+      const pending=card(q('#page-title').textContent);
+      const failed=!!job.project_id && state.syncError===jobKey(job);
+      pending.append(text(failed?'暂时读不到当前项目。':job.project_id && state.project?.id!==job.project_id?
+        '正在读取当前对话的项目。':'这个阶段的结果还没有生成，生成后这里会自动更新。'),...stageActions(module));
+      if(failed)pending.append(action('重新读取项目',clearStageError));
+      wrap.append(pending);
+      sidebarBody.replaceChildren(...stageActions(module));
+      return true;
+    }
     if(module==='task-planner'||module==='workbench')return false;
     q('#workbench-split-view').classList.add('hidden'); dedicated.classList.remove('hidden'); dedicated.replaceChildren();
     const wrap=el('div',null,'max-w-5xl mx-auto space-y-5 text-xs'); dedicated.append(wrap);
     if(state.error)wrap.append(text(state.error,'p-3 rounded-lg bg-red-50 text-red-700 text-sm'));
-    if(module==='intake-race')renderIntake(wrap);
+    if(module==='intake-race' && job){
+      const box=card('需求快照与赛马');
+      box.append(...stageActions(module));
+      box.append(el('pre',job.markdown,'whitespace-pre-wrap text-sm bg-slate-50 p-3 rounded'));
+      if(job.groups.length){
+        box.append(text('主理人安排 '+job.groups.length+' 组，'+job.groups.filter(g=>g.finished).length+' 组已提交。'));
+        const routes=el('details');
+        routes.append(el('summary','查看分组和提示词','cursor-pointer font-semibold'));
+        for(const group of job.groups) routes.append(text(group.id+' 组 · '+group.focus),text(group.prompt));
+        box.append(routes);
+      }
+      box.append(text('需求快照已经绑定本轮。修改需求或分组时，可回对话或在主理人高级设置中发起下一轮。'));
+      wrap.append(box);
+    }else if(module==='intake-race')renderIntake(wrap);
     else if(module==='review-synthesis')renderReview(wrap);
     else if(module==='exp-memory')renderMemory(wrap);
     else if(module==='model-router')renderModelSettings(wrap);

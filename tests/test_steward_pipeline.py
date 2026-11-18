@@ -66,9 +66,16 @@ class StewardPipelineTest(unittest.TestCase):
         self.assertEqual(paused["groups"][0]["prompt"], "A：先做清单与排序")
         self.assertEqual(len(paused["groups"]), 3)
         self.assertIsNone(paused["run_id"])
+        project = self.workspace.project(paused["project_id"])
+        plan = project["planning"]["plan"]
+        plan["tasks"][0]["title"] = "人工调整后的第一项"
+        saved = self.workspace.plans.save(project["review"], plan["version"], plan["tasks"])
         self.pipeline.set_gates(job["id"], [])
         done = self.wait(job)
-        self.assertIsNotNone(done["run_id"])
+        actual = self.workspace.project(done["project_id"])["run"]
+        self.assertEqual(actual["plan_ref"]["version"], saved["plan"]["version"])
+        self.assertEqual(self.workspace.plans.latest(done["project_id"])["plan"]["tasks"][0]["title"],
+                         "人工调整后的第一项")
 
     def test_existing_draft_uses_model_to_resolve_conflicts_without_handoff_forms(self):
         project = self.reviews.create(handoff())

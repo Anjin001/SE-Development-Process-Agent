@@ -1,5 +1,5 @@
 /* Primary workspace: one conversation, with inspectable execution milestones. */
-window.createStewardLink = function ({q,el,action,get,post,open,showManual,modelMode,existingProject,openProject}) {
+window.createStewardLink = function ({q,el,action,get,post,open,modelMode,existingProject,openProject,onJobChange,canContinue}) {
   const root = el('div',null,'max-w-5xl mx-auto px-5 py-4 space-y-4');
   const section = () => el('section',null,'bg-white border border-slate-200 rounded-xl p-4 space-y-3');
   const small = message => el('p',message,'text-xs text-slate-600 leading-relaxed');
@@ -20,7 +20,7 @@ window.createStewardLink = function ({q,el,action,get,post,open,showManual,model
   const safeRead = key=>{try {return sessionStorage.getItem(key);}catch{return null;}};
   const safeSave = (key,value)=>{try {sessionStorage.setItem(key,value);}catch{}};
   let selected=null, busy=false, syncing=false, visible=false, refreshFailed=false, history=[], shown=null;
-  let picked = safeRead('se-agent-steward-job') || '';
+  let picked = safeRead('se-agent-steward-job') || '', jobFingerprint='';
   const cfg = {gates:[],group_count:0,parallel:0,prompts:[],mode:'auto',guidance:'',directory:''};
   const header = section();
   header.append(el('h2','项目主理人','font-bold text-xl text-slate-900'),
@@ -111,7 +111,7 @@ window.createStewardLink = function ({q,el,action,get,post,open,showManual,model
   const generated=el('div',null,'space-y-2');
   more.append(line(groupWrap,parallelWrap,type),prefWrap,pathWrap,prompts,generated,
     small('真实开发默认使用工作台附近的 SE-Agent-Projects 独立目录。已有项目不会被覆盖。'),
-    line(action('以这些设置重跑本轮需求',()=>restart()),action('显示高级手动工具',()=>{showManual();open('task-planner');})));
+    line(action('以这些设置重跑本轮需求',()=>restart()),action('打开任务分解',()=>open('task-planner'))));
   advanced.append(reviewPanel,more);
   root.append(header,progress,conversation,summaryBox,log,advanced);
 
@@ -121,6 +121,8 @@ window.createStewardLink = function ({q,el,action,get,post,open,showManual,model
   }
   async function send(raw,command=null,takeover=false,settings=null){
     if(busy || !raw.trim()) return;
+    if(selected && (command==='continue' || /^(?:继续|开始|同意|确认|通过|确认继续|继续推进)[。！!？? ]*$/.test(raw.trim()))
+        && !canContinue()) return messageContent('请先回到对应栏目保存手动修改，再继续。');
     if(!selected && !takeover && raw.trim().length>20000) return messageContent('需求最多 20000 字。');
     if(selected && !takeover && raw.trim().length>5000) return messageContent('对话消息最多 5000 字。');
     const project=takeover?existingProject():null;
@@ -172,6 +174,11 @@ window.createStewardLink = function ({q,el,action,get,post,open,showManual,model
   }
   function render(){
     const s=selected;
+    const fingerprint=JSON.stringify([s?.id,s?.project_id,s?.stage,s?.status,s?.gate,s?.settings.gates,s?.run_id]);
+    if(fingerprint!==jobFingerprint){
+      jobFingerprint=fingerprint;
+      queueMicrotask(()=>onJobChange?.());
+    }
     const index=s?phases.findIndex(([key])=>key===s.stage):-1;
     phaseNodes.forEach((node,i)=>{
       const classes=i===index && s?.status==='running' ? ' bg-indigo-100 text-indigo-800 border-indigo-300 animate-pulse' :
@@ -242,7 +249,7 @@ window.createStewardLink = function ({q,el,action,get,post,open,showManual,model
   }
   let initialized=false;
   const timer=setInterval(async()=>{
-    if(!visible || !picked || syncing || busy)return;
+    if(!picked || syncing || busy || ['completed','cancelled'].includes(selected?.status))return;
     syncing=true;
     const id=picked;
     try{
@@ -255,6 +262,13 @@ window.createStewardLink = function ({q,el,action,get,post,open,showManual,model
   return {
     show(wrap){visible=true; if(root.parentNode!==wrap)wrap.append(root);render(); if(!initialized){initialized=true;loadHistory();if(picked)select(picked);}},
     hide(){visible=false;},
+    current(){return selected;},
+    control(command){return send(command==='pause'?'暂停':'继续',command);},
+    async enableGate(name){
+      if(!selected || busy || cfg.gates.includes(name))return;
+      cfg.gates=[...cfg.gates,name];
+      await updateGates();
+    },
     load(id){open('steward');select(id);},
     newProject(){selected=null; picked='';safeSave('se-agent-steward-job','');open('steward'); render();},
   };

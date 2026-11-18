@@ -7,7 +7,9 @@
 执行器改文件、提交，回报 Git SHA 与用量。执行器默认走提示词骨架，
 AutoGen 0.2 适配通过 executor="autogen" 打开。
 """
+import ast
 import hashlib
+import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -27,6 +29,35 @@ RETRYABLE = {WORKER_TIMEOUT: True, MERGE_CONFLICT: True, EXECUTION_FAILED: True,
              MISSING_INPUT: False, OUTPUT_INVALID: False}
 
 SYSTEM_PROMPT = "你是开发执行器。只输出要写入目标文件的内容，不要解释，不要 Markdown 代码围栏。"
+
+
+class OutputContentError(WorkspaceError):
+    def __init__(self, path, detail):
+        super().__init__(f"{path}：{detail}")
+        self.path = path
+
+
+def checked_content(text, path, kind=None):
+    if not isinstance(text,str) or not text.strip():
+        raise OutputContentError(path, "模型没有返回文件正文，未写文件或提交")
+    if kind == "git_commit":
+        fence = chr(96)*3
+        lines = text.strip().splitlines()
+        if len(lines) >= 2 and lines[0].startswith(fence) and lines[-1].strip() == fence:
+            text = "\n".join(lines[1:-1])
+        if not text.strip():
+            raise OutputContentError(path, "文件正文为空，未写文件或提交")
+        if path.endswith(".py"):
+            try:
+                ast.parse(text, filename=path)
+            except (ValueError,SyntaxError) as err:
+                raise OutputContentError(path, f"Python 语法检查未通过（第 {getattr(err,'lineno','?')} 行）") from None
+        elif path.endswith(".json"):
+            try:
+                json.loads(text)
+            except ValueError:
+                raise OutputContentError(path, "不是有效 JSON") from None
+    return text
 
 
 class BudgetExceeded(RuntimeError):
@@ -76,6 +107,14 @@ def build_prompt(request, task, step):
             lines.append(f'上游 {artifact.get("task_id")} 文本：{artifact.get("content")}')
         else:
             lines.append(f'上游 {artifact.get("task_id")} 提交：{artifact.get("commit_sha")}')
+    if request.get("retry_feedback"):
+        lines.append("上次尝试的失败或复核反馈（本次修正）："+request["retry_feedback"])
+    if request.get("handoff_package"):
+        lines.append("随后并发开发的工作包：\n"+request["handoff_package"])
+    for path, content in request.get("upstream_files", {}).items():
+        lines.append(f"已批准的上游文件 {path}：\n{content}")
+    for path, content in request.get("generated_files", {}).items():
+        lines.append(f"本任务已生成文件 {path}：\n{content}")
     if request.get("boundary_guidance"):
         lines.append("已确认的实现边界：" + request["boundary_guidance"])
     for path, content in request.get("existing_files", {}).items():
@@ -165,6 +204,9 @@ class Worker:
         try:
             artifacts = (self._mock_artifacts(request) if mode == "mock"
                          else self._real_artifacts(request, task, state, steps, progress))
+        except OutputContentError as exc:
+            return self._result(request, "failed", started_at, state=state,
+                                error=error(OUTPUT_INVALID, str(exc), {"path":exc.path}))
         except MergeConflict as exc:
             return self._result(request, "failed", started_at, state=state,
                                 error=error(MERGE_CONFLICT, "上游提交无法合并",
@@ -263,7 +305,18 @@ class Worker:
                 raise WorkspaceError("输出路径超出本次工作区")
             if target.is_file():
                 existing[path] = target.read_text(encoding="utf-8")[:64000]
-        produced = self._run_steps(dict(request, existing_files=existing), task, steps, state, progress=progress)
+        upstream = {}
+        repository = workspace.path.resolve()
+        remaining = 64000
+        for artifact in request.get("inputs", []):
+            for path in artifact.get("changed_paths", []):
+                source = (repository / PurePosixPath(path)).resolve()
+                if source.is_relative_to(repository) and source.is_file() and remaining>0 and path not in upstream:
+                    with source.open(encoding="utf-8", errors="replace") as file:
+                        upstream[path] = file.read(min(12000,remaining))
+                    remaining -= len(upstream[path])
+        produced = self._run_steps(dict(request, existing_files=existing, upstream_files=upstream),
+                                   task, steps, state, progress=progress)
         progress("保存产物与校验改动")
         outputs = task.get("outputs", [])
         git_outputs = [o for o in outputs if o.get("kind") == "git_commit"]
@@ -272,7 +325,7 @@ class Worker:
             for output in git_outputs:
                 target = workspace.path / PurePosixPath(output["path"])
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(produced.get(output["id"], ""), encoding="utf-8")
+                target.write_text(produced[output["id"]], encoding="utf-8")
             state["commit_sha"] = workspace.commit_paths(
                 f'{task["id"]} {task["title"]}（尝试 {request["attempt_id"]}）',
                 [o["path"] for o in git_outputs])
@@ -295,13 +348,13 @@ class Worker:
                      if a.get("kind") == "git_commit" and a.get("status") == "approved"
                      and a.get("commit_sha")]
         artifacts.sort(key=lambda a: (a["task_id"], a["output_id"]))
-        return [a["commit_sha"] for a in artifacts]
+        return list(dict.fromkeys(a["commit_sha"] for a in artifacts))
 
     def _run_steps(self, request, task, steps, state, progress=None):
         produced = {}
         spent = 0.0
         total = {"input_tokens": 0, "output_tokens": 0}
-        context = dict(request)
+        context = dict(request, generated_files={})
         for step in steps:
             outputs = [None] if step["stage"] == "boundary" else task.get("outputs", [])
             for output in outputs:
@@ -320,9 +373,12 @@ class Worker:
                 if self.router.max_cost_usd and spent > self.router.max_cost_usd:
                     raise BudgetExceeded("费用超限", spent)
                 if output is None:
-                    context["boundary_guidance"] = result.text
+                    context["boundary_guidance"] = checked_content(result.text, "实现边界")
                 else:
-                    produced[output["id"]] = result.text
+                    path = output.get("path") or output["id"]
+                    content = checked_content(result.text,path,output.get("kind"))
+                    produced[output["id"]] = content
+                    context["generated_files"][path] = content[:12000]
         return produced
 
     def _provider(self, step):

@@ -88,11 +88,20 @@ class WorktreeAdapter:
         return self.git("rev-parse", "HEAD", cwd=self.path)
 
     def commit_paths(self, message, paths):
-        """暂存指定路径并提交，返回提交号；没有改动时停在当前 HEAD。"""
+        """暂存指定路径并提交，确保提交真实存在且 HEAD 已推进。"""
         self.git("add", "--", *paths, cwd=self.path)
+        previous = self.head()
+        check = self._run_git("diff","--cached","--quiet",cwd=self.path)
+        if check.returncode == 0:
+            raise WorkspaceError("输出没有产生实际改动，未生成代码提交")
+        if check.returncode != 1:
+            raise WorkspaceError("无法验证已暂存的代码改动")
         self.git("-c", "user.name=se-agent", "-c", "user.email=se-agent@local",
-                 "commit", "-m", message, cwd=self.path, check=False)
-        return self.head()
+                 "commit", "-m", message, cwd=self.path)
+        commit = self.head()
+        if previous == commit:
+            raise WorkspaceError("Git 没有生成新的代码提交")
+        return commit
 
     def diff_paths(self, base):
         """从起点到当前 HEAD 的改动路径，用于校验写入范围。"""

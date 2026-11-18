@@ -131,7 +131,7 @@ class Handler(WorkbenchHandler):
                     return
             if self.command == "GET":
                 if path == "/workspace/steward":
-                    self.respond(200, {"items":pipeline.list(), "race_parallel":DEFAULT_RACE_PARALLEL})
+                    self.respond(200, {"items":pipeline.list(), "race_parallel":DEFAULT_RACE_PARALLEL, "team_plan":True})
                     return
                 match = re.fullmatch(r"/workspace/steward/([a-f0-9]{32})", path)
                 if match:

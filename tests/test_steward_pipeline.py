@@ -79,7 +79,7 @@ class StewardPipelineTest(unittest.TestCase):
                 return {"decisions":[{"id":item["id"],"choice":"允许创建并完成任务。",
                     "reason":"满足首版明确范围。"} for item in context["issues"]]}
             if stage == "steward_plan":
-                return {"tasks": context["tasks"]}
+                return {"modules": []}
             raise AssertionError(stage)
 
         self.agent = model
@@ -146,7 +146,7 @@ class StewardPipelineTest(unittest.TestCase):
                 return {"decisions": [{"id":item["id"],"choice":"停用后拒绝新预约，已有预约保留。",
                     "reason":"不改变已经受理的预约。"} for item in context["issues"]]}
             if stage == "steward_plan":
-                return {"tasks": context["tasks"]}
+                return {"modules": []}
             if stage == "steward_review":
                 return {"approved":True,"reason":"产物与当前任务对应。"}
             raise AssertionError(stage)
@@ -185,25 +185,43 @@ class StewardPipelineTest(unittest.TestCase):
             if stage == "steward_decisions":
                 return {"decisions":[{"id":i["id"],"choice":"允许发布公开笔记。","reason":"按首版要求实现。"} for i in context["issues"]]}
             if stage == "steward_plan":
-                return {"tasks": context["tasks"]}
+                return {"modules": []}
             if stage == "steward_review":
                 return {"approved":True,"reason":"示例代码与任务对应。"}
             raise AssertionError(stage)
 
         class Executor:
             def run_step(self, request, task, stage, provider):
-                return LLMResult("def publish():\n    return True\n", 1, 1)
+                outputs = task["outputs"]
+                path = outputs[0]["path"]
+                text = '{}' if path.endswith(".json") else "def publish():\n    return True\n"
+                return LLMResult(text, 1, 1)
 
         self.agent = model
         self.reviews.agent = {"agent":model}
         self.workspace.dispatch.worker = Worker(mode="mock", executor=Executor(), provider=object())
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)/"real-project"
-            done = self.wait(self.pipeline.start("- 用户可以发布图文笔记。", {"directory":str(repo),"mode":"real"}))
+            done = self.wait(self.pipeline.start("- 做一个图文笔记应用，支持发布、浏览、关注作者和点赞。", {"directory":str(repo),"mode":"real"}))
             data = self.workspace.project(done["project_id"])
             commits = [a for t in data["run"]["tasks"].values() for a in t["artifacts"] if a["kind"]=="git_commit"]
             self.assertTrue(commits)
-            self.assertTrue(self.store.verifier_for(done["project_id"]).exists(commits[0]["commit_sha"]))
+            plan = data["planning"]["plan"]
+            modules = [t for t in plan["tasks"] if t["phase"]=="development"]
+            self.assertGreaterEqual(len(modules),4)
+            self.assertTrue(all(t["depends_on"]==["T1"] and len(t["outputs"])>=3 for t in modules))
+            verifier = self.store.verifier_for(done["project_id"])
+            final_commit = done["delivery"]["git_commit"]
+            for t in modules:
+                self.assertTrue(all(verifier.is_ancestor(a["commit_sha"],final_commit)
+                                    for a in data["run"]["tasks"][t["id"]]["artifacts"]))
+            for expected in ("docs/technical-handoff.md","app/main.py","db/schema.sql"):
+                self.assertTrue(verifier._git("show",final_commit+":"+expected).strip())
+            rebuilt = self.wait(self.pipeline.chat(done["id"],"按模块重新拆分"),"gate")
+            self.assertEqual(rebuilt["project_id"],done["project_id"])
+            self.assertEqual(rebuilt["gate"],"plan")
+            self.assertIsNone(rebuilt["run_id"])
+            self.assertTrue(verifier.exists(final_commit))
             self.assertTrue(Path(done["delivery"]["directory"],"workflow.json").is_file())
             self.assertTrue({"steward_groups","idea","evaluate","synthesize","steward_decisions",
                              "steward_plan","steward_review"}.issubset(calls), calls)

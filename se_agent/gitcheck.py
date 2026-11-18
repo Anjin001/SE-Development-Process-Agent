@@ -6,6 +6,7 @@ contains every required upstream SHA, and only touches the task's
 ``write_paths``. Failures surface as OUTPUT_INVALID so the attempt can be
 retried with a structured reason.
 """
+import re
 import subprocess
 
 from .contracts import OutputInvalid
@@ -17,14 +18,14 @@ class CommitVerifier:
 
     def _git(self, *args):
         result = subprocess.run(["git", "-C", self.repo, *args],
-                                capture_output=True, text=True)
+                                capture_output=True, encoding="utf-8", errors="replace")
         if result.returncode != 0:
             raise OutputInvalid("Git 命令失败", command=" ".join(args),
                                 stderr=result.stderr.strip())
         return result.stdout
 
     def exists(self, commit_sha):
-        if not commit_sha or len(commit_sha) < 7:
+        if not isinstance(commit_sha,str) or not re.fullmatch(r"[a-fA-F0-9]{7,64}",commit_sha):
             return False
         result = subprocess.run(
             ["git", "-C", self.repo, "cat-file", "-e", f"{commit_sha}^{{commit}}"],
@@ -43,6 +44,17 @@ class CommitVerifier:
         else:
             output = self._git("show", "--pretty=format:", "--name-only", commit_sha)
         return [line.strip() for line in output.splitlines() if line.strip()]
+
+    def verify_checkout(self, checkout, baseline, upstreams):
+        if not self.exists(checkout) or not self.is_ancestor(baseline,checkout):
+            raise OutputInvalid("执行起点不是已绑定的基线提交",field="checkout_commit")
+        unique = list(dict.fromkeys(sha for sha in upstreams if sha))
+        if any(not self.exists(sha) or not self.is_ancestor(sha,checkout) for sha in unique):
+            raise OutputInvalid("执行起点没有纳入所有批准的上游提交",field="checkout_commit")
+        allowed = {p for sha in unique for p in self.changed_paths(sha,baseline)}
+        outside = set(self.changed_paths(checkout,baseline))-allowed
+        if outside:
+            raise OutputInvalid("执行起点包含上游之外的文件",field="checkout_commit",paths=sorted(outside))
 
     def verify(self, commit_sha, checkout_commit=None, required_shas=(),
                allowed_paths=()):

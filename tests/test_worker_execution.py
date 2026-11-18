@@ -204,6 +204,15 @@ class RealWorktreeTest(unittest.TestCase):
         self.assertTrue(is_ancestor(self.root, upstream, artifact["commit_sha"]))
         git(self.root, "cat-file", "-e", f'{artifact["commit_sha"]}:app/reservations.py')
 
+    def test_blank_output_is_rejected_before_writing_or_committing(self):
+        result = execute_task(self.request([]), self.worker(StubExecutor("   \n")))
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["artifacts"], [])
+        self.assertEqual(result["error"]["code"], "OUTPUT_INVALID")
+        self.assertIn("app/integration.py",result["error"]["message"])
+        self.assertEqual(git(self.root,"rev-parse","attempt/RUN-01/T4.1"),self.base)
+        self.assertFalse((self.root/".worktrees"/"RUN-01-T4.1"/"app"/"integration.py").exists())
+
     def test_merge_conflict_reports_paths(self):
         first = self.upstream("upstream-a", "RULES = 'a'\n")
         second = self.upstream("upstream-b", "RULES = 'b'\n")

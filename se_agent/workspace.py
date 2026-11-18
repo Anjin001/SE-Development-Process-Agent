@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from .contracts import DomainError, InvalidReference, InvalidState, NotFound, VersionConflict
 from .planner import decompose_tasks, render_plan_markdown
+from .team_plan import fallback_modules, team_tasks
 from .synthesis_preview import PreviewError, PreviewStore
 from .worker import Worker, build_worker
 from .workspace_experience import Progress, ProjectDelivery
@@ -102,7 +103,12 @@ class ProjectPlans:
             if not db.execute("SELECT 1 FROM specifications WHERE project_id=? AND version=?",
                               (project_id, version)).fetchone():
                 self.database.save_spec(project_id, adapted)
-            tasks = decompose_tasks(dict(spec, requirement_items=requirement["items"]))
+            modules = fallback_modules(requirement["items"])
+            # A single input paragraph can describe several independent product behaviours.
+            if len(requirement["items"]) == 1 and len(modules)>1:
+                tasks = team_tasks(review,modules)
+            else:
+                tasks = decompose_tasks(dict(spec, requirement_items=requirement["items"]))
             verifier = self.database.verifier_for(project_id)
             baseline = verifier._git("rev-parse", "HEAD").strip() if verifier else None
             plan = self.database.create_plan(project_id, adapted, baseline, 2, tasks)
@@ -201,8 +207,10 @@ class Dispatch:
     def _execute(self, run_id, request, worker):
         try:
             if type(worker) is Worker:
-                result = worker.execute(request, progress=lambda label, seconds=0:
-                                        self.progress.record(request["attempt_id"], label, seconds))
+                def milestone(label, seconds=0):
+                    self.database.renew(run_id, request["attempt_id"], "workspace-worker")
+                    self.progress.record(request["attempt_id"], label, seconds)
+                result = worker.execute(request, progress=milestone)
             else:
                 result = worker.execute(request)
         except Exception as exc:
@@ -268,9 +276,10 @@ class Workspace:
                 task["activity"] = self.dispatch.progress.read(attempts[-1]["id"])
             for artifact in task["artifacts"]:
                 row = self.database.db.execute(
-                    "SELECT content,changed_paths FROM artifacts WHERE run_id=? AND id=? AND version=?",
+                    "SELECT content,changed_paths,attempt_id FROM artifacts WHERE run_id=? AND id=? AND version=?",
                     (run_id, artifact["id"], artifact["version"])).fetchone()
-                artifact.update(content=row["content"], changed_paths=json.loads(row["changed_paths"]))
+                artifact.update(content=row["content"],changed_paths=json.loads(row["changed_paths"]),
+                                attempt_id=row["attempt_id"])
         return snapshot
 
     def action(self, project_id, run_id, action, body):

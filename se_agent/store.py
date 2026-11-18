@@ -530,8 +530,27 @@ class Store:
         supplied = {row["item_id"]: row["value"] for row in db.execute(
             "SELECT item_id, value FROM input_submissions WHERE run_id=? AND task_id=?",
             (run["id"], task["id"]))}
+        retry_feedback = ""
+        previous = db.execute(
+            "SELECT state,error FROM attempts WHERE run_id=? AND task_id=? AND id<>? ORDER BY number DESC LIMIT 1",
+            (run["id"],task["id"],attempt_id)).fetchone()
+        if previous:
+            if previous["state"] == "failed":
+                detail = _load(previous["error"], {})
+                retry_feedback = detail.get("message","") if isinstance(detail,dict) else str(detail)
+            else:
+                review = db.execute(
+                    "SELECT note FROM review_records WHERE run_id=? AND task_id=? AND decision='reject' ORDER BY rowid DESC LIMIT 1",
+                    (run["id"],task["id"])).fetchone()
+                retry_feedback = review["note"] if review else ""
+        handoff = ""
+        if task["phase"] == "planning":
+            future = self.plan_tasks(run["project_id"],plan["id"],plan["version"])
+            handoff = "\n".join(t["title"]+" → "+", ".join(o["path"] or "" for o in t["outputs"])
+                                for t in future if t["phase"] != "planning")
         return {"project_id": run["project_id"], "run_id": run["id"],
-                "attempt_id": attempt_id, "task": task,
+                "attempt_id": attempt_id, "task": task, "retry_feedback":retry_feedback[:900],
+                "handoff_package":handoff[:10000],
                 "spec_ref": {"id": plan["spec_id"], "version": plan["spec_version"]},
                 "spec_context": self._spec_context(run["project_id"],
                                                    plan["spec_version"], task),
@@ -623,7 +642,7 @@ class Store:
                 if status == "succeeded":
                     baseline = db.execute("SELECT base_commit FROM plans WHERE project_id=? AND id=? AND version=?",
                                           (run["project_id"], run["plan_id"], run["plan_version"])).fetchone()["base_commit"]
-                    problems = self._check_git(run["project_id"], task, attempt, artifacts or [], baseline)
+                    problems = self._check_git(run["project_id"], task, attempt, artifacts or [], baseline, checkout_commit)
                     if problems:
                         db.execute("UPDATE attempts SET state='failed', ended_at=?,"
                                    " error=?, report_hash=? WHERE id=?",
@@ -671,7 +690,7 @@ class Store:
             raise StaleAttempt(current_attempt_id=stale_id)
         return self.snapshot(run_id)
 
-    def _check_git(self, project_id, task, attempt, artifacts, baseline):
+    def _check_git(self, project_id, task, attempt, artifacts, baseline, reported_checkout=None):
         """Reject a commit the plan cannot account for (§5 verification)."""
         verifier = self.verifier_for(project_id) if baseline or self.verifier else None
         if verifier is None:
@@ -683,11 +702,17 @@ class Store:
             return []
         required = [ref.get("commit_sha") for ref in _load(attempt["input_refs"], [])
                     if ref.get("commit_sha")]
+        checkout = reported_checkout or attempt["checkout_commit"] or baseline
+        if reported_checkout and baseline:
+            try:
+                verifier.verify_checkout(reported_checkout,baseline,required)
+            except DomainError as exc:
+                return [{"message":exc.message,"details":exc.details}]
         problems = []
-        for item in commits:
+        for item in {commit.get("commit_sha"):commit for commit in commits}.values():
             try:
                 verifier.verify(commit_sha=item.get("commit_sha"),
-                                     checkout_commit=attempt["checkout_commit"] or baseline,
+                                     checkout_commit=checkout,
                                      required_shas=required,
                                      allowed_paths=task["write_paths"])
             except DomainError as exc:

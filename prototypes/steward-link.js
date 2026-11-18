@@ -20,7 +20,7 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,existi
   const safeRead = key=>{try {return sessionStorage.getItem(key);}catch{return null;}};
   const safeSave = (key,value)=>{try {sessionStorage.setItem(key,value);}catch{}};
   let selected=null, busy=false, syncing=false, visible=false, refreshFailed=false, history=[], shown=null;
-  let picked = safeRead('se-agent-steward-job') || '', jobFingerprint='';
+  let picked = safeRead('se-agent-steward-job') || '', jobFingerprint='', canReplan=false;
   const cfg = {gates:[],group_count:0,parallel:0,race_parallel:3,prompts:[],mode:'auto',guidance:'',directory:''};
   const header = section();
   header.append(el('h2','项目主理人','font-bold text-xl text-slate-900'),
@@ -172,6 +172,8 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,existi
       const index=await get('/workspace/steward');
       history=index.items;
       raceWrap.hidden=!Number.isInteger(index.race_parallel);
+      canReplan=index.team_plan===true;
+      render();
       const empty=el('option','历史对话');empty.value=''; historyPicker.replaceChildren(empty);
       for(const item of history){const opt=el('option',item.title.slice(0,32)+' · '+(statuses[item.status] || item.status));opt.value=item.id;historyPicker.append(opt);}
       historyPicker.value=selected?.id || '';
@@ -213,12 +215,15 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,existi
     const running=(s?.execution?.running || []).map(t=>t.id+' · '+t.step);
     if(s?.stage==='race')running.push(...s.groups.filter(g=>g.status==='running' || g.status==='failed').map(g=>g.step));
     if(taskList.textContent!==indicator+running.join('')) taskList.replaceChildren(small(indicator),...running.map(small));
-    const key=(s?.id || '')+':'+(s?.status || '')+':'+busy;
+    const key=(s?.id || '')+':'+(s?.status || '')+':'+busy+':'+canReplan;
     if(key!==activeKey){
       activeKey=key;controls.replaceChildren();
       if(s?.status==='running')controls.append(action('暂停派发',()=>send('暂停','pause')));
       if(s?.status==='paused'||s?.status==='gate')controls.append(action('继续',()=>send('继续','continue'),true));
-      if(s?.status==='failed')controls.append(action('从当前步骤重试',()=>send('重试','retry'),true));
+      if(s?.status==='failed'){
+        controls.append(action('从当前步骤重试',()=>send('重试','retry'),true));
+        if(canReplan && s?.project_id && s?.run_id)controls.append(action('按模块重新拆分',()=>send('按模块重新拆分','replan')));
+      }
     }
     const changes=JSON.stringify([s?.id,s?.messages,s?.events,s?.summary,s?.target,s?.delivery,s?.groups]);
     if(changes!==shown){
@@ -235,11 +240,13 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,existi
       if(s?.summary?.markdown)summaryBody.append(el('pre',s.summary.markdown,'bg-slate-50 p-2 rounded whitespace-pre-wrap max-h-64 overflow-auto'));
       if(s?.summary?.tasks?.length){
         const tasks=el('ul',null,'list-disc ml-5');
-        for(const t of s.summary.tasks)tasks.append(el('li',t.id+' · '+t.title+' · '+elapsed(t.estimate_seconds)+(t.depends_on.length?' · 前置 '+t.depends_on.join('、'):'')));
+        for(const t of s.summary.tasks)tasks.append(el('li',t.id+' · '+t.title+' · '+elapsed(t.estimate_seconds)+(t.depends_on.length?' · 前置 '+t.depends_on.join('、'):'')+(t.outputs?.length?' · 产物 '+t.outputs.join('、'):'')));
         summaryBody.append(strong('已生成的任务与依赖'),tasks);
       }
       if(s?.target?.repo)summaryBody.append(small('代码仓库：'+s.target.repo));
       if(s?.delivery)summaryBody.append(small('交付文件：'+s.delivery.directory));
+      if(s?.delivery?.git_branch)summaryBody.append(small('合并后的交付分支：'+s.delivery.git_branch),
+        small('交付提交：'+s.delivery.git_commit));
       if(s?.project_id)summaryBody.append(action('打开任务图、甘特图与产物',()=>openProject(s.project_id)));
       generated.replaceChildren();
       if(s?.groups.length) {

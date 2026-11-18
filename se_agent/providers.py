@@ -78,12 +78,27 @@ class OpenAICompatibleProvider(Provider):
                 payload = json.loads(response.read().decode("utf-8"))
         except TimeoutError as exc:
             raise ProviderTimeout(f"{model} 调用超时") from exc
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            exc.close()
+            raise ProviderError(f"{model} 的执行接口返回 HTTP {status}") from None
         except urllib.error.URLError as exc:
             if isinstance(exc.reason, TimeoutError):
                 raise ProviderTimeout(f"{model} 调用超时") from exc
             raise ProviderError(f"{model} 调用失败：{exc.reason}") from exc
-        usage = payload.get("usage") or {}
-        text = (payload.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+        try:
+            choice = payload["choices"][0]
+            message = choice["message"]
+            finish = choice.get("finish_reason")
+            text = message.get("content")
+            usage = payload.get("usage") or {}
+        except (KeyError, IndexError, TypeError, AttributeError):
+            raise ProviderError(f"{model} 的接口未返回可识别的正文") from None
+        if not isinstance(text, str) or not text.strip():
+            extra = "（达到输出上限）" if finish == "length" else ""
+            raise ProviderError(f"{model} 没有返回可写入文件的正文{extra}")
+        if finish == "length":
+            raise ProviderError(f"{model} 达到输出上限，文件正文可能不完整")
         return LLMResult(text,
                          usage.get("prompt_tokens") or estimate_tokens(prompt),
                          usage.get("completion_tokens") or estimate_tokens(text))

@@ -14,6 +14,7 @@ from .agent_client import AgentError
 from .contracts import DomainError, InvalidReference, InvalidState, NotFound
 from .intake import build_snapshot, default_group_prompts, run_group
 from .synthesis_preview import PreviewError
+from .team_plan import fallback_modules, team_tasks, validate_modules
 
 STAGES = {
     "groups": "设计讨论路线", "race": "多组独立出案", "evaluate": "独立评审",
@@ -239,6 +240,11 @@ class StewardPipeline:
                 output["groups"].append(dict(id=id_, focus=group["focus"], prompt=group["prompt"],
                                              finished=finished, **(baseline | live)))
             if record["run_id"]:
+                if record["status"]=="failed":
+                    evidence = self._evidence(record)
+                    if evidence and evidence[0]["reason"]:
+                        item = evidence[0]
+                        output["error"] = f"{item['task']}：{item['reason']}"
                 run = self.workspace.run(record["project_id"], record["run_id"])
                 tasks = list(run["tasks"].values())
                 plan = self.db.get_plan(record["project_id"], run["plan_ref"]["id"], run["plan_ref"]["version"])
@@ -415,6 +421,8 @@ class StewardPipeline:
                 event("按依赖和并发上限自动派发任务")
                 with self.review_lock, self.db.tx():
                     plan = self.workspace.plans.latest(pid)["plan"]
+                    if plan["base_commit"] and not agent:
+                        raise InvalidState("任务清单已保存。请先配置模型 API，再继续开工，避免启动空的真实执行。")
                     run = self.db.create_run(pid, plan["id"], plan["version"], "auto")
                     forward("develop", run_id=run["id"])
             elif stage == "develop":
@@ -430,6 +438,17 @@ class StewardPipeline:
                     data = self.workspace.project(pid)
                     target = data["target"]
                     artifact = self.workspace.delivery.export(data) if target["path"] else None
+                    if artifact and target["repo"] and data["run"]:
+                        run = data["run"]
+                        planned = self.db.get_plan(pid,run["plan_ref"]["id"],run["plan_ref"]["version"])["plan"]
+                        integrators = [t["id"] for t in planned["tasks"] if t["phase"]=="integration"]
+                        for id_ in reversed(integrators):
+                            commit = next((a for a in run["tasks"][id_]["artifacts"] if a["kind"]=="git_commit"
+                                           and a["status"]=="approved"),None)
+                            if commit:
+                                artifact.update(git_commit=commit["commit_sha"],
+                                    git_branch=f"attempt/{run['id']}/{commit['attempt_id']}")
+                                break
                 self._update(key, delivery=artifact, target=target, status="completed", timeout=0)
                 mode = "真实代码保存在目标 Git 仓库的任务分支。" if target["repo"] else "本轮为模拟执行，没有生成真实源代码。"
                 self._message(key, "steward", "本轮已经交付。"+mode+" 可以告诉我要改哪里，我会创建下一轮。")
@@ -509,10 +528,10 @@ class StewardPipeline:
         with self.review_lock, self.db.tx():
             data = self.workspace.project(pid)
             review = data["review"]
-            real = cfg["mode"] != "mock" and bool(agent)
+            target = data["target"]
+            real = cfg["mode"] != "mock" and bool(agent or target["repo"])
             if cfg["mode"] == "real" and not real:
                 raise InvalidState("你选择了真实开发，请配置模型 API，然后对主理人说「重试」。")
-            target = data["target"]
             if (not target["path"] and (cfg["directory"] or real)) or (
                     target["path"] and real and not target["repo"]):
                 path = cfg["directory"].strip() or target["path"] or str(self.output_root / pid[:12])
@@ -521,50 +540,29 @@ class StewardPipeline:
             if not real and target["repo"]:
                 raise InvalidState("这份方案绑定了真实 Git 仓库；要模拟时请从对话新建一轮。")
             plan = self.workspace.plans.generate(review, review["specification"]["version"])["plan"]
+        requirements = review["requirement"]["items"]
+        modules = fallback_modules(requirements)
         if agent:
-            self._event(key, "主理人调整任务估时与依赖", timeout=60)
-            context = dict(tasks=plan["tasks"], guidance=cfg["guidance"],
-                           requirements=review["requirement"]["items"])
+            self._event(key,"按功能划分工作包、对齐接口和文件所有权",timeout=60)
+            context = dict(requirements=requirements, decisions=review["specification"]["decisions"],
+                guidance=cfg["guidance"], suggested=[dict(slug=m["slug"],scope=m["scope"]) for m in modules],
+                minimum_modules=min(len(modules),4))
             try:
                 proposed = agent("steward_plan", context)
-                tasks = self._custom_tasks(plan["tasks"], proposed.get("tasks", []))
-                with self.review_lock:
-                    saved = self.workspace.plans.save(review, plan["version"], tasks,
-                                                       cfg["parallel"] or plan["max_parallel"])
-                    plan = saved["plan"]
-            except (DomainError, AgentError, TypeError, ValueError, AttributeError):
-                self._event(key, "模型给出的排期未通过检查，采用已验证的基础计划")
-        if cfg["parallel"] and cfg["parallel"] != plan["max_parallel"]:
-            with self.review_lock:
-                plan = self.workspace.plans.save(review, plan["version"], plan["tasks"], cfg["parallel"])["plan"]
+                modules = validate_modules(proposed.get("modules"),requirements,min(len(modules),4))
+            except (AgentError, TypeError, ValueError, AttributeError):
+                self._event(key,"模型拆分不完整，采用按需求行为识别出的工作包")
+        tasks = team_tasks(review,modules)
+        with self.review_lock:
+            saved = self.workspace.plans.save(review,plan["version"],tasks,
+                                               cfg["parallel"] or min(3,len(modules)))
+            plan = saved["plan"]
+        self._event(key,f"已安排技术交接 → {len(modules)} 个并发工作包 → Git 合并与交付")
         self._update(key, target=target, summary={**self._summary(review["specification"]),
             "tasks": [dict(id=t["id"], title=t["title"], depends_on=t["depends_on"],
-                           estimate_seconds=t["estimate_seconds"]) for t in plan["tasks"]],
+                           estimate_seconds=t["estimate_seconds"],outputs=[a["path"] for a in t["outputs"]])
+                      for t in plan["tasks"]],
             "mode":"real" if plan["base_commit"] else "mock", "plan_version":plan["version"]})
-
-    @staticmethod
-    def _custom_tasks(tasks, proposed):
-        if not isinstance(proposed,list) or len(proposed)!=len(tasks):
-            raise ValueError("模型排期不完整")
-        known = {t["id"] for t in tasks}
-        entries = {}
-        for patch in proposed:
-            id_ = patch.get("id")
-            deps = patch.get("depends_on")
-            seconds = patch.get("estimate_seconds")
-            if (id_ not in known or id_ in entries or not isinstance(deps, list)
-                    or any(not isinstance(x,str) or x not in known for x in deps)
-                    or type(seconds) is not int or not 20 <= seconds <= 7200):
-                raise ValueError("模型排期字段无效")
-            entries[id_] = dict(depends_on=deps, estimate_seconds=seconds)
-        final = tasks[-1]
-        if not set(final["depends_on"]) <= set(entries[final["id"]]["depends_on"]):
-            raise ValueError("不能删去最终交付的必经依赖")
-        # Existing dependencies encode which approved artifacts a task consumes.
-        # Models may add sequencing or change timing, never remove those inputs.
-        return [dict(task, estimate_seconds=entries[task["id"]]["estimate_seconds"],
-                     depends_on=list(dict.fromkeys([*task["depends_on"], *entries[task["id"]]["depends_on"]])))
-                for task in tasks]
 
     def _development(self, row, agent):
         key, pid, rid = row["id"], row["project_id"], row["run_id"]
@@ -582,11 +580,7 @@ class StewardPipeline:
                 return False
             id_ = task["task_id"]
             if task["state"] == "failed":
-                failure = task["attempts"][-1]["error"]
-                try:
-                    detail = json.loads(failure or "{}").get("message") or "执行失败"
-                except (ValueError, AttributeError):
-                    detail = "执行失败"
+                detail = self._failure_reason(rid,id_,task) or "没有记录详细失败原因"
                 retries = row["retries"]
                 if retries.get(id_, 0) >= 1:
                     with self.db.tx():
@@ -603,6 +597,39 @@ class StewardPipeline:
             raise InvalidState("当前计划仍绑定未解决的问题，请让主理人重新生成方案。")
         return False
 
+    def _failure_reason(self, run_id, task_id, task):
+        attempt = (task["attempts"] or [{}])[-1]
+        raw = attempt.get("error")
+        if raw:
+            try:
+                raw = json.loads(raw) if isinstance(raw,str) else raw
+                if isinstance(raw,dict) and raw.get("message"):
+                    return str(raw["message"])[:500]
+                if isinstance(raw,dict) and raw.get("problems"):
+                    return "；".join(str(p.get("message","校验失败")) for p in raw["problems"] if isinstance(p,dict))[:500]
+            except ValueError:
+                pass
+        with self.db._lock:
+            review = self.db.db.execute(
+                "SELECT note FROM review_records WHERE run_id=? AND task_id=? AND decision='reject' ORDER BY rowid DESC LIMIT 1",
+                (run_id,task_id)).fetchone()
+        return str(review["note"])[:500] if review else ""
+
+    def _evidence(self, row):
+        if not row["run_id"]:
+            return []
+        with self.db._lock:
+            run = self.workspace.run(row["project_id"],row["run_id"])
+            plan = self.db.get_plan(row["project_id"],run["plan_ref"]["id"],run["plan_ref"]["version"])["plan"]
+            definitions = {t["id"]:t for t in plan["tasks"]}
+        result = []
+        for id_,task in run["tasks"].items():
+            if task["state"] != "failed":
+                continue
+            result.append(dict(task=id_, title=definitions[id_]["title"], attempts=len(task["attempts"]),
+                               reason=self._failure_reason(run["id"],id_,task)))
+        return result
+
     def _review_task(self, row, task, agent):
         key, pid, rid = row["id"], row["project_id"], row["run_id"]
         id_ = task["task_id"]
@@ -618,7 +645,13 @@ class StewardPipeline:
                 definition = next(t for t in self.db.plan_tasks(pid, plan_ref["id"], plan_ref["version"]) if t["id"] == id_)
                 verifier = self.db.verifier_for(pid)
             summaries = []
+            inspected = set()
             for item in drafts:
+                commit = item.get("commit_sha")
+                if commit and commit in inspected:
+                    continue
+                if commit:
+                    inspected.add(commit)
                 content = (item.get("content") or "")[:12000]
                 if verifier and item.get("commit_sha") and item["changed_paths"]:
                     content = verifier._git("show", "--format=", "--unified=2", item["commit_sha"], "--", *item["changed_paths"])[:16000]
@@ -680,13 +713,17 @@ class StewardPipeline:
                 intent = "retry"
             elif words in {"重跑","重新跑","重新开始"}:
                 intent = "redo"
+            elif words in {"重拆任务","重新拆分任务","重新编排","按模块重新拆分"}:
+                intent = "replan"
             elif re.match(r"^(改成|把|请改|想改|修改|增加|删除|去掉|加上|调整|改一下|别做)", message):
                 intent = "revise"
             elif re.search(r"到哪一?步|还要|进度|还在跑|没动|为什么|状态|卡在哪", message):
                 intent = "status"
             elif self.agent():
                 parsed = self.agent()("steward_chat", dict(message=message, stage=STAGES[row["stage"]],
-                    status=row["status"], recent=[e["title"] for e in row["events"][-5:]]))
+                    status=row["status"], recent=[e["title"] for e in row["events"][-5:]],
+                    failure_evidence=self._evidence(row),
+                    conversation=[m["text"][:320] for m in row["messages"][-6:]]))
                 kind = parsed.get("intent") if isinstance(parsed, dict) else None
                 intent = kind if kind in ("revise", "pause", "continue", "retry", "redo", "status") else "ask"
                 if intent == "ask":
@@ -697,9 +734,27 @@ class StewardPipeline:
                     return self.public(key)
             else:
                 intent = "ask"
-        if intent not in ("pause", "continue", "retry", "status", "ask", "revise", "redo"):
+        if intent not in ("pause", "continue", "retry", "status", "ask", "revise", "redo", "replan"):
             raise InvalidReference("未知主理人指令。")
         self._message(key, "user", message)
+        if intent == "replan":
+            if not row["project_id"] or row["status"] not in ("failed","paused","completed","gate"):
+                raise InvalidState("请在本轮暂停或失败后再重新拆分。")
+            with self.review_lock, self.db.tx():
+                project = self.workspace.project(row["project_id"])
+                spec = project["review"]["specification"]
+                if not spec or spec["status"]!="confirmed":
+                    raise InvalidState("当前没有可保留的确认版规格。")
+                if row["run_id"]:
+                    run = self.db.snapshot(row["run_id"])
+                    if run["state"]=="active":
+                        self.db.stop_run(run["id"])
+                cfg = options({"gates":[*row["settings"]["gates"],"plan"]},row["settings"])
+                self._update(key,settings=cfg,stage="plan",status="running",run_id=None,retries={},
+                             gate=None,accepted=[g for g in row["accepted"] if g!="plan"],error=None,delivery=None)
+            self._message(key,"steward","保留原需求、方案和历史尝试。重拆之后会停在开工前，让你先看新的任务与文件清单。")
+            self._spawn(key)
+            return self.public(key)
         if intent in ("revise", "redo"):
             markdown = row["markdown"] + ("\n\n## 用户指定的本轮修改\n\n" + message if intent == "revise" else "")
             if len(markdown)>20000:
@@ -742,8 +797,18 @@ class StewardPipeline:
         elif intent == "status":
             statuses = dict(running="正在推进", failed="遇到错误", paused="已暂停", pausing="正在收尾",
                             gate="等你选择的确认点", completed="已完成", cancelled="已停止")
-            reason = row["error"] or row["activity"]
-            self._message(key, "steward", f"本轮{statuses.get(row['status'], row['status'])}。当前阶段：{STAGES[row['stage']]}。{reason}")
+            failures = self._evidence(row)
+            if failures:
+                item = failures[0]
+                answer = f"卡在 {item['task']}（{item['title']}）。"
+                answer += item["reason"] or "尝试记录没有留下更具体的原因。"
+                answer += f"当前已有 {item['attempts']} 次尝试；后续依赖不会带着不合格的产物继续。"
+                if "空文件" in item["reason"] or "文件正文" in item["reason"]:
+                    answer += "建议说「重拆任务」，先对齐交接文档，再把各功能分开实现。"
+            else:
+                reason = row["error"] or row["activity"]
+                answer = f"目前{statuses.get(row['status'],row['status'])}，在{STAGES[row['stage']]}。{reason}"
+            self._message(key, "steward", answer)
         else:
             self._message(key, "steward", "告诉我具体想改哪一条，我会按新要求生成下一轮；也可以直接说暂停、继续或查看进度。")
         return self.public(key)

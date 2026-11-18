@@ -15,7 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from .model_router import ModelRouter, load_config
-from .providers import LLMResult, ProviderError, ProviderTimeout, build_provider, estimate_tokens
+from .providers import (LLMResult, OpenAICompatibleProvider, ProviderError, ProviderOutputError,
+                        ProviderTimeout, build_provider, estimate_tokens)
 from .worktree import MergeConflict, WorkspaceError, WorktreeAdapter
 
 # 契约 §5 约定的错误码
@@ -29,6 +30,12 @@ RETRYABLE = {WORKER_TIMEOUT: True, MERGE_CONFLICT: True, EXECUTION_FAILED: True,
              MISSING_INPUT: False, OUTPUT_INVALID: False}
 
 SYSTEM_PROMPT = "你是开发执行器。只输出要写入目标文件的内容，不要解释，不要 Markdown 代码围栏。"
+
+
+class FileResponseError(WorkspaceError):
+    def __init__(self,path,cause):
+        super().__init__(f"{path}：{cause}；未提交不完整文件")
+        self.details = dict(path=path,finish_reason=cause.finish_reason,max_tokens=cause.max_tokens,usage=cause.usage)
 
 
 class OutputContentError(WorkspaceError):
@@ -131,8 +138,9 @@ class PromptExecutor:
 
     def run_step(self, request, task, step, provider):
         prompt = build_prompt(request, task, step)
+        kwargs = {"file_output":step["stage"]!="boundary"} if isinstance(provider,OpenAICompatibleProvider) else {}
         return provider.complete(step["model"], prompt, system=SYSTEM_PROMPT,
-                                 max_output_tokens=step.get("max_output_tokens"))
+                                 max_output_tokens=step.get("max_output_tokens"), **kwargs)
 
 
 class AutoGenExecutor(PromptExecutor):
@@ -204,6 +212,9 @@ class Worker:
         try:
             artifacts = (self._mock_artifacts(request) if mode == "mock"
                          else self._real_artifacts(request, task, state, steps, progress))
+        except FileResponseError as exc:
+            return self._result(request,"failed",started_at,state=state,
+                                error=error(EXECUTION_FAILED,str(exc),exc.details))
         except OutputContentError as exc:
             return self._result(request, "failed", started_at, state=state,
                                 error=error(OUTPUT_INVALID, str(exc), {"path":exc.path}))
@@ -364,7 +375,16 @@ class Worker:
                     label = "模型核对实现边界" if output is None else "模型生成 " + (output.get("path") or output["id"])
                     timeout = getattr(provider, "timeout", 0)
                     progress(label, int(timeout) if isinstance(timeout, (int, float)) else 0)
-                result = self.executor.run_step(context, current_task, step, provider)
+                path = "实现边界" if output is None else output.get("path") or output["id"]
+                state["model"] = step["model"]
+                try:
+                    result = self.executor.run_step(context, current_task, step, provider)
+                except ProviderOutputError as exc:
+                    if exc.usage:
+                        for key in total:
+                            total[key] += exc.usage.get(key,0)
+                        state["usage"] = dict(total)
+                    raise FileResponseError(path,exc) from exc
                 total["input_tokens"] += result.input_tokens
                 total["output_tokens"] += result.output_tokens
                 state["usage"] = dict(total)
@@ -375,7 +395,6 @@ class Worker:
                 if output is None:
                     context["boundary_guidance"] = checked_content(result.text, "实现边界")
                 else:
-                    path = output.get("path") or output["id"]
                     content = checked_content(result.text,path,output.get("kind"))
                     produced[output["id"]] = content
                     context["generated_files"][path] = content[:12000]

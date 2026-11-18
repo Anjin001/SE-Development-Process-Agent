@@ -8,10 +8,21 @@ import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 
 class ProviderError(RuntimeError):
     """供应商调用失败。Worker 转成 EXECUTION_FAILED。"""
+
+
+class ProviderOutputError(ProviderError):
+    """A completed request had missing or truncated file content."""
+
+    def __init__(self, message, finish_reason, max_tokens, usage):
+        super().__init__(message)
+        self.finish_reason = finish_reason if finish_reason in ("length","stop","content_filter","tool_calls") else None
+        self.max_tokens = max_tokens
+        self.usage = usage
 
 
 class ProviderTimeout(ProviderError):
@@ -59,12 +70,17 @@ class OpenAICompatibleProvider(Provider):
     def api_key(self):
         return self._api_key if self._api_key is not None else os.environ.get(self.api_key_env, "")
 
-    def complete(self, model, prompt, system=None, max_output_tokens=None):
+    def complete(self, model, prompt, system=None, max_output_tokens=None, *, file_output=False):
         if self._api_key is None and not self.api_key:
             raise ProviderError(f"缺少凭证：请设置环境变量 {self.api_key_env}")
         messages = ([{"role": "system", "content": system}] if system else []) + [
             {"role": "user", "content": prompt}]
         body = {"model": model, "messages": messages}
+        endpoint = urlsplit(self.base_url)
+        if (file_output and endpoint.scheme == "https" and endpoint.hostname == "api.deepseek.com"
+                and model in ("deepseek-flash","deepseek-v4-pro")):
+            # Use the file's completion budget for content, not reasoning.
+            body["thinking"] = {"type":"disabled"}
         if max_output_tokens:
             body["max_tokens"] = max_output_tokens
         request = urllib.request.Request(
@@ -92,16 +108,26 @@ class OpenAICompatibleProvider(Provider):
             finish = choice.get("finish_reason")
             text = message.get("content")
             usage = payload.get("usage") or {}
+            if not isinstance(usage,dict):
+                usage = {}
         except (KeyError, IndexError, TypeError, AttributeError):
             raise ProviderError(f"{model} 的接口未返回可识别的正文") from None
-        if not isinstance(text, str) or not text.strip():
-            extra = "（达到输出上限）" if finish == "length" else ""
-            raise ProviderError(f"{model} 没有返回可写入文件的正文{extra}")
-        if finish == "length":
-            raise ProviderError(f"{model} 达到输出上限，文件正文可能不完整")
-        return LLMResult(text,
-                         usage.get("prompt_tokens") or estimate_tokens(prompt),
-                         usage.get("completion_tokens") or estimate_tokens(text))
+        has_text = isinstance(text,str) and bool(text.strip())
+        counts = {local: usage[remote] for local,remote in
+                  (("input_tokens","prompt_tokens"),("output_tokens","completion_tokens"))
+                  if type(usage.get(remote)) is int and usage[remote]>=0}
+        if not has_text or finish == "length":
+            if finish == "length":
+                detail = "达到生成上限，正文未返回或不完整"
+                if "output_tokens" in counts and max_output_tokens:
+                    detail += f"（本次生成 {counts['output_tokens']} / 上限 {max_output_tokens} token）"
+                elif max_output_tokens:
+                    detail += f"（请求上限 {max_output_tokens} token）"
+            else:
+                detail = "没有返回可写入文件的正文"
+            raise ProviderOutputError(f"{model} {detail}",finish,max_output_tokens,counts)
+        return LLMResult(text, counts.get("input_tokens",estimate_tokens(prompt)),
+                         counts.get("output_tokens",estimate_tokens(text)))
 
 
 def build_provider(spec):

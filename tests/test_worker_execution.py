@@ -6,7 +6,9 @@ import unittest
 from pathlib import Path
 
 from se_agent.model_router import ModelRouter, load_config
-from se_agent.providers import LLMResult
+from io import BytesIO
+from unittest.mock import patch
+from se_agent.providers import LLMResult, OpenAICompatibleProvider
 from se_agent.runner import execute_task
 from se_agent.worker import Worker
 
@@ -203,6 +205,30 @@ class RealWorktreeTest(unittest.TestCase):
         self.assertNotEqual(artifact["commit_sha"], upstream)
         self.assertTrue(is_ancestor(self.root, upstream, artifact["commit_sha"]))
         git(self.root, "cat-file", "-e", f'{artifact["commit_sha"]}:app/reservations.py')
+
+    def test_deepseek_file_generation_reserves_body_and_reports_truncation(self):
+        requests = []
+        def respond(req, **kwargs):
+            body = json.loads(req.data)
+            requests.append(body)
+            return BytesIO(json.dumps({"choices":[{"finish_reason":"length","message":{
+                "reasoning_content":"not file content","content":""}}],
+                "usage":{"prompt_tokens":260,"completion_tokens":body["max_tokens"]}}).encode())
+
+        provider = OpenAICompatibleProvider("https://api.deepseek.com", api_key="fixture")
+        router = ModelRouter({"tiers":{"low_cost":{"provider":"openai_compatible","model":"deepseek-flash",
+                                  "max_output_tokens":4096}},
+                              "routing":{"default_tier":"low_cost"}})
+        worker = Worker(mode="real", repo_root=str(self.root),
+                        worktree_root=str(self.root / ".worktrees"), provider=provider, router=router)
+        with patch("se_agent.providers.urllib.request.urlopen", side_effect=respond):
+            result = execute_task(self.request([]), worker)
+        self.assertEqual(requests[0]["thinking"], {"type":"disabled"})
+        self.assertEqual(result["error"]["details"]["path"],"app/integration.py")
+        self.assertEqual(result["error"]["details"]["max_tokens"],4096)
+        self.assertEqual(result["usage"],{"input_tokens":260,"output_tokens":4096})
+        self.assertEqual(result["artifacts"],[])
+        self.assertNotIn("not file content",result["error"]["message"])
 
     def test_blank_output_is_rejected_before_writing_or_committing(self):
         result = execute_task(self.request([]), self.worker(StubExecutor("   \n")))

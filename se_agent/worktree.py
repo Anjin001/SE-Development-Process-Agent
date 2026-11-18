@@ -31,9 +31,13 @@ class WorktreeAdapter:
         self.branch = None
         self.path = None
 
+    def _run_git(self, *args, cwd=None):
+        # Git can emit UTF-8 output regardless of the host's default code page.
+        return subprocess.run(["git", *args], cwd=str(cwd or self.repo_root),
+                              capture_output=True, encoding="utf-8", errors="replace")
+
     def git(self, *args, cwd=None, check=True):
-        proc = subprocess.run(["git", *args], cwd=str(cwd or self.repo_root),
-                              capture_output=True, text=True)
+        proc = self._run_git(*args, cwd=cwd)
         if check and proc.returncode:
             raise WorkspaceError(proc.stderr.strip() or f"git {' '.join(args)} 执行失败")
         return proc.stdout.strip()
@@ -61,8 +65,7 @@ class WorktreeAdapter:
         """
         self.ensure_readable(commits)
         for sha in commits:
-            proc = subprocess.run(["git", "merge", "--no-edit", sha],
-                                  cwd=str(self.path), capture_output=True, text=True)
+            proc = self._run_git("merge", "--no-edit", sha, cwd=self.path)
             if proc.returncode:
                 paths = self.conflicted_paths() or [sha]
                 self.git("merge", "--abort", cwd=self.path, check=False)
@@ -72,8 +75,7 @@ class WorktreeAdapter:
     def ensure_readable(self, commits):
         """服务端核验可达性前的第一道检查：批准提交必须能读到。"""
         for sha in commits:
-            proc = subprocess.run(["git", "cat-file", "-e", f"{sha}^{{commit}}"],
-                                  cwd=str(self.path), capture_output=True, text=True)
+            proc = self._run_git("cat-file", "-e", f"{sha}^{{commit}}", cwd=self.path)
             if proc.returncode:
                 raise WorkspaceError(f"无法读取批准提交 {sha}")
 

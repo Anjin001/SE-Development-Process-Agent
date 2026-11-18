@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 from se_agent.providers import LLMResult
+from se_agent.workspace_experience import Progress, help_answer, steward_question
 
 from se_agent.contracts import DomainError
 from se_agent.store import Store
@@ -35,6 +36,76 @@ class WorkspaceTest(unittest.TestCase):
                 return self.workspace.run(self.id, run_id)
             time.sleep(0.02)
         self.fail("Worker did not complete its batch")
+
+    def test_choose_delivery_folder_rebind_plan_and_keep_old_run(self):
+        original = self.workspace.plans.generate(self.confirmed, 1)["plan"]
+        old = self.db.create_run(self.id, original["id"], original["version"])
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "chosen"
+            project = self.workspace.configure_target(self.id, str(target), real=True)
+            newer = project["planning"]["plan"]
+            self.assertEqual(newer["version"], original["version"] + 1)
+            self.assertEqual(newer["tasks"], original["tasks"])
+            self.assertEqual(project["run"]["plan_ref"]["version"], original["version"])
+            self.assertTrue(self.workspace.delivery.verifier(self.id).exists(newer["base_commit"]))
+            self.assertTrue((target / ".git").is_dir())
+            self.workspace.action(self.id, old["id"], "stop", {"expected_revision": old["revision"]})
+            class FakeExecutor:
+                def run_step(self, request, task, stage, provider):
+                    return LLMResult("def delivered():\n    return True\n", 1, 2)
+            self.workspace.dispatch.worker = Worker(mode="mock", provider=object(), executor=FakeExecutor())
+            new = self.db.create_run(self.id, newer["id"], newer["version"])
+            for task in new["tasks"].values():
+                if task["missing_input_ids"]:
+                    self.db.supply_input(new["id"], task["task_id"],
+                                         {id_: "保留已有预约。" for id_ in task["missing_input_ids"]})
+            self.assertEqual(self.db.snapshot(old["id"])["state"], "stopped")
+            self.assertEqual(new["plan_ref"]["version"], newer["version"])
+            commits = []
+            for _ in range(8):
+                self.workspace.dispatch.advance(new["id"])
+                snapshot = self.wait_idle(new["id"])
+                commits = [artifact for task in snapshot["tasks"].values() for artifact in task["artifacts"]
+                           if artifact["kind"] == "git_commit"]
+                if commits:
+                    break
+            self.assertTrue(commits, snapshot)
+            verifier = self.workspace.delivery.verifier(self.id)
+            self.assertTrue(verifier.exists(commits[0]["commit_sha"]))
+            self.assertTrue(commits[0]["changed_paths"])
+            self.assertIn("def delivered", verifier._git("show", commits[0]["commit_sha"] + ":" + commits[0]["changed_paths"][0]))
+            result = self.workspace.delivery.export(self.workspace.project(self.id))
+            location = Path(result["directory"])
+            self.assertEqual(location.parent, target.resolve())
+            self.assertTrue((location / "specification.md").is_file())
+            self.assertIn(newer["base_commit"], (location / "workflow.json").read_text(encoding="utf8"))
+
+    def test_steward_preserves_product_decision_and_applies_single_answer(self):
+        plan = self.workspace.plans.generate(self.confirmed, 1)["plan"]
+        run = self.db.create_run(self.id, plan["id"], plan["version"])
+        questions = self.workspace.steward_questions(self.id, run["id"])
+        first = questions[0]
+        self.assertIn("预约", first["question"])
+        self.assertIsNone(first["default"])
+        run = self.workspace.action(self.id, run["id"], "steward-defaults", {"expected_revision": run["revision"]})
+        self.assertEqual(self.workspace.steward_questions(self.id, run["id"]), questions)
+        run = self.workspace.action(self.id, run["id"], "steward-answer",
+                                    {"expected_revision": run["revision"], "item_id": first["id"],
+                                     "answer": "保留已有预约。"})
+        self.assertTrue(all(first["id"] not in run["tasks"][id_]["missing_input_ids"] for id_ in first["tasks"]))
+        self.assertIsNotNone(steward_question("OPEN-99", {"question": "请选择单元测试框架。"},
+                                              ["T1"], {"items": []})["default"])
+        self.assertIsNone(steward_question("OPEN-99", {"question": "选择数据库和权限规则。"},
+                                           ["T1"], {"items": []})["default"])
+
+    def test_progress_exposes_milestones_and_help_prefers_workbench_guide(self):
+        tracker = Progress()
+        tracker.record("RUN-02.T1.1", "生成任务产物", 60)
+        self.assertEqual(tracker.read("RUN-02.T1.1")[0]["timeout_seconds"], 60)
+        self.assertEqual(help_answer("源码文件保存到哪里？")["source"], "guide")
+        result = help_answer("这里能同时打开多少视图？",
+                             lambda stage, context: {"answer": "未提供这个信息。"})
+        self.assertEqual(result["source"], "model")
 
     def test_confirmed_spec_to_plan_schedule_and_partial_input(self):
         response = self.workspace.plans.generate(self.confirmed, 1)
@@ -193,7 +264,7 @@ class WorkspaceTest(unittest.TestCase):
             if completed:
                 break
             time.sleep(0.03)
-        self.assertTrue(completed)
+        self.assertTrue(completed, self.db.snapshot(run["id"]))
 
     def test_specific_experience_requires_evidence_and_independent_publication(self):
         body = dict(domain="编排", problem="同名文件被两个任务覆盖", cause="未检查写入路径",

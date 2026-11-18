@@ -45,6 +45,9 @@ class PreviewHandler(Handler):
                 self.send_json(503, {"error": "模拟生成中断，可单独重试这一组。"})
                 return
             kwargs = {"agent": self.server.agent} if self.server.agent else {}
+            tracker = getattr(self.server, "progress", None)
+            if tracker:
+                kwargs["progress"] = lambda label, seconds=0: tracker.record(body.get("progress_id"), label, seconds)
             self.send_json(200, run_group(snapshot, body.get("group_id"), prompt=body.get("prompt"), **kwargs))
         except AgentError as exc:
             self.send_json(502, {"error": str(exc)})

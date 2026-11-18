@@ -169,7 +169,7 @@ class PreviewStore:
                 raise synthesis.SynthesisError("请在原议题上处理候选选项，保留来源和影响范围。",
                                                "proposal.open_items", "INVALID_OUTPUT")
 
-    def change(self, project_id, action, payload):
+    def change(self, project_id, action, payload, progress=None):
         project = self.get(project_id)
         previous = project["versions"][-1] if project["versions"] else None
         latest = previous if previous and previous["round"] == project["round"] else None
@@ -178,7 +178,11 @@ class PreviewStore:
         if action == "evaluate":
             if latest:
                 raise PreviewError("INVALID_STATE", "已有方案版本；更换输入请新建演示项目。")
-            evaluations = [synthesis.evaluate_draft(project["requirement"], d, **self.agent) for d in project["drafts"]]
+            evaluations = []
+            for draft in project["drafts"]:
+                if progress:
+                    progress(f"独立评价 {draft['id']} 组草案", 60 if self.agent else 0)
+                evaluations.append(synthesis.evaluate_draft(project["requirement"], draft, **self.agent))
             project["evaluations"] = evaluations
             return self.snapshot(project)
         if action not in ("propose", "save", "confirm", "inspect"):
@@ -213,6 +217,8 @@ class PreviewStore:
             latest.update(status="confirmed", confirmed_by="lead-demo", confirmed_at=datetime.now(timezone.utc).isoformat())
             return self.snapshot(project)
         if action == "propose":
+            if progress:
+                progress("比较各组方案并生成综合草稿", 60 if self.agent else 0)
             content = synthesis.propose_spec(project["requirement"], project["drafts"], project["evaluations"], payload.get("selection"), **self.agent)
             content["notes_markdown"] = ""
             selection = payload["selection"]
@@ -283,7 +289,13 @@ class PreviewHandler(BaseHTTPRequestHandler):
                     self.respond(200, store.snapshot(store.get(parts[2])))
                     return
                 if len(parts) == 5 and parts[3] == "actions" and self.command == "POST":
-                    self.respond(200, store.change(parts[2], parts[4], payload))
+                    tracker = getattr(self.server, "progress", None)
+                    if tracker:
+                        result = store.change(parts[2], parts[4], payload, progress=lambda label, seconds=0:
+                                              tracker.record(payload.get("progress_id"), label, seconds))
+                    else:
+                        result = store.change(parts[2], parts[4], payload)
+                    self.respond(200, result)
                     return
                 if len(parts) == 7 and parts[3] == "specifications" and parts[5] == "versions" and self.command == "GET":
                     self.respond(200, store.version(parts[2], parts[4], int(parts[6])))

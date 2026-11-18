@@ -145,7 +145,8 @@ class Worker:
         self.executor = executor or PromptExecutor()
         self._providers = {}
 
-    def execute(self, request):
+    def execute(self, request, progress=None):
+        progress = progress or (lambda *args: None)
         started_at = now_iso()
         task = request["task"]
         mode = self._mode_for(request)
@@ -160,9 +161,10 @@ class Worker:
             return self._result(request, "input_required", started_at, state=state,
                                 error=self._missing_error(request, missing))
 
+        progress("生成模拟产物" if mode == "mock" else "准备 Git 工作区")
         try:
             artifacts = (self._mock_artifacts(request) if mode == "mock"
-                         else self._real_artifacts(request, task, state, steps))
+                         else self._real_artifacts(request, task, state, steps, progress))
         except MergeConflict as exc:
             return self._result(request, "failed", started_at, state=state,
                                 error=error(MERGE_CONFLICT, "上游提交无法合并",
@@ -244,7 +246,7 @@ class Worker:
 
     # ---- 真实链路 ----
 
-    def _real_artifacts(self, request, task, state, steps):
+    def _real_artifacts(self, request, task, state, steps, progress):
         workspace = WorktreeAdapter(self.repo_root, self.worktree_root)
         workspace.prepare(request["run_id"], request["attempt_id"], request.get("base_commit"))
         state["checkout_commit"] = workspace.include(self._upstream_commits(request))
@@ -261,7 +263,8 @@ class Worker:
                 raise WorkspaceError("输出路径超出本次工作区")
             if target.is_file():
                 existing[path] = target.read_text(encoding="utf-8")[:64000]
-        produced = self._run_steps(dict(request, existing_files=existing), task, steps, state)
+        produced = self._run_steps(dict(request, existing_files=existing), task, steps, state, progress=progress)
+        progress("保存产物与校验改动")
         outputs = task.get("outputs", [])
         git_outputs = [o for o in outputs if o.get("kind") == "git_commit"]
         changed = []
@@ -294,7 +297,7 @@ class Worker:
         artifacts.sort(key=lambda a: (a["task_id"], a["output_id"]))
         return [a["commit_sha"] for a in artifacts]
 
-    def _run_steps(self, request, task, steps, state):
+    def _run_steps(self, request, task, steps, state, progress=None):
         produced = {}
         spent = 0.0
         total = {"input_tokens": 0, "output_tokens": 0}
@@ -303,7 +306,12 @@ class Worker:
             outputs = [None] if step["stage"] == "boundary" else task.get("outputs", [])
             for output in outputs:
                 current_task = task if output is None else dict(task, outputs=[output])
-                result = self.executor.run_step(context, current_task, step, self._provider(step))
+                provider = self._provider(step)
+                if progress:
+                    label = "模型核对实现边界" if output is None else "模型生成 " + (output.get("path") or output["id"])
+                    timeout = getattr(provider, "timeout", 0)
+                    progress(label, int(timeout) if isinstance(timeout, (int, float)) else 0)
+                result = self.executor.run_step(context, current_task, step, provider)
                 total["input_tokens"] += result.input_tokens
                 total["output_tokens"] += result.output_tokens
                 state["usage"] = dict(total)

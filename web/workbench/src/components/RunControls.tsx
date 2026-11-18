@@ -112,7 +112,7 @@ export function RunControls({ snapshot, execution, selectedId, onSelect, handler
         <div className="run-status">
           <dl>
             <div><dt>模式</dt><dd>{run.mode === 'manual' ? '手动' : '自动'}</dd></div>
-            <div><dt>状态</dt><dd>{run.state === 'completed' ? '已结束' : run.dispatch === 'paused' ? '派发已暂停' : '运行中'}</dd></div>
+            <div><dt>状态</dt><dd>{run.state === 'stopped' ? '已停止' : run.state === 'completed' ? '已完成' : run.dispatch === 'paused' ? '派发已暂停' : '运行中'}</dd></div>
             <div><dt>修订号</dt><dd>{run.revision}</dd></div>
           </dl>
           <p className="run-count">{done} / {run.tasks.length} 项已交付</p>

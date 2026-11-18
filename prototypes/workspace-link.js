@@ -1,6 +1,6 @@
 /* Bind the QLM interface to the combined workspace services. */
 window.createWorkspaceLink = function (hooks) {
-  const { q, el, open, action, post, toast, getPlan, accept, setSpecification,
+  const { q, el, open, action, toast, getPlan, accept, setSpecification,
     clearPlan, isDirty, renderGantt, download, showTask } = hooks;
   const dedicated = q('#module-dedicated-view');
   const sidebarBody = q('#steward-sidebar-body');
@@ -17,10 +17,17 @@ window.createWorkspaceLink = function (hooks) {
     markdown: '# 设备预约系统\n\n- 用户可以查看设备并提交预约。\n- 管理员可以停用设备，停用后不能新增预约。\n- 用户可以在我的预约中查看状态。',
     version: 1, frozen: null, groups: [], extraPrompt: '', paused: false, queue: false,
     simulateFailure: false, selectedTask: null, edits: new Map(), feedback: '', feedbackGroup: '',
+    target: null, runQuestions: [], activity: null, eventTrail: [], statusError: '',
     memory: null, domain: '', terms: '', projects: [], memoryDraft: {},
   };
   let epoch = 0;
   let polling = false;
+  const statusBar = el('div', null, 'px-5 py-2 bg-indigo-50 border-b border-indigo-100 text-xs shrink-0');
+  statusBar.id = 'workspace-live-status';
+  q('#active-badge').parentElement.parentElement.after(statusBar);
+  const targetButton = action('产物位置', () => showTarget());
+  const helpButton = action('使用答疑 AI', () => showHelp());
+  q('#active-badge').before(targetButton, helpButton);
   const split = value => value.split(/[,，、\s]+/).filter(Boolean);
   const text = (value, cls = 'text-xs text-slate-600 leading-relaxed') => el('p', value, cls);
   const card = title => {
@@ -47,14 +54,20 @@ window.createWorkspaceLink = function (hooks) {
     if (!response.ok) throw new Error(data.error?.message || data.error || '读取失败');
     return data;
   }
-  async function write(path, body) {
+  async function post(path, body, headers = {}) {
     const response = await fetch(path, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify(body),
     });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error?.message || data.error || '操作失败');
-    return data;
+    if (!response.ok) {
+      const data = await response.json().catch(() => null);
+      const error = data?.error;
+      throw new Error(typeof error === 'string' ? error : error?.message || '操作失败，请重试。');
+    }
+    return response.json();
+  }
+  function write(path, body) {
+    return post(path, body, { 'Idempotency-Key': crypto.randomUUID() });
   }
   for (const [id, title, path] of [
     ['btn-doc', '整合运行说明', '/workspace/docs/runtime'],
@@ -101,7 +114,9 @@ window.createWorkspaceLink = function (hooks) {
     return '/workspace/projects/' + state.project.id + suffix;
   }
   async function reviewAction(name, body = {}) {
-    setProject(await post('/preview/projects/' + state.project.id + '/actions/' + name, body));
+    const path = '/preview/projects/' + state.project.id + '/actions/' + name;
+    const labels = {evaluate: '主理人组织独立评审', propose: '主理人汇总各组建议', confirm: '保存确认版方案'};
+    setProject(await tracked(labels[name] || '核对方案修改', path, body));
     state.reviewTab = name === 'evaluate' ? 'eval' : 'spec';
   }
   async function load(projectId) {
@@ -109,7 +124,8 @@ window.createWorkspaceLink = function (hooks) {
     const data = await get('/workspace/projects/' + projectId);
     setProject(data.review); clearPlan();
     if (data.planning) accept(data.planning);
-    state.run = data.run;
+    state.run = data.run; state.target = data.target || null;
+    state.selectedTask = null; state.runQuestions = []; state.eventTrail = []; state.statusError = ''; state.activity = null;
     state.runPlan = data.run ? await get('/api/v2/projects/' + projectId + '/plans/' +
       data.run.plan_ref.id + '/versions/' + data.run.plan_ref.version) : null;
     state.markdown = data.review.requirement.markdown;
@@ -120,6 +136,7 @@ window.createWorkspaceLink = function (hooks) {
       status: 'done', result: { draft, ideas: [], challenge: '' },
     }));
     picker.value = projectId; state.memory = null;
+    if (state.run) await readRunDetails(state.run);
   }
   async function updateProjects() {
     state.config = await get('/workspace/config');
@@ -146,7 +163,8 @@ window.createWorkspaceLink = function (hooks) {
       if (id) { await load(id); state.module = state.run ? 'workbench' : getPlan() ? 'task-planner' : 'review-synthesis'; }
       else {
         epoch++; state.project = state.run = state.runPlan = state.spec = state.frozen = null;
-        state.memory = null; state.version = 1;
+        state.memory = null; state.version = 1; state.target = null;
+        state.runQuestions = []; state.eventTrail = []; state.selectedTask = null; state.activity = null;
         state.groups.forEach(group => { group.status = 'idle'; group.result = null; });
         clearPlan(); setSpecification(null); state.module = 'intake-race';
       }
@@ -158,7 +176,7 @@ window.createWorkspaceLink = function (hooks) {
     const frozen = structuredClone(state.frozen);
     group.status = 'running'; group.error = ''; refresh();
     try {
-      const result = await post('/preview/group', {
+      const result = await tracked(group.id + ' 组开始出案', '/preview/group', {
         markdown: frozen.markdown, version: frozen.version, group_id: group.id,
         prompt: group.prompt, simulate_failure: state.simulateFailure && group.id === 'B' && !group.failedOnce,
       });
@@ -186,7 +204,9 @@ window.createWorkspaceLink = function (hooks) {
     const same = state.project && JSON.stringify(state.project.requirement) === JSON.stringify(state.frozen);
     if (same) await reviewAction('update-drafts', { ...payload, expected_round: state.project.round });
     else {
-      setProject(await post('/preview/projects', payload)); clearPlan(); state.run = state.runPlan = null;
+      setProject(await tracked('保存赛马记录并交接评审', '/preview/projects', payload));
+      clearPlan(); state.run = state.runPlan = state.target = null;
+      state.runQuestions = []; state.eventTrail = []; state.selectedTask = null;
     }
     await updateProjects(); state.reviewTab = 'handoff'; state.module = 'review-synthesis';
   }
@@ -194,15 +214,21 @@ window.createWorkspaceLink = function (hooks) {
     const requirement = card('需求录入与快照版本控制');
     const input = field(requirement, '需求 Markdown', state.markdown, value => { state.markdown = value; }, true);
     input.rows = 8; input.disabled = !!state.frozen || state.pending;
+    if (!state.frozen) {
+      const hint = text('标题只用于分节。请在标题下写至少一条具体需求，例如「- 用户可以发布图文笔记。」');
+      hint.id = 'requirement-markdown-hint';
+      input.setAttribute('aria-describedby', hint.id);
+      requirement.append(hint);
+    }
     const running = state.groups.some(group => group.status === 'running');
     const confirm = action('确认需求快照', () => operate(async () => {
-      state.frozen = await post('/preview/snapshot', { markdown: state.markdown, version: state.version });
+      state.frozen = await tracked('检查需求正文并锁定快照', '/preview/snapshot', { markdown: state.markdown, version: state.version });
       q('#sidebar-req-ver').textContent = state.frozen.id + '@v' + state.version;
     }), true);
     confirm.disabled = !!state.frozen || state.pending;
     const edit = action('编辑并创建新版本', () => {
       epoch++; state.version++; state.frozen = null;
-      for (const group of state.groups) { group.status = 'idle'; group.result = null; }
+      for (const group of state.groups) { group.status = 'idle'; group.result = null; group.error = ''; }
       refresh();
     });
     edit.disabled = !state.frozen || running;
@@ -238,12 +264,18 @@ window.createWorkspaceLink = function (hooks) {
     for (const group of state.groups) {
       const box = el('article', null, 'p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2');
       box.append(el('strong', group.id + ' 组 · ' + labels[group.status], 'text-xs text-slate-800'));
+      const errorNotice = group.error ? text(group.error, 'text-xs text-red-700') : null;
       const prompt = field(box, group.id + ' 组系统提示词', group.prompt, value => {
         group.prompt = value; group.status = 'idle'; group.result = null;
+        if (errorNotice) errorNotice.hidden = true;
+        group.error = '';
         q('#native-race-handoff')?.setAttribute('disabled', '');
       }, true);
       prompt.disabled = running || state.pending;
-      if (group.error) box.append(text(group.error, 'text-xs text-red-700'));
+      if (errorNotice) box.append(errorNotice);
+      if (group.status === 'done' && !all) {
+        box.append(text('本组草案已保留，等待其他组提交后一起公开。'));
+      }
       const rerun = action(group.status === 'failed' ? '重试 ' + group.id + ' 组' : '单独运行 ' + group.id + ' 组', () => runGroup(group));
       rerun.disabled = !state.frozen || running || state.paused || state.pending; box.append(rerun);
       if (state.groups.length > 2) {
@@ -262,6 +294,9 @@ window.createWorkspaceLink = function (hooks) {
       grid.append(box);
     }
     groups.append(grid);
+    if (state.groups.some(g => g.status === 'failed')) {
+      groups.append(text('先重试失败组。已提交的组无需重跑。'));
+    }
     if (all) {
       const handoffButton = action('进入评审与整合 →', () => operate(handoff), true);
       handoffButton.id = 'native-race-handoff';
@@ -282,6 +317,15 @@ window.createWorkspaceLink = function (hooks) {
       wrap.append(empty); return;
     }
     const project = state.project;
+    if (!project.specification || project.specification.status !== 'confirmed') {
+      const shortcut = card('主理人整合方案');
+      shortcut.append(text('自动组织独立评审、融合各组可取的做法，再把需要你确认的方案交给你。'));
+      if (!state.spec) shortcut.append(reviewButton('主理人整合方案', async () => {
+        if (!state.project.evaluations.length) await reviewAction('evaluate');
+        await reviewAction('propose', { selection: 'merge', expected_version: state.project.latest_version });
+      }, true, true));
+      wrap.append(shortcut);
+    }
     const tabs = card();
     tabs.append(line(...[['handoff', '交接材料'], ['eval', '独立评价'], ['spec', '方案与决策'], ['history', '历史版本']]
       .map(([key, label]) => action(label, () => { state.reviewTab = key; refresh(); }, state.reviewTab === key))));
@@ -379,7 +423,9 @@ window.createWorkspaceLink = function (hooks) {
       }), true, true);
       confirm.disabled ||= spec.status === 'confirmed'; decisions.append(confirm);
       if (state.project.specification.status === 'confirmed') decisions.append(reviewButton('进入任务分解 →', async () => {
-        await window.openTaskPlanner({review_id:project.id,version:state.project.specification.version}); state.module = 'task-planner';
+        await localStep('分解任务，检查依赖并计算甘特排期',
+          () => window.openTaskPlanner({review_id:project.id,version:state.project.specification.version}));
+        state.module = 'task-planner';
       }, true, true));
       wrap.append(decisions);
       const markdown = card('综合方案正文 · ' + spec.id + '@v' + spec.version + ' · ' + spec.status);
@@ -394,18 +440,25 @@ window.createWorkspaceLink = function (hooks) {
     const previous = state.run;
     state.run = await write(projectURL('/runs/' + previous.id + '/actions/' + name),
       {...body,expected_revision:previous.revision});
+    await readRunDetails(state.run);
   }
   function planActions(parent, snapshot, draftDirty) {
     const controls = el('div', null, 'pt-3 border-t border-slate-200 space-y-2');
-    controls.append(text('人工核对后可启动开发。执行模式 ' + (state.config?.mode || 'auto') + '。'));
+    const real = !!snapshot.plan.base_commit && (!!state.target?.repo || state.config?.mode === 'real');
+    controls.append(text(real ? '真实代码执行 · '+(state.target?.repo || '启动时配置的 Git 仓库')
+      : '模拟执行 · 不会生成应用源码。'));
+    controls.append(action(state.target?.path ? '查看或修改产物位置' : '选择产物保存位置', showTarget));
     const start = mode => operate(async () => {
       if (draftDirty()) throw new Error('请先保存任务修改。');
-      state.run = await write(projectURL('/runs'), { plan_ref:{id:snapshot.plan.id,version:snapshot.plan.version},mode });
+      state.run = await localStep('绑定计划版本并启动开发', () => write(projectURL('/runs'), {
+        plan_ref:{id:snapshot.plan.id,version:snapshot.plan.version}, mode, steward:mode==='auto',
+      }));
+      state.selectedTask = null; await readRunDetails(state.run);
       state.runPlan = structuredClone(snapshot);
       state.module = 'workbench';
     });
     const manual = action('启动开发 · 手动单步', () => start('manual'), true);
-    const automatic = action('启动开发 · 自动派发', () => start('auto'));
+    const automatic = action('主理人启动自动开发', () => start('auto'), true);
     manual.disabled = automatic.disabled = state.pending || state.run?.state === 'active';
     controls.append(line(manual, automatic));
     if (state.run) controls.append(action('查看当前运行', () => open('workbench')));
@@ -425,18 +478,16 @@ window.createWorkspaceLink = function (hooks) {
     for (const item of plan.tasks) { const option = el('option',item.id + ' · ' + item.title); option.value=item.id; select.append(option); }
     select.value=task.id; select.onchange=()=>inspect(select.value); box.append(select); container.append(box);
     if (!taskRun) { box.append(text('尚未启动开发。')); return; }
-    box.append(text('任务状态 ' + taskRun.state));
+    box.append(text('任务状态：' + (taskLabels[taskRun.state] || taskRun.state)));
+    if (taskRun.activity?.length) box.append(text(taskRun.activity.at(-1).label));
     if (taskRun.missing_input_ids.length) {
-      const values={};
-      for(const id of taskRun.missing_input_ids) {
-        const item=state.project.specification.open_items.find(item=>item.id===id);
-        const input=field(box,id+' · '+(item?.question || '补充输入'),'',value=>{values[id]=value;},true); input.required=true;
-      }
-      box.append(action('提交缺失输入',()=>operate(()=>runAction('supply-input',{task_id:task.id,values})),true));
+      const item = state.runQuestions.find(item => item.tasks.includes(task.id));
+      if (item && state.run.state === 'active') renderQuestion(box, item);
+      else box.append(text('本次运行已停止或问题待加载；不会向下派发。'));
     }
     if (taskRun.state==='failed') {
       const note=taskRun.attempts.at(-1)?.error;
-      if(note) box.append(el('pre',note,'whitespace-pre-wrap text-xs text-red-700'));
+      if(note) box.append(text(errorMessage(note),'text-xs text-red-700'));
       box.append(action('重试任务',()=>operate(()=>runAction('retry',{task_id:task.id})),true));
     }
     const candidate=taskRun.artifacts.filter(artifact=>artifact.status==='draft');
@@ -456,8 +507,13 @@ window.createWorkspaceLink = function (hooks) {
         if(state.edits.has(key))revisions[artifact.output_id]={content:original};
       } else {
         entry.append(el('code',artifact.commit_sha || '','mono block text-xs break-all'));
+        const attempt = taskRun.attempts.find(row=>row.id===artifact.attempt_id) || taskRun.attempts.at(-1);
+        if (attempt?.checkout_commit && state.target?.repo) {
+          entry.append(text('目标仓库：'+state.target.repo),
+            text('任务分支：attempt/'+state.run.id+'/'+attempt.id));
+        } else if (!attempt?.checkout_commit) entry.append(text('模拟提交，不对应本地源码。'));
         entry.append(text('改动文件 '+artifact.changed_paths.join(', ')));
-        if(artifact.status==='draft' && state.config?.real_available) {
+        if(artifact.status==='draft' && (state.target?.repo || state.config?.real_available)) {
           field(entry,'人工修订提交 '+artifact.output_id,artifact.commit_sha,value=>{
             revisions[artifact.output_id]={commit_sha:value.trim()};
           });
@@ -465,7 +521,7 @@ window.createWorkspaceLink = function (hooks) {
       }
       box.append(entry);
     }
-    if(candidate.length) {
+    if(candidate.length && state.run.state === 'active') {
       let note=''; field(box,'审核备注','',value=>{note=value;});
       box.append(line(
         action('批准产物',()=>operate(()=>runAction('review',{task_id:task.id,decision:'approve',expected_versions:expected,note})),true),
@@ -476,7 +532,8 @@ window.createWorkspaceLink = function (hooks) {
     for(const attempt of taskRun.attempts) box.append(text('尝试 '+attempt.id+' · '+(attempt.provider || '待执行')+
       (attempt.model?' / '+attempt.model:'')+' · '+attempt.state));
   }
-  function renderTab(tab) {
+  function renderTab(tab, selection) {
+    if (selection && (state.runPlan || getPlan())?.plan.tasks.some(t=>t.id===selection)) state.selectedTask = selection;
     if(tab==='graph')return false;
     const container=q(tab==='details'?'#panel-details':tab==='monitor'?'#panel-monitor':'#panel-activity');
     container.replaceChildren();
@@ -486,8 +543,8 @@ window.createWorkspaceLink = function (hooks) {
       const snapshot=state.runPlan || getPlan();
       if(snapshot?.schedule)wrap.append(renderGantt(snapshot.plan,snapshot.schedule));
       const summary=card('开发运行');
-      summary.append(text(state.run?'运行 '+state.run.id+' · '+state.run.state+' · '+state.run.dispatch:'尚未启动开发'));
-      if(state.run)for(const task of Object.values(state.run.tasks)) summary.append(action(task.task_id+' · '+task.state,()=>inspect(task.task_id)));
+      summary.append(text(runStatus().title));
+      if(state.run)for(const task of Object.values(state.run.tasks)) summary.append(action(task.task_id+' · '+(taskLabels[task.state] || task.state),()=>inspect(task.task_id)));
       wrap.append(summary);
     } else {
       const events=card('运行记录'); wrap.append(events);
@@ -557,20 +614,38 @@ window.createWorkspaceLink = function (hooks) {
       }));
     } else {
       sidebarBody.append(el('h3','编排与执行主理','text-sm font-bold'));
-      if(getPlan())sidebarBody.append(text('计划 v'+getPlan().plan.version+' · '+getPlan().plan.tasks.length+' 项任务'));
+      const displayed = state.runPlan || getPlan();
+      if(displayed)sidebarBody.append(text('计划 v'+displayed.plan.version+' · '+displayed.plan.tasks.length+' 项任务 · '+
+        (displayed.plan.base_commit?'真实代码执行':'模拟执行')));
+      if(state.target?.path)sidebarBody.append(text('保存位置：'+state.target.path), action('查看或导出产物',showTarget));
       if(state.run) {
-        sidebarBody.append(text('运行 '+state.run.id+' · '+state.run.state));
+        sidebarBody.append(text(runStatus().title));
         const advance=action('推进一轮派发',()=>operate(()=>runAction('advance')),true);
         advance.disabled=state.pending || state.run.state!=='active' || state.run.mode!=='manual' || state.run.dispatch!=='active';
         const pause=action(state.run.dispatch==='active'?'暂停后续派发':'继续派发',
           ()=>operate(()=>runAction(state.run.dispatch==='active'?'pause':'resume')));
         pause.disabled=state.pending || state.run.state!=='active'; sidebarBody.append(line(advance,pause));
-        for(const finding of state.run.findings) {
-          sidebarBody.append(text(finding.summary));
-          for(const id of finding.affected_task_ids)sidebarBody.append(action('处理 '+id,()=>inspect(id)));
+        const stop = action('结束本次运行', () => {
+          if (confirm('结束本次运行并保留已生成的产物？之后可以启动新一轮。')) operate(()=>runAction('stop'));
+        });
+        stop.disabled = state.pending || state.run.state !== 'active'
+          || Object.values(state.run.tasks).some(task=>task.state==='running');
+        sidebarBody.append(stop);
+        if (state.run.state === 'active') {
+          if (state.runQuestions.some(item => item.default)) {
+            sidebarBody.append(action('主理人处理常规卡点', ()=>operate(()=>runAction('steward-defaults')), true));
+          }
+          const first = state.runQuestions.find(item=>!item.default) || state.runQuestions[0];
+          if (first) {
+            const pane = card('只需先处理这一项');
+            renderQuestion(pane, first, true); sidebarBody.append(pane);
+            if(state.runQuestions.length>1) sidebarBody.append(text('另有 '+(state.runQuestions.length-1)+' 项，回答后依次显示。'));
+          }
+          const failed = Object.values(state.run.tasks).find(task=>task.state==='failed');
+          if (failed) sidebarBody.append(text(errorMessage(failed.attempts.at(-1)?.error)),action('查看失败任务 '+failed.task_id,()=>inspect(failed.task_id)));
         }
         const review=Object.values(state.run.tasks).find(task=>task.state==='review');
-        if(review)sidebarBody.append(action('审阅并放行 '+review.task_id,()=>inspect(review.task_id),true));
+        if(review && state.run.state === 'active')sidebarBody.append(action('审阅并放行 '+review.task_id,()=>inspect(review.task_id),true));
         if(state.run.state==='completed')sidebarBody.append(action('记录本次经验',()=>open('exp-memory')));
       } else sidebarBody.append(text('核对需求覆盖、任务边界与待决问题，再保存和启动开发。'));
     }
@@ -665,8 +740,253 @@ window.createWorkspaceLink = function (hooks) {
     box.append(line(save, test, restore), status);
     wrap.append(box);
   }
+
+  const taskLabels = {done:'已完成', running:'正在执行', waiting:'等前置任务', ready:'等派发',
+    input_required:'等确认', blocked:'被上游阻塞', failed:'失败', review:'等审阅'};
+  const eventLabels = {'run.started':'已启动', 'run.paused':'已暂停派发', 'run.resumed':'已恢复派发',
+    'run.stopped':'已结束本次运行', 'run.completed':'已完成',
+    'task.dispatched':'开始执行', 'task.failed':'执行失败', 'task.retry_requested':'已请求重试',
+    'artifact.submitted':'生成产物', 'artifact.approved':'产物通过', 'artifact.rejected':'产物退回',
+    'task.input_supplied':'已记录决定', 'task.input_required':'等待业务决定'};
+
+  function errorMessage(error) {
+    if (!error) return '任务失败，打开详情查看并重试。';
+    if (typeof error !== 'string') return error.message || error.code || '任务失败';
+    try { return errorMessage(JSON.parse(error)); } catch { return error; }
+  }
+
+  function elapsed(seconds) {
+    const n = Math.max(0, Math.floor(seconds || 0));
+    return n < 60 ? n+' 秒' : Math.floor(n/60)+' 分 '+n%60+' 秒';
+  }
+
+  function runStatus() {
+    const run = state.run;
+    if (!run) return {title:getPlan()?'任务计划已保存 · 尚未启动开发':'尚未启动开发', detail:''};
+    const tasks = Object.values(run.tasks);
+    const count = key => tasks.filter(task => task.state === key).length;
+    const running = tasks.filter(task => task.state==='running');
+    const totals = ' · '+count('done')+'/'+tasks.length+' 项完成';
+    if(run.state==='stopped') return {title:run.id+' · 已结束'+totals,detail:'已生成的产物仍可查看和导出。'};
+    if(run.state==='completed') return {title:run.id+' · 已完成'+totals,detail:'可以导出交付记录。'};
+    if (running.length) {
+      const task = running[0], activity = task.activity?.at(-1);
+      const started = Date.parse(task.attempts.at(-1)?.started_at || '');
+      const duration = Number.isFinite(started) ? ' · 当前任务已用 '+elapsed((Date.now()-started)/1000) : '';
+      const left = (state.runPlan?.schedule || []).filter(row =>
+        run.tasks[row.task_id]?.state!=='done' && Number.isFinite(row.early_start_seconds) && Number.isFinite(row.early_finish_seconds));
+      const estimate = left.length
+        ? ' · 计划剩余约 '+elapsed(Math.max(...left.map(row=>row.early_finish_seconds))-Math.min(...left.map(row=>row.early_start_seconds)))
+        : '';
+      return {title:run.id+' · '+(run.dispatch==='paused'?'暂停派发，'+running.length+' 项正在收尾':running.length+' 项正在执行')+totals,
+        detail:task.task_id+' · '+(activity?.label || 'Worker 处理中')+duration+estimate+'。实际时间受模型和审核影响。',
+        steps:task.activity || []};
+    }
+    if(run.dispatch==='paused') return {title:run.id+' · 已暂停，当前没有任务在跑'+totals,
+      detail:'继续派发后才会推进。还在等确认的事项不会自动放行。'};
+    if(count('failed')) return {title:run.id+' · '+count('failed')+' 项失败，当前没有任务在跑'+totals,
+      detail:errorMessage(tasks.find(t=>t.state==='failed').attempts.at(-1)?.error)};
+    if(count('ready')) return {title:run.id+' · '+count('ready')+' 项待派发'+totals,
+      detail:run.mode==='manual'?'点击右侧「推进一轮派发」。':'主理人会自动派发已满足前置条件的任务。'};
+    if(count('input_required')) return {title:run.id+' · 等待业务确认，当前没有任务在跑'+totals,
+      detail:'先看右侧问题。等待确认期间无法预计完成时间。'};
+    if(count('review')) return {title:run.id+' · '+count('review')+' 项待审核，当前没有任务在跑'+totals,
+      detail:'核对右侧产物后放行。等待审核期间无法预计完成时间。'};
+    return {title:run.id+' · 等待前置条件'+totals,detail:'当前没有任务在跑。查看依赖图找阻塞点。'};
+  }
+
+  const statusTitle = el('strong', '', 'text-slate-900');
+  statusTitle.setAttribute('role','status');
+  const statusDetail = text('');
+  const statusHistory = el('details', null, 'text-slate-600');
+  statusHistory.append(el('summary','最近步骤与事件','cursor-pointer'));
+  const statusSteps = el('ul',null,'ml-4 list-disc text-slate-600');
+  statusHistory.append(statusSteps);
+  statusBar.append(statusTitle,statusDetail,statusHistory);
+  let lastRows = '';
+  function renderStatus() {
+    targetButton.textContent = state.target?.path ? '产物位置已选' : '产物位置';
+    targetButton.title = state.target?.path || '选择项目的本地保存位置';
+    if (!state.project) targetButton.disabled = true;
+    else targetButton.disabled = false;
+    const lastJob = state.activity;
+    const job = lastJob?.running || (lastJob && state.module===lastJob.module && Date.now()-lastJob.ended<12000)
+      ? lastJob : null;
+    const current = job?.steps?.at(-1);
+    let status = runStatus();
+    if (job) {
+      const duration = (Date.now()-job.started)/1000;
+      status = {title:(job.running?'正在处理 · ':job.failed?'执行失败 · ':'已完成 · ')+job.label,
+        detail:job.failed || (job.running ? (current ? current.label+' · ' : '')+'已用 '+elapsed(duration)
+           +(job.expected ? ' · '+Math.min(job.steps.length,job.expected)+'/'+job.expected+' 步已开始' : '')
+          +(current?.timeout_seconds ? ' · 单步请求超时设置 '+current.timeout_seconds+' 秒' : '')+'；还需多久取决于实际调用。'
+          : '整体用时 '+elapsed(job.duration)),
+        steps:job.steps};
+    } else if (state.module === 'intake-race' && state.groups.some(g=>g.status==='failed')) {
+      const failures = state.groups.filter(g=>g.status==='failed').map(g=>g.id+' 组');
+      status = {title:failures.join('、')+'出案失败',detail:'已提交的组仍保留，可单独重试失败组。'};
+    }
+    const title = status.title + (state.statusError ? ' · 状态未同步' : '');
+    if (statusTitle.textContent !== title) statusTitle.textContent=title;
+    statusDetail.textContent=state.statusError || status.detail;
+    const rows = [...(status.steps || []).map(step=>step.label),
+      ...state.eventTrail.slice(-5).map(event => (event.task_id ? event.task_id+' · ' : '')+
+        (eventLabels[event.type] || event.type))];
+    const signature = JSON.stringify(rows);
+    if(lastRows!==signature) {
+      statusSteps.replaceChildren(...rows.map(row=>el('li',row)));
+      lastRows=signature;
+    }
+    statusHistory.hidden=!rows.length;
+  }
+
+  async function localStep(label, callback, withProgress=false, expected=0) {
+    const job = {label,id:crypto.randomUUID(),module:state.module,started:Date.now(),running:true,steps:[],expected};
+    state.activity=job; renderStatus();
+    let fetching=false;
+    const poll = async () => {
+      if(fetching || !job.running) return;
+      fetching=true;
+      try {job.steps=(await get('/workspace/progress/'+job.id)).steps; renderStatus();}
+      catch { /* state remains visible through the local clock */ }
+      finally {fetching=false;}
+    };
+    const timer = withProgress ? setInterval(poll,800) : null;
+    try {
+      const result = await callback(job.id);
+      if(withProgress) await poll();
+      return result;
+    } catch(error) {
+      job.failed=error.message;
+      if(withProgress) await poll();
+      throw error;
+    } finally {
+      if(timer)clearInterval(timer);
+      job.running=false; job.ended=Date.now(); job.duration=(job.ended-job.started)/1000;
+      renderStatus();
+    }
+  }
+
+  function tracked(label,path,body) {
+    const expected = path==='/preview/group' ? 4 :
+      path.endsWith('/evaluate') ? state.project?.drafts.length : path.endsWith('/propose') ? 1 : 0;
+    return localStep(label, id=>post(path,{...body,progress_id:id}), true, expected);
+  }
+
+  async function readRunDetails(run) {
+    const projectId = state.project?.id;
+    if (!projectId) return;
+    const path = '/workspace/projects/'+projectId+'/runs/'+run.id;
+    const [questions, events] = await Promise.allSettled([
+      run.state==='active' ? get(path+'/questions') : Promise.resolve({items:[]}),
+      get('/api/v2/projects/'+projectId+'/runs/'+run.id+'/events?after='+Math.max(0,run.latest_event_seq-7)+'&limit=7'),
+    ]);
+    if (state.project?.id!==projectId) return;
+    state.runQuestions = questions.status==='fulfilled' ? questions.value.items : [];
+    state.eventTrail = events.status==='fulfilled' ? events.value.items : [];
+  }
+
+  function renderQuestion(parent,item,sidebar=false) {
+    parent.append(text(item.question,'text-xs font-semibold text-slate-900'));
+    if(item.detail && item.question.replace(/？$/,'')!==item.detail.replace(/？$/,'')) {
+      const detail = el('details',null,'text-xs text-slate-600');
+      detail.append(el('summary','查看原始问题'),text(item.detail)); parent.append(detail);
+    }
+    if(item.note) parent.append(text('主理人处理：'+item.note));
+    if(item.default){
+      parent.append(text('主理人建议：'+item.default),
+        action('采用主理人建议',()=>operate(()=>runAction('steward-apply',{item_id:item.id})),true));
+      return;
+    }
+    const submit = answer => operate(async()=> {
+      if(!answer.trim()) throw new Error('请先写一句答复。');
+      await runAction('steward-answer',{item_id:item.id,answer});
+    });
+    for(const option of item.options.slice(0,6))
+      parent.append(action(option.label,()=>submit(option.value),true));
+    const input = field(parent,'一句话答复','');
+    input.maxLength=1000;
+    parent.append(action('提交答复',()=>submit(input.value),!item.options.length));
+    if(sidebar) parent.append(text('一次答复会应用到这项决定涉及的 '+item.tasks.length+' 个任务。'));
+  }
+
+  function dialog(title) {
+    const modal = el('dialog',null,'rounded-xl border border-slate-200 p-5 mx-auto my-auto w-[min(92vw,560px)] bg-white text-slate-900 shadow-lg');
+    modal.style.cssText = 'position:fixed;inset:0;max-height:82vh;overflow:auto;margin:auto;';
+    const body = el('div',null,'space-y-4');
+    body.append(el('h2', title,'text-base font-bold text-slate-900'));
+    modal.setAttribute('aria-label',title);
+    modal.append(body);
+    modal.addEventListener('close',()=>modal.remove());
+    document.body.append(modal); modal.showModal();
+    return {body,close:action('关闭',()=>modal.close())};
+  }
+
+  function showTarget() {
+    if (!state.project) {toast('先完成赛马交接，再为这个项目选位置。'); return;}
+    const modal = dialog('产物保存位置'), body = modal.body;
+    const overview=text('方案、任务和运行记录会保存到本机数据库。下面的位置用来导出成文件，也可绑定真实代码仓库。');
+    const path = field(body,'本地文件夹完整路径',state.target?.path || '');
+    path.placeholder='例如 D:\\Projects\\XiaoLanShu';
+    body.insertBefore(overview, path.parentElement);
+    const toggle = el('label',null,'flex gap-2 items-center text-xs text-slate-700');
+    const repoFlag=el('input'); repoFlag.type='checkbox';
+    repoFlag.checked=!!state.target?.repo && state.target.path===state.target.repo;
+    toggle.append(repoFlag,el('span','绑定为真实代码仓库（空目录会初始化 Git）')); body.append(toggle);
+    const status = text(state.target?.repo ? '真实代码仓库：'+state.target.repo : '尚未绑定真实代码仓库。');
+    status.setAttribute('role','status'); body.append(status);
+    const projectId=state.project.id;
+    const base='/workspace/projects/'+projectId;
+    async function request(fn){
+      save.disabled=exportFiles.disabled=true;
+      try { await fn(); }
+      catch(error){status.textContent=error.message;}
+      finally {save.disabled=false; exportFiles.disabled=!state.target?.path;}
+    }
+    const save=action('保存位置',()=>request(async()=>{
+      const result = await write(base+'/target',{path:path.value,real:repoFlag.checked});
+      if(state.project?.id!==projectId)return;
+      state.target=result.target;
+      if(result.planning)accept(result.planning);
+      status.textContent='已保存：'+result.target.path+(result.target.repo?' · 真实代码仓库 '+result.target.repo:'');
+      if(result.run?.state==='active' && repoFlag.checked && result.planning?.plan.version!==result.run.plan_ref.version)
+        status.textContent+='。现有运行仍使用旧计划；结束旧运行后再启动新计划。';
+      refresh();
+    }),true);
+    const exportFiles=action('导出项目文件',()=>request(async()=>{
+      const result=await write(base+'/export',{});
+      status.textContent='已导出 '+result.files.length+' 个文件到 '+result.directory;
+    }));
+    exportFiles.disabled=!state.target?.path;
+    body.append(line(save,exportFiles,modal.close));
+  }
+
+  function showHelp() {
+    const modal = dialog('工作台使用答疑 AI'), body=modal.body;
+    const current = runStatus();
+    body.append(text(current.title+'。'+current.detail));
+    const input=field(body,'你想了解什么？',''); input.maxLength=500;
+    body.append(text('使用说明未覆盖的问题会交给当前配置的模型。'));
+    const answer=text('可以问：怎么让 Agent 真的写代码？产物存在哪里？为什么显示等待确认？');
+    answer.setAttribute('role','status');
+    async function ask(question) {
+      if(!question.trim())return;
+      input.value=question; questionButton.disabled=true; answer.textContent='正在查找使用说明…';
+      try {
+        const result=await post('/workspace/help',{question,project_id:state.project?.id || null});
+        answer.textContent=result.answer+(result.source==='model'?'（模型根据工作台说明回答）':'');
+      } catch(error){answer.textContent=error.message;}
+      finally {questionButton.disabled=false;}
+    }
+    const questionButton=action('提问',()=>ask(input.value),true);
+    input.addEventListener('keydown',event=>{if(event.key==='Enter')ask(input.value);});
+    body.append(line(...['产物存在哪里？','怎么开始真实执行？','任务为什么没动？'].map(question=>action(question,()=>ask(question)))));
+    body.append(answer,line(questionButton,modal.close));
+    input.focus();
+  }
+
   function render(module) {
-    state.module=module;
+    state.module=module; renderStatus();
     q('#progress-pct').style.display = state.run ? '' : 'none';
     q('#progress-bar').parentElement.style.display = state.run ? '' : 'none';
     q('#btn-toggle-right-sidebar').style.display='';q('#right-steward-sidebar').style.display='';
@@ -706,12 +1026,19 @@ window.createWorkspaceLink = function (hooks) {
   }
   initialize();
   setInterval(async()=>{
+    renderStatus();
     if(polling || !state.run || state.run.state!=='active' || state.module!=='workbench' || state.pending)return;
     polling=true;
     try {
-      const run=await get(projectURL('/runs/'+state.run.id));
-      if(run.revision!==state.run.revision){state.run=run;refresh();}
-    }catch(error){state.error=error.message;}
+      const current = state.run, currentEpoch = epoch;
+      const run=await get(projectURL('/runs/'+current.id));
+      if(epoch !== currentEpoch || state.run !== current) return;
+      const changed = run.revision !== current.revision;
+      if (changed) await readRunDetails(run);
+      if(epoch !== currentEpoch || state.run !== current) return;
+      state.run=run; state.statusError='';
+      if(changed) refresh();
+    }catch(error){state.statusError='状态同步中断，当前画面可能已过时。'; renderStatus();}
     finally{polling=false;}
   },1500);
   return {render,sidebar:renderSidebar,renderTab,planActions,inspect,

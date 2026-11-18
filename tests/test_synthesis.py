@@ -144,6 +144,20 @@ class SynthesisTest(unittest.TestCase):
 
 
 
+    def test_real_synthesis_keeps_complementary_work_without_removing_explicit_conflicts(self):
+        self.drafts[1]["claims"].append({"id": "B-20", "text": "首页显示设备状态颜色。", "requirement_ids": ["REQ-01"]})
+        self.evaluations = [s.evaluate_draft(self.req, d) for d in self.drafts]
+        mock = self.proposal()
+        generic = next(item for item in mock["open_items"]
+                       if item["question"].startswith("多组对该需求提出了不同做法"))
+        mock["open_items"].remove(generic)
+        mock["decisions"].append({"id": "DEC-30", "scope": "设备列表", "choice": "列表显示设备状态并用颜色提示。",
+                                  "reason": "显示状态和颜色提示可以同时实现。",
+                                  "requirement_ids": ["REQ-01"], "draft_ids": ["A", "B"]})
+        result = self.proposal(agent=lambda *_: mock)
+        self.assertTrue(any(decision["id"] == "DEC-30" for decision in result["decisions"]))
+        self.assertTrue(any("自动取消" in issue["question"] for issue in result["open_items"]))
+
     def test_third_group_is_evaluated_and_contradictory_claims_are_pending(self):
         self.drafts[1]["claims"][0]["text"] = "禁止对停用设备新建预约"
         third = deepcopy(self.drafts[1])

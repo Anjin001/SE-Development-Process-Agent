@@ -55,9 +55,12 @@ class Store:
     def __init__(self, path=":memory:", now=None, verifier=None):
         self.now = now or utcnow
         self.verifier = verifier
+        self.verifier_for = lambda project_id: self.verifier
         self._lock = threading.RLock()
+        # The HTTP and dispatcher threads share the connection. Keep prepared
+        # statements local to their cursors instead of reusing a shared cache.
         self.db = sqlite3.connect(str(path), isolation_level=None,
-                                  check_same_thread=False)
+                                  check_same_thread=False, cached_statements=0)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.execute("PRAGMA busy_timeout = 5000")
@@ -618,7 +621,9 @@ class Store:
                     if item["id"] == task_id)
                 now = _stamp(self.now())
                 if status == "succeeded":
-                    problems = self._check_git(task, attempt, artifacts or [])
+                    baseline = db.execute("SELECT base_commit FROM plans WHERE project_id=? AND id=? AND version=?",
+                                          (run["project_id"], run["plan_id"], run["plan_version"])).fetchone()["base_commit"]
+                    problems = self._check_git(run["project_id"], task, attempt, artifacts or [], baseline)
                     if problems:
                         db.execute("UPDATE attempts SET state='failed', ended_at=?,"
                                    " error=?, report_hash=? WHERE id=?",
@@ -666,9 +671,10 @@ class Store:
             raise StaleAttempt(current_attempt_id=stale_id)
         return self.snapshot(run_id)
 
-    def _check_git(self, task, attempt, artifacts):
+    def _check_git(self, project_id, task, attempt, artifacts, baseline):
         """Reject a commit the plan cannot account for (§5 verification)."""
-        if self.verifier is None:
+        verifier = self.verifier_for(project_id) if baseline or self.verifier else None
+        if verifier is None:
             return []
         kinds = {output["id"]: output["kind"] for output in task["outputs"]}
         commits = [item for item in artifacts
@@ -680,8 +686,8 @@ class Store:
         problems = []
         for item in commits:
             try:
-                self.verifier.verify(commit_sha=item.get("commit_sha"),
-                                     checkout_commit=attempt["checkout_commit"],
+                verifier.verify(commit_sha=item.get("commit_sha"),
+                                     checkout_commit=attempt["checkout_commit"] or baseline,
                                      required_shas=required,
                                      allowed_paths=task["write_paths"])
             except DomainError as exc:
@@ -887,14 +893,29 @@ class Store:
                     " value=excluded.value, submitted_by=excluded.submitted_by",
                     (run_id, task_id, item, text, submitted_by, _stamp(self.now())))
                 self._emit(db, run_id, "task.input_supplied", task_id=task_id,
-                           payload={"item_id": item})
+                           payload={"item_id": item, "submitted_by": submitted_by})
             self._recompute(db, run_id)
             self._bump(db, run_id)
             return self.snapshot(run_id)
 
+    def stop_run(self, run_id):
+        with self.tx() as db:
+            run, rows = self._task_map(db, run_id)
+            if run["state"] != "active":
+                raise InvalidState("这次运行已结束。")
+            if any(row["state"] == RUNNING for row in rows.values()):
+                raise InvalidState("还有任务正在收尾。请先暂停派发，等正在执行的任务结束。")
+            db.execute("UPDATE runs SET state='stopped', dispatch='paused', ended_at=? WHERE id=?",
+                       (_stamp(self.now()), run_id))
+            db.execute("DELETE FROM dispatch_queue WHERE run_id=?", (run_id,))
+            self._emit(db, run_id, "run.stopped")
+            self._bump(db, run_id)
+
     def set_dispatch(self, run_id, paused):
         with self.tx() as db:
             run, _ = self._task_map(db, run_id)
+            if run["state"] != "active":
+                raise InvalidState("这次运行已结束。")
             db.execute("UPDATE runs SET dispatch=? WHERE id=?",
                        ("paused" if paused else "active", run_id))
             if paused:      # the contract clears unconsumed manual slots

@@ -15,6 +15,7 @@ from .store import Store
 from .synthesis_preview import PreviewError
 from .workbench_preview import WorkbenchHandler, PROTOTYPES, PAGES
 from .workspace import ProjectReviews, Workspace
+from .workspace_experience import Progress, help_answer
 from .agent_client import AgentError, ChatAgent, configured_agent
 from .model_router import ModelRouter
 from .providers import OpenAICompatibleProvider
@@ -32,6 +33,31 @@ class Handler(WorkbenchHandler):
         path = urlsplit(self.path).path
         if path == "/workspace-link.js" and self.command == "GET":
             self.respond(200, (PROTOTYPES / "workspace-link.js").read_bytes(), "text/javascript; charset=utf-8")
+            return
+        if path.startswith("/workspace/progress/") and self.command == "GET":
+            self.respond(200, {"steps": self.server.progress.read(path.rsplit("/", 1)[1])})
+            return
+        if path == "/workspace/help" and self.command == "POST":
+            try:
+                self.require_local_json()
+                body = self.body()
+                context = {}
+                project_id = body.get("project_id")
+                if isinstance(project_id, str) and project_id:
+                    with self.server.review_lock, self.server.workspace.database._lock:
+                        project = self.server.workspace.project(project_id)
+                    run = project["run"]
+                    if run:
+                        tasks = list(run["tasks"].values())
+                        context = dict(run_id=run["id"], state=run["state"], dispatch=run["dispatch"],
+                                       executing=sum(task["state"] == "running" for task in tasks),
+                                       waiting=sum(task["state"] == "input_required" for task in tasks),
+                                       done=sum(task["state"] == "done" for task in tasks))
+                    else:
+                        context["state"] = "not_started"
+                self.respond(200, help_answer(body.get("question"), self.server.agent, context))
+            except (DomainError, AgentError, ValueError, TypeError, PermissionError) as exc:
+                self.problem(exc)
             return
         if path.startswith("/workspace/") or path.startswith("/api/v2/"):
             with self.server.review_lock:
@@ -75,6 +101,9 @@ class Handler(WorkbenchHandler):
             self.respond(502, {"error": dict(code="MODEL_ERROR", message=str(exc), details={})})
         elif isinstance(exc, PermissionError):
             self.respond(403, {"error": dict(code="FORBIDDEN", message=str(exc), details={})})
+        elif isinstance(exc, OSError):
+            self.respond(400, {"error": dict(code="OUTPUT_ERROR",
+                                            message="无法写入指定文件夹，请检查位置或访问权限。", details={})})
         else:
             self.respond(400, {"error": dict(code="INVALID_REQUEST", message=str(exc), details={})})
 
@@ -117,6 +146,8 @@ class Handler(WorkbenchHandler):
                     elif suffix == "memory/records":
                         result = dict(items=workspace.database.memory.list_records(
                             project_id, workspace.actor, "retrospective"))
+                    elif suffix and re.fullmatch(r"runs/[^/]+/questions", suffix):
+                        result = dict(items=workspace.steward_questions(project_id, suffix.split("/")[1]))
                     elif suffix and suffix.startswith("runs/") and "/" not in suffix[5:]:
                         result = workspace.run(project_id, suffix[5:])
                     else:
@@ -128,6 +159,11 @@ class Handler(WorkbenchHandler):
             headers = {key.lower(): value for key, value in self.headers.items()}
 
             def write():
+                if suffix in ("target", "export"):
+                    self.require_local_json()
+                    if suffix == "target":
+                        return 200, workspace.configure_target(project_id, body.get("path"), body.get("real") is True)
+                    return 200, workspace.delivery.export(workspace.project(project_id))
                 if suffix == "runs":
                     review = workspace.reviews.snapshot(workspace.reviews.get(project_id))
                     spec = review["specification"]
@@ -140,8 +176,13 @@ class Handler(WorkbenchHandler):
                         raise InvalidState("请刷新最新计划后启动")
                     if body.get("mode", "manual") not in ("manual", "auto"):
                         raise InvalidReference("运行模式应为 manual 或 auto")
+                    if workspace.delivery.target(project_id)["repo"] and not plan["plan"]["base_commit"]:
+                        raise InvalidState("请先为当前计划绑定 Git 仓库。")
                     result = workspace.database.create_run(
                         project_id, plan["plan"]["id"], plan["plan"]["version"], body.get("mode", "manual"))
+                    if body.get("steward") is True:
+                        workspace.action(project_id, result["id"], "steward-defaults",
+                                         {"expected_revision": result["revision"]})
                     return 201, workspace.run(project_id, result["id"])
                 if suffix and re.fullmatch(r"runs/[^/]+/actions/[a-z-]+", suffix):
                     _, run_id, _, action = suffix.split("/")
@@ -159,7 +200,7 @@ class Handler(WorkbenchHandler):
             with workspace.database.tx():
                 status, result = self.server.router._idempotent(project_id, "POST", path, body, headers, write)
             self.respond(status, result)
-        except (DomainError, PreviewError, AgentError, ValueError, TypeError, KeyError, PermissionError) as exc:
+        except (DomainError, PreviewError, AgentError, ValueError, TypeError, KeyError, OSError) as exc:
             self.problem(exc)
 
     def model_details(self):
@@ -174,15 +215,17 @@ class Handler(WorkbenchHandler):
                     low_cost_model=tiers["low_cost"]["model"],
                     high_capability_model=tiers["high_capability"]["model"])
 
-    def model_settings(self, body):
-        if self.command == "GET":
-            return self.model_details()
+    def require_local_json(self):
         port = self.server.server_port
         trusted_origins = {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
         if (self.command != "POST" or self.headers.get("Origin") not in trusted_origins
                 or self.headers.get_content_type() != "application/json"):
-            raise PermissionError("请从本地工作台页面修改模型设置。")
+            raise PermissionError("请从本地工作台页面执行此操作。")
 
+    def model_settings(self, body):
+        if self.command == "GET":
+            return self.model_details()
+        self.require_local_json()
         action = body.get("action")
         if action == "restore":
             self.server.agent, self.server.workspace.dispatch.worker = self.server.startup_models
@@ -247,6 +290,7 @@ def make_server(port=8008, db="data/workbench.sqlite3", worker=None):
     server.startup_models = (server.agent, server.workspace.dispatch.worker)
     server.router = Router(database, actor_id=server.workspace.actor)
     server.review_lock = RLock()
+    server.progress = Progress()
     server.pages = {path: (PROTOTYPES / filename).read_bytes() for path, filename in PAGES.items()}
     page = server.pages["/"].decode("utf-8")
     server.pages["/"] = page.replace(

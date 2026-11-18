@@ -1,10 +1,13 @@
 import json
+from io import BytesIO
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from se_agent.agent_client import AgentError, ChatAgent
 from se_agent.workbench import make_server
 from se_agent.worker import Worker
 
@@ -71,3 +74,23 @@ class ModelSettingsTest(unittest.TestCase):
                     thread.join(timeout=2)
                 app.workspace.dispatch.close()
                 app.workspace.database.close()
+
+
+    def test_model_failures_show_stage_and_safe_reason(self):
+        agent = ChatAgent("http://example.invalid/v1", "demo", "private-key")
+        rejection = HTTPError(agent.endpoint, 429, "private-reason", {},
+                              BytesIO(b"private-response"))
+        with patch("se_agent.agent_client.urlopen", side_effect=rejection):
+            with self.assertRaisesRegex(AgentError, r"生成草案.*429.*限流") as caught:
+                agent("draft", {})
+        self.assertNotIn("private-", str(caught.exception))
+
+        with patch("se_agent.agent_client.urlopen", side_effect=TimeoutError("private-url")):
+            with self.assertRaisesRegex(AgentError, r"独立构思.*超时"):
+                agent("idea", {})
+        malformed = {"choices": [{"message": {"content": "private-non-json"}}]}
+        with patch("se_agent.agent_client.urlopen",
+                   return_value=BytesIO(json.dumps(malformed).encode())):
+            with self.assertRaisesRegex(AgentError, r"生成草案.*JSON 结构") as caught:
+                agent("draft", {})
+        self.assertNotIn("private-", str(caught.exception))

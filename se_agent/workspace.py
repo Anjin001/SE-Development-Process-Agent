@@ -9,7 +9,8 @@ from uuid import uuid4
 from .contracts import DomainError, InvalidReference, InvalidState, NotFound, VersionConflict
 from .planner import decompose_tasks, render_plan_markdown
 from .synthesis_preview import PreviewError, PreviewStore
-from .worker import build_worker
+from .worker import Worker, build_worker
+from .workspace_experience import Progress, ProjectDelivery
 
 
 class ProjectReviews(PreviewStore):
@@ -49,10 +50,10 @@ class ProjectReviews(PreviewStore):
             raise
         return result
 
-    def change(self, project_id, action, payload):
+    def change(self, project_id, action, payload, progress=None):
         previous = deepcopy(self.get(project_id))
         try:
-            result = super().change(project_id, action, payload)
+            result = super().change(project_id, action, payload, progress=progress)
             if action != "inspect":
                 self._persist(project_id)
             return result
@@ -102,7 +103,7 @@ class ProjectPlans:
                               (project_id, version)).fetchone():
                 self.database.save_spec(project_id, adapted)
             tasks = decompose_tasks(dict(spec, requirement_items=requirement["items"]))
-            verifier = self.database.verifier
+            verifier = self.database.verifier_for(project_id)
             baseline = verifier._git("rev-parse", "HEAD").strip() if verifier else None
             plan = self.database.create_plan(project_id, adapted, baseline, 2, tasks)
             return self.response(project_id, plan["id"], plan["version"])
@@ -148,6 +149,8 @@ class Dispatch:
     def __init__(self, database, worker=None):
         self.database = database
         self.worker = worker or build_worker()
+        self.delivery = None
+        self.progress = Progress()
         self.busy = set()
         self.lock = threading.Lock()
         self.stop = threading.Event()
@@ -177,11 +180,18 @@ class Dispatch:
                 if manual:
                     self.database.step(run_id)
                 handed = self.database.claim(run_id, "workspace-worker")
+                worker = self.worker
+                if handed and self.delivery and isinstance(worker, Worker):
+                    project_id = self.database.db.execute("SELECT project_id FROM runs WHERE id=?", (run_id,)).fetchone()["project_id"]
+                    repo = self.delivery.target(project_id)["repo"]
+                    if repo:
+                        worker = Worker(mode="auto", repo_root=repo, router=worker.router,
+                                        provider=worker.provider, executor=worker.executor)
             if not handed:
                 with self.lock:
                     self.busy.discard(run_id)
                 return False
-            threading.Thread(target=self._batch, args=(run_id, handed, self.worker), daemon=True).start()
+            threading.Thread(target=self._batch, args=(run_id, handed, worker), daemon=True).start()
             return True
         except Exception:
             with self.lock:
@@ -190,7 +200,11 @@ class Dispatch:
 
     def _execute(self, run_id, request, worker):
         try:
-            result = worker.execute(request)
+            if type(worker) is Worker:
+                result = worker.execute(request, progress=lambda label, seconds=0:
+                                        self.progress.record(request["attempt_id"], label, seconds))
+            else:
+                result = worker.execute(request)
         except Exception as exc:
             result = dict(attempt_id=request["attempt_id"], status="failed", artifacts=[],
                           error=dict(code="EXECUTION_FAILED", message=str(exc), retryable=True, details={}),
@@ -225,7 +239,10 @@ class Workspace:
         self.database = database
         self.reviews = reviews
         self.plans = ProjectPlans(database)
+        self.delivery = ProjectDelivery(database)
+        database.verifier_for = self.delivery.verifier
         self.dispatch = Dispatch(database, worker)
+        self.dispatch.delivery = self.delivery
         self.actor = "lead-local"
 
     def projects(self):
@@ -239,13 +256,16 @@ class Workspace:
         runs = list(self.database.db.execute(
             "SELECT id FROM runs WHERE project_id=? ORDER BY rowid DESC", (project_id,)))
         run = self.run(project_id, runs[0]["id"]) if runs else None
-        return dict(review=review, planning=plan, run=run)
+        return dict(review=review, planning=plan, run=run, target=self.delivery.target(project_id))
 
     def run(self, project_id, run_id):
         snapshot = self.database.snapshot(run_id)
         if snapshot["project_id"] != project_id:
             raise NotFound("运行不属于该项目")
         for task in snapshot["tasks"].values():
+            attempts = task["attempts"]
+            if attempts and task["state"] == "running":
+                task["activity"] = self.dispatch.progress.read(attempts[-1]["id"])
             for artifact in task["artifacts"]:
                 row = self.database.db.execute(
                     "SELECT content,changed_paths FROM artifacts WHERE run_id=? AND id=? AND version=?",
@@ -258,7 +278,11 @@ class Workspace:
         if type(body.get("expected_revision")) is not int or body["expected_revision"] != snapshot["revision"]:
             raise VersionConflict(current_revision=snapshot["revision"])
         task_id = body.get("task_id")
-        if action == "advance":
+        if snapshot["state"] != "active":
+            raise InvalidState("这次运行已结束。")
+        if action == "stop":
+            self.database.stop_run(run_id)
+        elif action == "advance":
             self.dispatch.advance(run_id)
         elif action in ("pause", "resume"):
             self.database.set_dispatch(run_id, action == "pause")
@@ -266,6 +290,30 @@ class Workspace:
             self.database.retry(run_id, task_id)
         elif action == "supply-input":
             self.database.supply_input(run_id, task_id, body.get("values") or {}, self.actor)
+        elif action in ("steward-answer", "steward-apply"):
+            item_id = body.get("item_id")
+            answer = body.get("answer")
+            if action == "steward-answer" and (not isinstance(answer, str) or not answer.strip() or len(answer) > 1000):
+                raise InvalidReference("请用一句话填写答案。")
+            tasks = [task["task_id"] for task in snapshot["tasks"].values()
+                     if item_id in task["missing_input_ids"]]
+            if not tasks:
+                raise InvalidReference("这个问题已处理，或不影响当前运行。")
+            question = next((n for n in self.steward_questions(project_id, run_id) if n["id"] == item_id), None)
+            if action == "steward-apply":
+                answer = question["default"] if question else None
+                if not answer:
+                    raise InvalidState("这项涉及产品行为，需要人工决定。")
+            if question and question["note"]:
+                answer = answer.strip() + "\n主理人技术默认：" + question["note"]
+            for id_ in tasks:
+                self.database.supply_input(run_id, id_, {item_id: answer.strip()},
+                                           "steward" if action == "steward-apply" else self.actor)
+        elif action == "steward-defaults":
+            for note in self.steward_questions(project_id, run_id):
+                if note["default"]:
+                    for id_ in note["tasks"]:
+                        self.database.supply_input(run_id, id_, {note["id"]: note["default"]}, "steward")
         elif action == "review":
             revisions = body.get("revisions") or {}
             task = snapshot["tasks"].get(task_id)
@@ -284,10 +332,10 @@ class Workspace:
                     if not isinstance(revision.get("content"), str):
                         raise InvalidReference("文本修订需要正文")
                 else:
-                    verifier = self.database.verifier
-                    if verifier is None:
-                        raise InvalidReference("修订代码提交需要配置真实仓库")
+                    verifier = self.database.verifier_for(project_id)
                     attempt = self.database._current_attempt(self.database.db, run_id, task_id)
+                    if verifier is None or not attempt["checkout_commit"]:
+                        raise InvalidReference("这次任务没有真实代码提交。")
                     required = [ref["commit_sha"] for ref in json.loads(attempt["input_refs"])
                                 if ref.get("commit_sha")]
                     verifier.verify(revision.get("commit_sha"), attempt["checkout_commit"], required,
@@ -300,6 +348,35 @@ class Workspace:
         else:
             raise InvalidReference("未知运行动作")
         return self.run(project_id, run_id)
+
+    def configure_target(self, project_id, path, real=False):
+        target = self.delivery.configure(project_id, path, real)
+        if real:
+            latest = self.plans.latest(project_id)
+            if latest and not latest["plan"]["base_commit"]:
+                plan = latest["plan"]
+                baseline = self.delivery.verifier(project_id)._git("rev-parse", "HEAD").strip()
+                self.database.create_plan(project_id, plan["spec_ref"], baseline,
+                                          plan["max_parallel"], plan["tasks"], plan_id=plan["id"])
+        return self.project(project_id)
+
+    def steward_questions(self, project_id, run_id):
+        run = self.run(project_id, run_id)
+        plan = self.database.get_plan(project_id, run["plan_ref"]["id"], run["plan_ref"]["version"])["plan"]
+        rows = self.database.db.execute(
+            "SELECT id, question FROM spec_open_items WHERE project_id=? AND spec_version=?",
+            (project_id, plan["spec_ref"]["version"]))
+        questions = {row["id"]: row["question"] for row in rows}
+        spec = self.reviews.version(project_id, plan["spec_ref"]["id"], plan["spec_ref"]["version"])
+        items = {item["id"]: item for item in spec.get("open_items", [])}
+        requirement = self.reviews.get(project_id)["requirement"]
+        from .workspace_experience import steward_question
+        missing = {}
+        for task in run["tasks"].values():
+            for id_ in task["missing_input_ids"]:
+                missing.setdefault(id_, []).append(task["task_id"])
+        return [steward_question(id_, items.get(id_, {"question": questions.get(id_, "请补充此项。")}),
+                                 task_ids, requirement) for id_, task_ids in sorted(missing.items())]
 
     def experiences(self, project_id, terms=None, domain=""):
         self.reviews.get(project_id)

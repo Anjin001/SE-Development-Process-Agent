@@ -441,11 +441,11 @@ window.createPlannerLink = function ({ q, el, switchModule, toast, showTask }) {
   }
 
   if (window.createWorkspaceLink) {
-    extension = window.createWorkspaceLink({ q, el, open, action, post, download, toast,
+    extension = window.createWorkspaceLink({ q, el, open, action, download, toast,
       getPlan: () => snapshot, accept, setSpecification: value => { specification = value; },
       renderGantt, showTask, isDirty: () => dirty, clearPlan: () => { snapshot = null; draft = []; dirty = false; },
     });
   }
-  return { render, graphData, open, renderTab: tab => extension?.renderTab(tab) || false,
+  return { render, graphData, open, renderTab: (tab, selection) => extension?.renderTab(tab, selection) || false,
     inspect: id => extension?.inspect(id), isFullWorkspace: !!extension };
 };

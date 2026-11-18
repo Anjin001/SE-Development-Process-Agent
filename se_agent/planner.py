@@ -1,4 +1,7 @@
 """Create a versioned task DAG from a confirmed specification."""
+import re
+
+_REVIEW_BOUNDARY = re.compile(r"权限|账户|登录|认证|支付|隐私|外部|公开|删除|审核|发布|加密|密钥|用户数据")
 
 def decompose(spec):
     source = f'{spec["id"]}@{spec["version"]}'
@@ -41,10 +44,14 @@ def decompose_tasks(confirmed_spec):
                     estimate_seconds=seconds, review_required=review,
                     completion_condition=('逐条验证：' + '；'.join(d['choice'] for d in related)
                                           if related else '补齐未决输入后，按原需求逐条核验。'))
-    names = {r['id']: r['title'] for r in confirmed_spec.get('requirement_items', [])}
+    items = {r['id']: r for r in confirmed_spec.get('requirement_items', [])}
+    names = {id_: item['title'] for id_, item in items.items()}
     tasks.append(task('T1', '定义接口与业务规则', requirements, [], 'planning', 'plan', 'docs/rules.md', 300, False))
     for index, requirement in enumerate(requirements, 2):
-        current = task(f'T{index}', f'实现 {requirement}' + (' · ' + names[requirement] if requirement in names else ''), [requirement], ['T1'], 'development', 'develop', f'app/task_{index}.py', 600, True)
+        item = items.get(requirement, {})
+        related = [d['choice'] for d in decisions if requirement in d['requirement_ids']]
+        review = not item or bool(_REVIEW_BOUNDARY.search(' '.join([item.get('text', ''), *related])))
+        current = task(f'T{index}', f'实现 {requirement}' + (' · ' + names[requirement] if requirement in names else ''), [requirement], ['T1'], 'development', 'develop', f'app/task_{index}.py', 600, review)
         current['open_item_ids'] = [o['id'] for o in pending if requirement in o['affected_requirement_ids']]
         current['outputs'][0]['kind'] = 'git_commit'
         tasks.append(current)

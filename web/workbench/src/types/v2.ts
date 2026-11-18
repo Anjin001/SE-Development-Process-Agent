@@ -176,7 +176,7 @@ export interface Finding {
 export interface RunSummary {
   id: string
   plan_ref: VersionRef
-  state: 'active' | 'completed'
+  state: 'active' | 'completed' | 'stopped'
   started_at: string | null
   ended_at: string | null
 }

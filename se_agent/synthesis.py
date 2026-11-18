@@ -196,6 +196,19 @@ def _cancellation_suggestion(requirement, claim):
             and "取消" not in "\n".join(item["text"] for item in requirement["items"]))
 
 
+def _known_behavior_conflict(options):
+    """Catch exact opposing rules without treating all different wording as conflict."""
+    positive = set()
+    negative = set()
+    for option in options:
+        text = re.sub(r"[。；\s]+$", "", option["text"].strip())
+        match = re.fullmatch(r"(允许|支持|禁止|不允许|不支持)([^。；！？]+)", text)
+        if match:
+            verb, behavior = match.groups()
+            (positive if verb in ("允许", "支持") else negative).add(behavior.strip())
+    return bool(positive & negative)
+
+
 def render_spec_markdown(requirement, decisions, open_items, notes=""):
     parts = ["# 综合开发方案", "## 需求原文与约束", requirement["markdown"], "## 方案决策"]
     for row in decisions:
@@ -298,6 +311,9 @@ def propose_spec(requirement, drafts, evaluations, selection, *, agent=mock_agen
         guard = mock_agent("synthesize", context)
         for issue in guard["open_items"]:
             if "options" not in issue:
+                continue
+            if (issue["question"].startswith("多组对该需求提出了不同做法")
+                    and not _known_behavior_conflict(issue["options"])):
                 continue
             affected = set(issue["affected_requirement_ids"])
             covered_options = {o["claim_id"] for o in issue["options"]}

@@ -143,7 +143,7 @@ CREATE TABLE IF NOT EXISTS runs (
   plan_version     INTEGER NOT NULL,
   mode             TEXT NOT NULL DEFAULT 'manual',   -- auto / manual
   dispatch         TEXT NOT NULL DEFAULT 'active',   -- active / paused
-  state            TEXT NOT NULL DEFAULT 'active',   -- active / completed
+  state            TEXT NOT NULL DEFAULT 'active',   -- active / completed / stopped
   revision         INTEGER NOT NULL DEFAULT 1,
   started_at       TEXT NOT NULL,
   ended_at         TEXT,

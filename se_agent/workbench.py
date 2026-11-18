@@ -1,5 +1,6 @@
 """Integrated QLM workbench. Run python -m se_agent.workbench --port 8008."""
 import argparse
+from copy import deepcopy
 import json
 import os
 from pathlib import Path
@@ -14,7 +15,10 @@ from .store import Store
 from .synthesis_preview import PreviewError
 from .workbench_preview import WorkbenchHandler, PROTOTYPES, PAGES
 from .workspace import ProjectReviews, Workspace
-from .agent_client import configured_agent
+from .agent_client import AgentError, ChatAgent, configured_agent
+from .model_router import ModelRouter
+from .providers import OpenAICompatibleProvider
+from .worker import Worker
 from http.server import ThreadingHTTPServer
 
 PROJECT = re.compile(r"^/workspace/projects/([^/]+)(?:/(.*))?$")
@@ -67,6 +71,8 @@ class Handler(WorkbenchHandler):
             self.respond(exc.status, exc.as_body())
         elif isinstance(exc, PreviewError):
             self.respond(exc.status, {"error": dict(code=exc.code, message=str(exc), details=exc.details)})
+        elif isinstance(exc, AgentError):
+            self.respond(502, {"error": dict(code="MODEL_ERROR", message=str(exc), details={})})
         elif isinstance(exc, PermissionError):
             self.respond(403, {"error": dict(code="FORBIDDEN", message=str(exc), details={})})
         else:
@@ -77,6 +83,9 @@ class Handler(WorkbenchHandler):
         try:
             body = self.body()
             query = parse_qs(urlsplit(self.path).query)
+            if path == "/workspace/model-settings":
+                self.respond(200, self.model_settings(body))
+                return
             if path.startswith("/api/v2/"):
                 with workspace.database.tx():
                     status, result = self.server.router.handle(
@@ -89,10 +98,7 @@ class Handler(WorkbenchHandler):
                 self.respond(200, {"markdown": (PROTOTYPES.parent / "docs" / filename).read_text(encoding="utf-8")})
                 return
             if path == "/workspace/config" and self.command == "GET":
-                worker = workspace.dispatch.worker
-                effective_mode = worker.mode if worker.mode != "auto" else ("real" if worker.repo_root else "mock")
-                self.respond(200, dict(mode=effective_mode, real_available=bool(worker.repo_root),
-                                       router=worker.router.describe(), projects=workspace.projects()))
+                self.respond(200, dict(self.model_details(), projects=workspace.projects()))
                 return
             match = PROJECT.fullmatch(path)
             if not match:
@@ -153,8 +159,80 @@ class Handler(WorkbenchHandler):
             with workspace.database.tx():
                 status, result = self.server.router._idempotent(project_id, "POST", path, body, headers, write)
             self.respond(status, result)
-        except (DomainError, PreviewError, ValueError, TypeError, KeyError, PermissionError) as exc:
+        except (DomainError, PreviewError, AgentError, ValueError, TypeError, KeyError, PermissionError) as exc:
             self.problem(exc)
+
+    def model_details(self):
+        worker = self.server.workspace.dispatch.worker
+        agent = self.server.agent
+        tiers = worker.router.config["tiers"]
+        real_available = bool(worker.repo_root) and worker.mode != "mock"
+        return dict(mode="real" if real_available else "mock", real_available=real_available,
+                    router=worker.router.describe(), discussion_mode="model" if agent else "mock",
+                    base_url=agent.base_url if agent else "", discussion_model=agent.model if agent else "",
+                    key_set=bool(agent and agent.api_key),
+                    low_cost_model=tiers["low_cost"]["model"],
+                    high_capability_model=tiers["high_capability"]["model"])
+
+    def model_settings(self, body):
+        if self.command == "GET":
+            return self.model_details()
+        port = self.server.server_port
+        trusted_origins = {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
+        if (self.command != "POST" or self.headers.get("Origin") not in trusted_origins
+                or self.headers.get_content_type() != "application/json"):
+            raise PermissionError("请从本地工作台页面修改模型设置。")
+
+        action = body.get("action")
+        if action == "restore":
+            self.server.agent, self.server.workspace.dispatch.worker = self.server.startup_models
+            self.server.store.agent = {"agent": self.server.agent} if self.server.agent else {}
+            return self.model_details()
+        if action not in ("test", "save"):
+            raise InvalidReference("未知模型设置操作。")
+
+        def field(name, limit, required=True):
+            value = body.get(name, "")
+            if not isinstance(value, str):
+                raise InvalidReference("设置项应为文本。", field=name)
+            value = value.strip()
+            if (required and not value) or len(value) > limit or any(ord(char) < 32 or ord(char) == 127 for char in value):
+                raise InvalidReference("设置项为空或格式有误。", field=name)
+            return value
+
+        base_url = field("base_url", 500).rstrip("/")
+        url = urlsplit(base_url)
+        if (url.scheme not in ("http", "https") or not url.hostname or url.username is not None
+                or url.query or url.fragment or any(char.isspace() or char == "\\" for char in base_url)
+                or url.path.endswith("/chat/completions")):
+            raise InvalidReference("请输入 API 基础地址，例如 https://api.openai.com/v1。", field="base_url")
+        url.port  # Validate an explicitly supplied port.
+        discussion = field("discussion_model", 160)
+        key = field("api_key", 4096, required=False)
+        previous = self.server.agent
+        if not key and previous and previous.base_url == base_url:
+            key = previous.api_key or ""
+        if key and not key.isascii():
+            raise InvalidReference("API 密钥格式有误。", field="api_key")
+
+        agent = ChatAgent(base_url, discussion, key)
+        if action == "test":
+            agent("challenge", {"test": "连接测试。请返回一个 question 字符串。"})
+            return {"ok": True}
+
+        low_cost = field("low_cost_model", 160)
+        high_capability = field("high_capability_model", 160)
+        old_worker = self.server.workspace.dispatch.worker
+        config = deepcopy(old_worker.router.config)
+        for tier, model in (("low_cost", low_cost), ("high_capability", high_capability)):
+            config["tiers"][tier].update(model=model, base_url=base_url, provider=OpenAICompatibleProvider.name)
+        provider = OpenAICompatibleProvider(base_url, api_key=key)
+        self.server.workspace.dispatch.worker = Worker(
+            mode=old_worker.mode, repo_root=old_worker.repo_root, worktree_root=old_worker.worktree_root,
+            router=ModelRouter(config), provider=provider, executor=old_worker.executor)
+        self.server.agent = agent
+        self.server.store.agent = {"agent": agent}
+        return self.model_details()
 
 
 def make_server(port=8008, db="data/workbench.sqlite3", worker=None):
@@ -166,6 +244,7 @@ def make_server(port=8008, db="data/workbench.sqlite3", worker=None):
     server.agent = configured_agent()
     server.store = ProjectReviews(database, server.agent)
     server.workspace = Workspace(database, server.store, worker)
+    server.startup_models = (server.agent, server.workspace.dispatch.worker)
     server.router = Router(database, actor_id=server.workspace.actor)
     server.review_lock = RLock()
     server.pages = {path: (PROTOTYPES / filename).read_bytes() for path, filename in PAGES.items()}

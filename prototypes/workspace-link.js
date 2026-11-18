@@ -33,7 +33,7 @@ window.createWorkspaceLink = function (hooks) {
     const input = el(multiline ? 'textarea' : 'input', null, inputClass);
     if (multiline) input.rows = 4;
     input.value = value ?? '';
-    input.oninput = () => update(input.value);
+    if (update) input.oninput = () => update(input.value);
     wrapper.append(input); parent.append(wrapper);
     return input;
   };
@@ -123,6 +123,7 @@ window.createWorkspaceLink = function (hooks) {
   }
   async function updateProjects() {
     state.config = await get('/workspace/config');
+    showModelMode();
     state.projects = state.config.projects;
     picker.replaceChildren();
     const blank = el('option', '＋ 新建需求'); blank.value = ''; picker.append(blank);
@@ -131,6 +132,10 @@ window.createWorkspaceLink = function (hooks) {
       option.value = project.id; picker.append(option);
     }
     picker.value = state.project?.id || '';
+  }
+  function showModelMode() {
+    const badge = q('#planner-model-mode');
+    badge.textContent = state.config?.discussion_mode === 'model' ? '模型 API 已配置' : '本地模拟 · 配置 API';
   }
   picker.onchange = () => {
     const id = picker.value;
@@ -603,6 +608,63 @@ window.createWorkspaceLink = function (hooks) {
     create.append(action('保存候选经验',()=>operate(async()=>{await write(projectURL('/memory'),body);state.memoryDraft={};await loadMemory();}),true));
     wrap.append(create);
   }
+  function renderModelSettings(wrap) {
+    const box = card('模型 API 配置');
+    const settings = state.config;
+    box.append(text('接入兼容 OpenAI Chat Completions 的服务。赛马与评审使用指定模型，开发执行按角色选择高低配模型。'));
+    if (!settings) {
+      box.append(text('正在读取模型设置。'));
+      wrap.append(box);
+      return;
+    }
+    const base = field(box, 'API 基础地址', settings.base_url);
+    base.type = 'url';
+    base.placeholder = 'https://api.openai.com/v1';
+    const discussion = field(box, '赛马与评审模型', settings.discussion_model);
+    discussion.placeholder = '填写服务商提供的模型 ID';
+    const key = field(box, 'API Key', '');
+    key.type = 'password';
+    key.autocomplete = 'off';
+    key.placeholder = settings.key_set ? '同一地址留空可沿用当前密钥' : '本地服务无需密钥时可留空';
+    const workerModels = el('div', null, 'grid grid-cols-1 sm:grid-cols-2 gap-3');
+    const low = field(workerModels, '低成本执行模型', settings.low_cost_model);
+    const high = field(workerModels, '高能力执行模型', settings.high_capability_model);
+    box.append(workerModels);
+    box.append(text('密钥仅保存在当前服务进程中，重启后恢复启动配置。浏览器设置的三个模型共用同一地址和密钥。'));
+    box.append(text(settings.real_available
+      ? '已配置目标 Git 仓库。绑定仓库基线的计划可运行开发执行模型。'
+      : '开发执行当前为模拟。启用真实代码执行需配置目标 Git 仓库和执行模式。'));
+    const status = text('');
+    status.setAttribute('role', 'status');
+    const submit = async name => {
+      const current = {action: name, base_url: base.value, discussion_model: discussion.value,
+        api_key: key.value, low_cost_model: low.value, high_capability_model: high.value};
+      const controls = [base, discussion, key, low, high, test, save, restore];
+      controls.forEach(control => { control.disabled = true; });
+      status.textContent = name === 'test' ? '正在发送连接测试…' : '正在应用模型设置…';
+      try {
+        const result = await post('/workspace/model-settings', name === 'restore' ? {action: name} : current);
+        if (name === 'test') {
+          status.textContent = '赛马与评审模型连接测试通过。';
+        } else {
+          Object.assign(state.config, result);
+          key.value = '';
+          showModelMode();
+          if (state.module === 'model-router') refresh();
+          toast(name === 'restore' ? '已恢复启动配置。' : '模型设置已保存。');
+        }
+      } catch (error) {
+        status.textContent = error.message;
+      } finally {
+        controls.forEach(control => { control.disabled = false; });
+      }
+    };
+    const test = action('测试赛马与评审连接', () => submit('test'));
+    const save = action('保存模型设置', () => submit('save'), true);
+    const restore = action('恢复启动配置', () => submit('restore'));
+    box.append(line(save, test, restore), status);
+    wrap.append(box);
+  }
   function render(module) {
     state.module=module;
     q('#progress-pct').style.display = state.run ? '' : 'none';
@@ -616,11 +678,8 @@ window.createWorkspaceLink = function (hooks) {
     if(module==='intake-race')renderIntake(wrap);
     else if(module==='review-synthesis')renderReview(wrap);
     else if(module==='exp-memory')renderMemory(wrap);
-    else if(module==='model-router') {
-      const box=card('高低配模型路由');
-      box.append(text('配置文件 se_agent/model_config.json，可用 SE_AGENT_MODEL_CONFIG 指向自定义文件。'));
-      box.append(el('pre',JSON.stringify(state.config?.router,null,2),'whitespace-pre-wrap mono text-xs'));wrap.append(box);
-    } else {
+    else if(module==='model-router')renderModelSettings(wrap);
+    else {
       const box=card(module==='sqlite-store'?'SQLite 项目存储':'项目记录与数字人上下文');
       box.append(text('需求、评审版本、任务计划、执行产物与领域经验共用当前项目数据库。'));
       if(state.project)box.append(action('查看当前项目可见记录',async()=>{
@@ -639,7 +698,6 @@ window.createWorkspaceLink = function (hooks) {
     try {
       const defaults=await get('/preview/config');state.extraPrompt=defaults.extra_prompt;
       state.groups=Object.entries(defaults.prompts).map(([id,prompt])=>({id,prompt,status:'idle'}));
-      q('#planner-model-mode').textContent=defaults.mode==='model'?'已连接模型':'本地模拟';
       await updateProjects();
       if(state.projects.length) {
         await load(state.projects[0].id);state.module=state.run?'workbench':getPlan()?'task-planner':'review-synthesis';

@@ -48,18 +48,19 @@ class OpenAICompatibleProvider(Provider):
 
     name = "openai_compatible"
 
-    def __init__(self, base_url=None, api_key_env="SE_AGENT_API_KEY", timeout=120):
+    def __init__(self, base_url=None, api_key_env="SE_AGENT_API_KEY", timeout=120, *, api_key=None):
         self.base_url = (base_url or os.environ.get("SE_AGENT_BASE_URL")
                          or "https://api.openai.com/v1").rstrip("/")
         self.api_key_env = api_key_env
         self.timeout = timeout
+        self._api_key = api_key
 
     @property
     def api_key(self):
-        return os.environ.get(self.api_key_env, "")
+        return self._api_key if self._api_key is not None else os.environ.get(self.api_key_env, "")
 
     def complete(self, model, prompt, system=None, max_output_tokens=None):
-        if not self.api_key:
+        if self._api_key is None and not self.api_key:
             raise ProviderError(f"缺少凭证：请设置环境变量 {self.api_key_env}")
         messages = ([{"role": "system", "content": system}] if system else []) + [
             {"role": "user", "content": prompt}]
@@ -69,8 +70,9 @@ class OpenAICompatibleProvider(Provider):
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {self.api_key}"})
+            headers={"Content-Type": "application/json"})
+        if self.api_key:
+            request.add_unredirected_header("Authorization", f"Bearer {self.api_key}")
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 payload = json.loads(response.read().decode("utf-8"))

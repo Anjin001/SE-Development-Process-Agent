@@ -88,7 +88,10 @@ window.createPlannerLink = function ({ q, el, switchModule, toast, showTask }) {
   };
   q('#select-project').style.display = 'none';
   q('#select-engine').style.display = 'none';
-  const modeBadge = el('span', mode, 'rounded border border-slate-200 px-2 py-1 text-xs text-slate-600');
+  const modeBadge = el('button', mode, 'rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100');
+  modeBadge.type = 'button';
+  modeBadge.title = '打开模型 API 配置';
+  modeBadge.onclick = () => open('model-router');
   modeBadge.id = 'planner-model-mode';
   q('#select-project').after(modeBadge);
   q('#btn-step-sim').style.display = 'none';

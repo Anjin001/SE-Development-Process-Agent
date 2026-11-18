@@ -21,7 +21,8 @@ _INSTRUCTIONS = {
 
 class ChatAgent:
     def __init__(self, base_url, model, api_key=None):
-        self.endpoint = base_url.rstrip("/") + "/chat/completions"
+        self.base_url = base_url.rstrip("/")
+        self.endpoint = self.base_url + "/chat/completions"
         self.model = model
         self.api_key = api_key
 
@@ -37,9 +38,9 @@ class ChatAgent:
             ],
         }
         headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = "Bearer " + self.api_key
         request = Request(self.endpoint, data=json.dumps(body).encode(), headers=headers)
+        if self.api_key:
+            request.add_unredirected_header("Authorization", "Bearer " + self.api_key)
         try:
             with urlopen(request, timeout=60) as response:
                 result = json.loads(response.read())

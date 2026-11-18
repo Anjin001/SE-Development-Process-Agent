@@ -181,16 +181,16 @@ class Dispatch:
                 with self.lock:
                     self.busy.discard(run_id)
                 return False
-            threading.Thread(target=self._batch, args=(run_id, handed), daemon=True).start()
+            threading.Thread(target=self._batch, args=(run_id, handed, self.worker), daemon=True).start()
             return True
         except Exception:
             with self.lock:
                 self.busy.discard(run_id)
             raise
 
-    def _execute(self, run_id, request):
+    def _execute(self, run_id, request, worker):
         try:
-            result = self.worker.execute(request)
+            result = worker.execute(request)
         except Exception as exc:
             result = dict(attempt_id=request["attempt_id"], status="failed", artifacts=[],
                           error=dict(code="EXECUTION_FAILED", message=str(exc), retryable=True, details={}),
@@ -207,10 +207,10 @@ class Dispatch:
             except Exception:
                 logging.exception("Unable to record worker failure for %s", request["attempt_id"])
 
-    def _batch(self, run_id, requests):
+    def _batch(self, run_id, requests, worker):
         try:
             with ThreadPoolExecutor(max_workers=len(requests)) as pool:
-                list(pool.map(lambda request: self._execute(run_id, request), requests))
+                list(pool.map(lambda request: self._execute(run_id, request, worker), requests))
         finally:
             with self.lock:
                 self.busy.discard(run_id)

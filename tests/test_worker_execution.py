@@ -232,13 +232,16 @@ class RealWorktreeTest(unittest.TestCase):
                               "routing":{"default_tier":"low_cost"}})
         worker = Worker(mode="real", repo_root=str(self.root),
                         worktree_root=str(self.root / ".worktrees"), provider=provider, router=router)
+        request = self.request([])
+        request["task"]["outputs"][0]["path"] = "web/client/view.js"
+        request["task"]["write_paths"] = ["web/client/view.js"]
         with patch("se_agent.providers.urllib.request.urlopen", side_effect=respond):
-            result = execute_task(self.request([]), worker)
+            result = execute_task(request, worker)
         self.assertEqual(requests[0]["thinking"], {"type":"disabled"})
-        self.assertEqual(result["error"]["details"]["path"],"app/integration.py")
-        self.assertEqual([b["max_tokens"] for b in requests],[2048,8192])
-        self.assertEqual(result["error"]["details"]["max_tokens"],8192)
-        self.assertEqual(result["usage"],{"input_tokens":520,"output_tokens":10240})
+        self.assertEqual(result["error"]["details"]["path"],"web/client/view.js")
+        self.assertEqual([b["max_tokens"] for b in requests],[16384,32768])
+        self.assertEqual(result["error"]["details"]["max_tokens"],32768)
+        self.assertEqual(result["usage"],{"input_tokens":520,"output_tokens":49152})
         self.assertEqual(result["artifacts"],[])
         self.assertNotIn("not file content",result["error"]["message"])
 

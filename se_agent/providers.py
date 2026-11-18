@@ -93,7 +93,10 @@ class OpenAICompatibleProvider(Provider):
         if self.api_key:
             request.add_unredirected_header("Authorization", f"Bearer {self.api_key}")
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            timeout = self.timeout
+            if file_output and self.direct_deepseek(model) and (max_output_tokens or 0) > 8192:
+                timeout = max(timeout, 240)
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except TimeoutError as exc:
             raise ProviderTimeout(f"{model} 调用超时") from exc

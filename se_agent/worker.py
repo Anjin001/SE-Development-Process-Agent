@@ -412,11 +412,12 @@ class Worker:
             if self.router.max_cost_usd and spent > self.router.max_cost_usd:
                 raise BudgetExceeded("费用超限",spent)
 
-        def with_larger_file_budget(step, provider):
+        def with_larger_file_budget(step, provider, path):
             cap = step.get("max_output_tokens")
-            if (type(cap) is int and 0 < cap < 8192 and isinstance(provider,OpenAICompatibleProvider)
+            limit = 32768 if path.endswith((".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".py")) else 8192
+            if (type(cap) is int and 0 < cap < limit and isinstance(provider,OpenAICompatibleProvider)
                     and provider.direct_deepseek(step["model"])):
-                return dict(step, max_output_tokens=8192)
+                return dict(step, max_output_tokens=limit)
             return step
 
         def generate(call_context, current_task, step, provider, path, *, compact_retry=True):
@@ -426,7 +427,7 @@ class Worker:
             except ProviderOutputError as exc:
                 if exc.usage:
                     charge(step["model"],exc.usage)
-                expanded = with_larger_file_budget(step, provider)
+                expanded = with_larger_file_budget(step, provider, path)
                 if not compact_retry or exc.finish_reason != "length" or expanded is step:
                     raise FileResponseError(path,exc) from exc
                 if progress:
@@ -483,7 +484,11 @@ class Worker:
                 if units and path == CONTRACT_PATH:
                     content = contract_for(units, current_task, step, provider)
                 else:
-                    text = generate(context, current_task, step, provider, path)
+                    file_step = step
+                    expanded = with_larger_file_budget(step, provider, path)
+                    if expanded is not step and expanded["max_output_tokens"] == 32768:
+                        file_step = dict(step, max_output_tokens=max(step["max_output_tokens"], 16384))
+                    text = generate(context, current_task, file_step, provider, path)
                     try:
                         content = checked_content(text, path, kind)
                     except OutputContentError as exc:
@@ -493,7 +498,7 @@ class Worker:
                             progress("校验失败，修复 "+path, int(getattr(provider,"timeout",0) or 0))
                         previous = exc.invalid_body if len(exc.invalid_body) <= 24000 else ""
                         repair = dict(context, file_correction=(str(exc), previous))
-                        text = generate(repair, current_task, with_larger_file_budget(step, provider),
+                        text = generate(repair, current_task, with_larger_file_budget(file_step, provider, path),
                                         provider, path, compact_retry=False)
                         content = checked_content(text, path, kind)
                 if output is None:

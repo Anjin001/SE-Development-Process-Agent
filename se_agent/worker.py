@@ -103,14 +103,18 @@ def build_prompt(request, task, step):
         refs = set(unit["refs"])
         facts = [item["text"][:450] for item in relevant.get("requirements",[]) if item["id"] in refs]
         facts.extend(str(item.get("choice",""))[:260] for item in relevant.get("decisions",[])[:24])
-        data = {"module":unit["name"],"scope":unit["scope"][:650],"requirements_and_decisions":facts,
+        prefix = "/api/"+unit["name"]
+        data = {"module":unit["name"],"route_prefix":prefix,"scope":unit["scope"][:650],
+                "requirements_and_decisions":facts,
                 "occupied_routes":request.get("occupied_routes",[]),
                 "correction":request.get("contract_correction","")}
         return ("只设计这个服务自己负责的 HTTP 接口，不展开其他服务。输出紧凑 JSON 且无解释："
                 '{"endpoints":[{"method":"POST","path":"/api/example","handler":"create_example",'
                 '"request":["title"],"response":["id"]}]}。'
                 "每个服务最多 8 个接口，每种请求或响应最多 12 个英文字段名；"
-                "不用写示例、JSON Schema、描述、错误对象或 OpenAPI 外壳。不重复已占用的路径和方法。\n"
+                "所有路径都必须等于 route_prefix 或从 route_prefix 加斜杠开始。"
+                "相同需求编号可由多个服务共同实现，但这里只做本服务范围，不负责其他模块。"
+                "每个接口的 handler 在本片段内唯一；不用写示例、JSON Schema、描述或 OpenAPI 外壳。\n"
                 +json.dumps(data,ensure_ascii=False,separators=(",",":")))
     spec = request.get("spec_ref") or {}
     supplied = request.get("supplied_inputs") or {}
@@ -436,7 +440,7 @@ class Worker:
                     generated = generate(scoped,current_task,dict(step,max_output_tokens=cap),provider,path)
                     generated = checked_content(generated,path,"git_commit")
                     try:
-                        endpoints, keys = parse_endpoints(generated,occupied)
+                        endpoints, keys = parse_endpoints(generated,occupied,prefix="/api/"+name)
                     except ValueError as exc:
                         if index:
                             raise OutputContentError(path,str(exc)) from exc

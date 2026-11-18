@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from se_agent.api_contract import parse_endpoints
 from se_agent.model_router import ModelRouter, load_config
 from io import BytesIO
 from unittest.mock import patch
@@ -137,6 +138,16 @@ def is_ancestor(cwd, ancestor, descendant):
     proc = subprocess.run(["git", "merge-base", "--is-ancestor", ancestor, descendant],
                           cwd=str(cwd), capture_output=True, text=True)
     return proc.returncode == 0
+
+
+class ContractOwnershipTest(unittest.TestCase):
+    def test_route_validation_distinguishes_wrong_owner_and_normalized_conflict(self):
+        with self.assertRaisesRegex(ValueError, "不属于本组路由前缀 /api/reactions"):
+            parse_endpoints('{"endpoints":[{"method":"POST","path":"/api/notes/like","handler":"like"}]}',
+                            set(),prefix="/api/reactions")
+        with self.assertRaisesRegex(ValueError, "路由重复"):
+            parse_endpoints('{"endpoints":[{"method":"GET","path":"/api/notes/{note_id}","handler":"read"}]}',
+                            {("GET","/api/notes/{}")},prefix="/api/notes")
 
 
 class RealWorktreeTest(unittest.TestCase):

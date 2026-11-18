@@ -20,7 +20,7 @@ def service_units(tasks):
     return units
 
 
-def parse_endpoints(text, occupied):
+def parse_endpoints(text, occupied, *, prefix=None):
     obj = json.loads(text)
     raw = obj.get("endpoints") if isinstance(obj,dict) else None
     if not isinstance(raw,list) or not 1 <= len(raw) <= 8:
@@ -33,10 +33,14 @@ def parse_endpoints(text, occupied):
         if (method not in ("GET","POST","PUT","PATCH","DELETE") or not isinstance(path,str) or len(path)>180
                 or not _ROUTE.fullmatch(path) or not isinstance(handler,str) or not _HANDLER.fullmatch(handler)):
             raise ValueError("HTTP 方法、路由或函数名无效")
+        if prefix and path != prefix and not path.startswith(prefix + "/"):
+            raise ValueError(f"{method} {path} 不属于本组路由前缀 {prefix}")
         # /notes/{id} and /notes/{note_id} occupy the same route.
         key = method,re.sub(r"\{[^}]+\}","{}",path)
-        if key in occupied or key in found or handler in handlers:
-            raise ValueError("接口或函数名与已有条目重复")
+        if key in occupied or key in found:
+            raise ValueError(f"路由重复：{method} {path}")
+        if handler in handlers:
+            raise ValueError(f"本组处理函数名重复：{handler}")
         entry = dict(method=method,path=path,handler=handler)
         for field in ("request","response"):
             values = item.get(field,[])

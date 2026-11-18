@@ -86,7 +86,7 @@ def team_tasks(review, modules):
             practice = "使用交接文档给出的端点；独占模块目录。"
         else:
             files = git(f"app/{slug}/service.py",f"app/{slug}/routes.py",f"tests/test_{slug}.py")
-            practice = "服务逻辑与路由分文件，编写覆盖正常与失败场景的模块测试。"
+            practice = f"仅使用 /api/{slug} 路由前缀；服务逻辑与路由分文件，编写覆盖正常与失败场景的模块测试。"
         tasks.append(task(f"T{index}",module["title"],"development","develop",module["requirement_ids"],
             ["T1"],files,module.get("minutes",15)*60,module["scope"]+"。遵循共同接口，不改其他模块文件。"+practice,True))
     tasks.append(task(f"T{len(tasks)+1}","合并功能分支并组装交付入口","integration","integrate",

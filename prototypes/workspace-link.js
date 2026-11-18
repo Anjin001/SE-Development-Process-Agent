@@ -3,6 +3,14 @@ window.createWorkspaceLink = function (hooks) {
   const { q, el, open, action, toast, getPlan, accept, setSpecification,
     clearPlan, isDirty, renderGantt, download, showTask } = hooks;
   const dedicated = q('#module-dedicated-view');
+  const nav = q('#left-sidebar nav');
+  const manualNav = Array.from(nav.children);
+  if (window.createStewardLink) manualNav.forEach(node=>node.style.display='none');
+  const primaryNav = action('项目主理人',()=>open('steward'),true);
+  primaryNav.dataset.module='steward';
+  primaryNav.dataset.title='项目主理人';
+  primaryNav.classList.add('nav-item','w-full');
+  if(window.createStewardLink)nav.prepend(primaryNav);
   const sidebarBody = q('#steward-sidebar-body');
   const cardClass = 'bg-white border border-slate-200 rounded-xl p-5 space-y-3 shadow-2xs';
   const inputClass = 'w-full border border-slate-300 rounded-lg px-3 py-2 bg-white text-xs text-slate-800';
@@ -12,7 +20,7 @@ window.createWorkspaceLink = function (hooks) {
   picker.setAttribute('aria-label', '当前项目');
   oldPicker.replaceWith(picker);
   const state = {
-    module: 'intake-race', config: null, project: null, run: null, runPlan: null, reviewTab: 'handoff',
+    module: 'steward', config: null, project: null, run: null, runPlan: null, reviewTab: 'handoff',
     spec: null, dirty: false, selection: 'merge', inspection: null, pending: false, error: '',
     markdown: '# 设备预约系统\n\n- 用户可以查看设备并提交预约。\n- 管理员可以停用设备，停用后不能新增预约。\n- 用户可以在我的预约中查看状态。',
     version: 1, frozen: null, groups: [], extraPrompt: '', paused: false, queue: false,
@@ -28,6 +36,17 @@ window.createWorkspaceLink = function (hooks) {
   const targetButton = action('产物位置', () => showTarget());
   const helpButton = action('使用答疑 AI', () => showHelp());
   q('#active-badge').before(targetButton, helpButton);
+  const steward = window.createStewardLink?.({
+    q,el,action,get,post,open,modelMode:()=>state.config?.discussion_mode,
+    existingProject:()=>state.project,
+    showManual:()=>manualNav.forEach(node=>node.style.display=''),
+    openProject: id=>operate(async()=>{
+      await updateProjects();
+      await load(id);
+      manualNav.forEach(node=>node.style.display='');
+      state.module=state.run?'workbench':getPlan()?'task-planner':'review-synthesis';
+    }),
+  });
   const split = value => value.split(/[,，、\s]+/).filter(Boolean);
   const text = (value, cls = 'text-xs text-slate-600 leading-relaxed') => el('p', value, cls);
   const card = title => {
@@ -160,13 +179,17 @@ window.createWorkspaceLink = function (hooks) {
       picker.value = state.project?.id || ''; return;
     }
     operate(async () => {
-      if (id) { await load(id); state.module = state.run ? 'workbench' : getPlan() ? 'task-planner' : 'review-synthesis'; }
+      if (id) {
+        await load(id);
+        if(state.module!=='steward') state.module = state.run ? 'workbench' : getPlan() ? 'task-planner' : 'review-synthesis';
+      }
       else {
         epoch++; state.project = state.run = state.runPlan = state.spec = state.frozen = null;
         state.memory = null; state.version = 1; state.target = null;
         state.runQuestions = []; state.eventTrail = []; state.selectedTask = null; state.activity = null;
         state.groups.forEach(group => { group.status = 'idle'; group.result = null; });
-        clearPlan(); setSpecification(null); state.module = 'intake-race';
+        clearPlan(); setSpecification(null); state.module = steward ? 'steward' : 'intake-race';
+        steward?.newProject();
       }
     });
   };
@@ -987,6 +1010,25 @@ window.createWorkspaceLink = function (hooks) {
 
   function render(module) {
     state.module=module; renderStatus();
+    const conversation=module==='steward' && steward;
+    statusBar.hidden=!!conversation;
+    targetButton.hidden=!!conversation;
+    if(conversation){
+      q('#btn-fit-graph').style.display='none';
+      q('#right-steward-sidebar').style.display='none';
+      q('#btn-toggle-right-sidebar').style.display='none';
+      q('#workbench-split-view').classList.add('hidden');
+      dedicated.classList.remove('hidden');
+      if(!dedicated.querySelector('[data-steward-root]')){
+        dedicated.replaceChildren();
+        const wrap=el('div');wrap.setAttribute('data-steward-root','');
+        dedicated.append(wrap);
+        steward.show(wrap);
+      }else steward.show(dedicated.querySelector('[data-steward-root]'));
+      return true;
+    }
+    steward?.hide();
+    q('#btn-fit-graph').style.display=module==='workbench'?'':'none';
     q('#progress-pct').style.display = state.run ? '' : 'none';
     q('#progress-bar').parentElement.style.display = state.run ? '' : 'none';
     q('#btn-toggle-right-sidebar').style.display='';q('#right-steward-sidebar').style.display='';
@@ -1020,7 +1062,8 @@ window.createWorkspaceLink = function (hooks) {
       state.groups=Object.entries(defaults.prompts).map(([id,prompt])=>({id,prompt,status:'idle'}));
       await updateProjects();
       if(state.projects.length) {
-        await load(state.projects[0].id);state.module=state.run?'workbench':getPlan()?'task-planner':'review-synthesis';
+        await load(state.projects[0].id);
+        state.module=steward?'steward':state.run?'workbench':getPlan()?'task-planner':'review-synthesis';
       }refresh();
     }catch(error){state.error=error.message;refresh();}
   }

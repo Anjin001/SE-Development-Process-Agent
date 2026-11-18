@@ -16,6 +16,7 @@ from .synthesis_preview import PreviewError
 from .workbench_preview import WorkbenchHandler, PROTOTYPES, PAGES
 from .workspace import ProjectReviews, Workspace
 from .workspace_experience import Progress, help_answer
+from .steward_pipeline import StewardPipeline
 from .agent_client import AgentError, ChatAgent, configured_agent
 from .model_router import ModelRouter
 from .providers import OpenAICompatibleProvider
@@ -31,8 +32,11 @@ class Handler(WorkbenchHandler):
 
     def route(self):
         path = urlsplit(self.path).path
-        if path == "/workspace-link.js" and self.command == "GET":
-            self.respond(200, (PROTOTYPES / "workspace-link.js").read_bytes(), "text/javascript; charset=utf-8")
+        if path in ("/workspace-link.js","/steward-link.js") and self.command == "GET":
+            self.respond(200, (PROTOTYPES / path[1:]).read_bytes(), "text/javascript; charset=utf-8")
+            return
+        if path == "/workspace/steward" or path.startswith("/workspace/steward/"):
+            self.steward_route(path)
             return
         if path.startswith("/workspace/progress/") and self.command == "GET":
             self.respond(200, {"steps": self.server.progress.read(path.rsplit("/", 1)[1])})
@@ -106,6 +110,36 @@ class Handler(WorkbenchHandler):
                                             message="无法写入指定文件夹，请检查位置或访问权限。", details={})})
         else:
             self.respond(400, {"error": dict(code="INVALID_REQUEST", message=str(exc), details={})})
+
+    def steward_route(self, path):
+        pipeline = self.server.steward
+        try:
+            if self.command == "POST":
+                self.require_local_json()
+                payload = self.body()
+                if path == "/workspace/steward":
+                    self.respond(202, pipeline.start(payload.get("markdown"), payload.get("settings"),
+                                                     payload.get("project_id")))
+                    return
+                match = re.fullmatch(r"/workspace/steward/([a-f0-9]{32})/(chat|gates)", path)
+                if match:
+                    key, action = match.groups()
+                    if action == "chat":
+                        self.respond(200, pipeline.chat(key, payload.get("message"), payload.get("command"), payload.get("settings")))
+                    else:
+                        self.respond(200, pipeline.set_gates(key, payload.get("gates")))
+                    return
+            if self.command == "GET":
+                if path == "/workspace/steward":
+                    self.respond(200, {"items":pipeline.list()})
+                    return
+                match = re.fullmatch(r"/workspace/steward/([a-f0-9]{32})", path)
+                if match:
+                    self.respond(200, pipeline.public(match[1]))
+                    return
+            raise NotFound("主理入口不存在。")
+        except (DomainError, PreviewError, AgentError, TypeError, ValueError, OSError) as exc:
+            self.problem(exc)
 
     def workspace_route(self, path):
         workspace = self.server.workspace
@@ -210,10 +244,13 @@ class Handler(WorkbenchHandler):
         real_available = bool(worker.repo_root) and worker.mode != "mock"
         return dict(mode="real" if real_available else "mock", real_available=real_available,
                     router=worker.router.describe(), discussion_mode="model" if agent else "mock",
-                    base_url=agent.base_url if agent else "", discussion_model=agent.model if agent else "",
+                    base_url=agent.base_url if agent else os.environ.get("SE_AGENT_SETUP_BASE_URL", ""),
+                    discussion_model=agent.model if agent else os.environ.get("SE_AGENT_SETUP_DISCUSSION_MODEL", ""),
                     key_set=bool(agent and agent.api_key),
-                    low_cost_model=tiers["low_cost"]["model"],
-                    high_capability_model=tiers["high_capability"]["model"])
+                    low_cost_model=(tiers["low_cost"]["model"] if agent else
+                                    os.environ.get("SE_AGENT_SETUP_LOW_MODEL", tiers["low_cost"]["model"])),
+                    high_capability_model=(tiers["high_capability"]["model"] if agent else
+                                          os.environ.get("SE_AGENT_SETUP_HIGH_MODEL", tiers["high_capability"]["model"])))
 
     def require_local_json(self):
         port = self.server.server_port
@@ -291,11 +328,12 @@ def make_server(port=8008, db="data/workbench.sqlite3", worker=None):
     server.router = Router(database, actor_id=server.workspace.actor)
     server.review_lock = RLock()
     server.progress = Progress()
+    server.steward = StewardPipeline(server.workspace, lambda: server.agent, server.review_lock)
     server.pages = {path: (PROTOTYPES / filename).read_bytes() for path, filename in PAGES.items()}
     page = server.pages["/"].decode("utf-8")
     server.pages["/"] = page.replace(
         '<script src="/planner-link.js"></script>',
-        '<script src="/workspace-link.js"></script>\n  <script src="/planner-link.js"></script>').encode("utf-8")
+        '<script src="/steward-link.js"></script>\n  <script src="/workspace-link.js"></script>\n  <script src="/planner-link.js"></script>').encode("utf-8")
     return server
 
 

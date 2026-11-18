@@ -65,7 +65,8 @@ class WorktreeAdapter:
         """
         self.ensure_readable(commits)
         for sha in commits:
-            proc = self._run_git("merge", "--no-edit", sha, cwd=self.path)
+            proc = self._run_git("-c", "user.name=se-agent", "-c", "user.email=se-agent@local",
+                                 "merge", "--no-edit", sha, cwd=self.path)
             if proc.returncode:
                 paths = self.conflicted_paths() or [sha]
                 self.git("merge", "--abort", cwd=self.path, check=False)

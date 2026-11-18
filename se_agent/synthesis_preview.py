@@ -20,7 +20,7 @@ class PreviewError(ValueError):
         self.code, self.status, self.details = code, status, details
 
 
-def _records(project, spec, action):
+def _records(project, spec, action, actor="human"):
     records = []
     if action == "propose":
         for draft in project["drafts"]:
@@ -39,14 +39,15 @@ def _records(project, spec, action):
                 records.append({"version": spec["version"], "action": disposition,
                                 "source_refs": [draft["id"], claim["id"], *claim["requirement_ids"]], "reason": reason})
     else:
+        by = "主理人 AI" if actor == "steward" else "人工"
         previous = project["versions"][-1]
         records.append({"version": spec["version"], "action": "修改", "source_refs": [f"{previous['id']}@{previous['version']}"],
-                        "reason": "人工保存了正文、决策和未决事项；请查看两个版本核对具体修改。"})
+                        "reason": by + "保存了正文、决策和未决事项；可对照版本查看变更。"})
         current_ids = {d["id"] for d in spec["decisions"]}
         for decision in previous["decisions"]:
             if decision["id"] not in current_ids:
                 records.append({"version": spec["version"], "action": "舍弃", "source_refs": [decision["id"]],
-                                "reason": "人工在本版移除了该决策；原版本仍可追溯。"})
+                                "reason": by + "在本版移除了该决策；原版本仍可追溯。"})
     return records
 
 
@@ -169,7 +170,7 @@ class PreviewStore:
                 raise synthesis.SynthesisError("请在原议题上处理候选选项，保留来源和影响范围。",
                                                "proposal.open_items", "INVALID_OUTPUT")
 
-    def change(self, project_id, action, payload, progress=None):
+    def change(self, project_id, action, payload, progress=None, actor="human"):
         project = self.get(project_id)
         previous = project["versions"][-1] if project["versions"] else None
         latest = previous if previous and previous["round"] == project["round"] else None
@@ -214,7 +215,7 @@ class PreviewStore:
             synthesis.validate_proposal(project["requirement"], project["drafts"], latest)
             if latest["requirement_ref"] != {"id": project["requirement"]["id"], "version": project["requirement"]["version"]}:
                 raise PreviewError("VERSION_CONFLICT", "绑定的需求版本已变化。", current_version=current)
-            latest.update(status="confirmed", confirmed_by="lead-demo", confirmed_at=datetime.now(timezone.utc).isoformat())
+            latest.update(status="confirmed", confirmed_by="steward" if actor == "steward" else "lead-demo", confirmed_at=datetime.now(timezone.utc).isoformat())
             return self.snapshot(project)
         if action == "propose":
             if progress:
@@ -234,7 +235,7 @@ class PreviewStore:
                 "round": project["round"],
                 "requirement_ref": {"id": project["requirement"]["id"], "version": project["requirement"]["version"]},
                 "selection": selection, **content, "confirmed_by": None, "confirmed_at": None}
-        records = _records(project, spec, action)
+        records = _records(project, spec, action, actor)
         project["version_sources"][spec["version"]] = deepcopy({"drafts": project["drafts"], "evaluations": project["evaluations"]})
         project["versions"].append(spec)
         project["review_records"].extend(records)

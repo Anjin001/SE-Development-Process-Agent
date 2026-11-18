@@ -2498,7 +2498,7 @@
         currentTab = 'details';
         switchModule('workbench', '开发流程工作台');
       } });
-      plannerLink.open('intake-race');
+      plannerLink.open(window.createStewardLink ? 'steward' : 'intake-race');
     } else renderAll();
   })();
   </script>

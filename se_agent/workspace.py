@@ -50,10 +50,10 @@ class ProjectReviews(PreviewStore):
             raise
         return result
 
-    def change(self, project_id, action, payload, progress=None):
+    def change(self, project_id, action, payload, progress=None, actor="human"):
         previous = deepcopy(self.get(project_id))
         try:
-            result = super().change(project_id, action, payload, progress=progress)
+            result = super().change(project_id, action, payload, progress=progress, actor=actor)
             if action != "inspect":
                 self._persist(project_id)
             return result

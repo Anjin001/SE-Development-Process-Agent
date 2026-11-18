@@ -21,7 +21,7 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,existi
   const safeSave = (key,value)=>{try {sessionStorage.setItem(key,value);}catch{}};
   let selected=null, busy=false, syncing=false, visible=false, refreshFailed=false, history=[], shown=null;
   let picked = safeRead('se-agent-steward-job') || '', jobFingerprint='';
-  const cfg = {gates:[],group_count:0,parallel:0,prompts:[],mode:'auto',guidance:'',directory:''};
+  const cfg = {gates:[],group_count:0,parallel:0,race_parallel:3,prompts:[],mode:'auto',guidance:'',directory:''};
   const header = section();
   header.append(el('h2','项目主理人','font-bold text-xl text-slate-900'),
     small('告诉我你要做什么。我会组织讨论、做决策、编排和推进开发。想改哪里，直接在这里说。'));
@@ -87,7 +87,10 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,existi
     small('留空由主理人生成。这里的设置用于下次运行；不会突然改写正在执行的任务。'));
   const [groupWrap,groupCount]=field('分组数（0 代表自动）','0');
   groupCount.type='number';groupCount.min=0;groupCount.max=5;groupCount.oninput=()=>cfg.group_count=Number(groupCount.value);
-  const [parallelWrap,parallel]=field('并发上限（0 代表自动）','0');
+  const [raceWrap,raceParallel]=field('出案并发上限','3');
+  raceWrap.hidden=true; raceParallel.type='number'; raceParallel.min=1; raceParallel.max=5;
+  raceParallel.oninput=()=>cfg.race_parallel=Number(raceParallel.value);
+  const [parallelWrap,parallel]=field('开发并发上限（0 代表自动）','0');
   parallel.type='number';parallel.min=0;parallel.max=6;parallel.oninput=()=>cfg.parallel=Number(parallel.value);
   const type=el('select',null,'text-xs bg-white border border-slate-300 rounded px-2 py-2');
   for (const [id,title] of [['auto','自动 · 已接入模型时真实开发'],['mock','离线演示 · 不写源码'],['real','真实开发 · 需要模型 API']]) {
@@ -109,7 +112,7 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,existi
   const prompts=el('details',null,'space-y-2');
   prompts.append(el('summary','分组提示词覆盖','cursor-pointer'),routes);
   const generated=el('div',null,'space-y-2');
-  more.append(line(groupWrap,parallelWrap,type),prefWrap,pathWrap,prompts,generated,
+  more.append(line(groupWrap,raceWrap,parallelWrap,type),prefWrap,pathWrap,prompts,generated,
     small('真实开发默认使用工作台附近的 SE-Agent-Projects 独立目录。已有项目不会被覆盖。'),
     line(action('以这些设置重跑本轮需求',()=>restart()),action('打开任务分解',()=>open('task-planner'))));
   advanced.append(reviewPanel,more);
@@ -159,14 +162,16 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,existi
       const data=await get('/workspace/steward/'+id);
       selected=data;picked=id;safeSave('se-agent-steward-job',id);
       Object.assign(cfg,data.settings);
-      groupCount.value=cfg.group_count; parallel.value=cfg.parallel; type.value=cfg.mode;
+      groupCount.value=cfg.group_count; raceParallel.value=cfg.race_parallel; parallel.value=cfg.parallel; type.value=cfg.mode;
       pref.value=cfg.guidance;path.value=cfg.directory;promptFields.forEach((item,i)=>item.value=cfg.prompts[i] || '');
       render();
     }catch(err){messageContent(err.message);}
   }
   async function loadHistory(){
     try{
-      history=(await get('/workspace/steward')).items;
+      const index=await get('/workspace/steward');
+      history=index.items;
+      raceWrap.hidden=!Number.isInteger(index.race_parallel);
       const empty=el('option','历史对话');empty.value=''; historyPicker.replaceChildren(empty);
       for(const item of history){const opt=el('option',item.title.slice(0,32)+' · '+(statuses[item.status] || item.status));opt.value=item.id;historyPicker.append(opt);}
       historyPicker.value=selected?.id || '';
@@ -199,9 +204,14 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,existi
     activity.lastChild.textContent=s?.error || (s?.status==='gate'?'你开启了「'+gateLabels[s.gate]+'」确认。直接回复继续，或说要改哪里。':duration);
     let indicator=s? '第 '+s.phase+' 轮 · '+(s.summary?.mode==='real'?'真实代码开发':s.summary?.mode==='mock'?'模拟执行':'方案与任务准备中') :
       (modelMode()==='model'?'已配置真实模型 · 可直接交给主理人':'未配置模型 API · 可先跑离线演示');
-    if(s?.groups.length)indicator+=' · '+s.groups.filter(g=>g.finished).length+'/'+s.groups.length+' 组交案';
+    if(s?.groups.length){
+      const racing=s.groups.filter(g=>g.status==='running').length;
+      indicator+=' · '+s.groups.filter(g=>g.finished).length+'/'+s.groups.length+' 组交案';
+      if(racing)indicator+=' · '+racing+' 组正在并发出案';
+    }
     if(s?.execution)indicator+=' · '+s.execution.done+'/'+s.execution.total+' 项任务完成';
     const running=(s?.execution?.running || []).map(t=>t.id+' · '+t.step);
+    if(s?.stage==='race')running.push(...s.groups.filter(g=>g.status==='running' || g.status==='failed').map(g=>g.step));
     if(taskList.textContent!==indicator+running.join('')) taskList.replaceChildren(small(indicator),...running.map(small));
     const key=(s?.id || '')+':'+(s?.status || '')+':'+busy;
     if(key!==activeKey){

@@ -1,4 +1,5 @@
 """Durable, chat-led orchestration for the integrated workbench."""
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from copy import deepcopy
 from itertools import combinations
 import json
@@ -21,11 +22,13 @@ STAGES = {
 }
 GATES = {"spec": "方案确认", "plan": "开工确认", "delivery": "交付确认"}
 RUNNING = {"running", "pausing"}
+DEFAULT_RACE_PARALLEL = 3
 BASE = Path(__file__).resolve().parents[1]
 
 
 def options(body, previous=None):
-    result = dict(gates=[], group_count=0, prompts=[], parallel=0, guidance="", directory="", mode="auto")
+    result = dict(gates=[], group_count=0, prompts=[], parallel=0, race_parallel=DEFAULT_RACE_PARALLEL,
+                  guidance="", directory="", mode="auto")
     if previous:
         result.update(previous)
     if not isinstance(body, dict):
@@ -42,7 +45,10 @@ def options(body, previous=None):
         raise InvalidReference("分组数应为自动，或 2 到 5 组。")
     parallel = result["parallel"]
     if type(parallel) is not int or not 0 <= parallel <= 6:
-        raise InvalidReference("并发数应为自动，或 1 到 6。")
+        raise InvalidReference("开发并发数应为自动，或 1 到 6。")
+    race_parallel = result["race_parallel"]
+    if type(race_parallel) is not int or not 1 <= race_parallel <= 5:
+        raise InvalidReference("出案并发数应为 1 到 5。")
     prompts = result["prompts"]
     if not isinstance(prompts, list) or len(prompts) > 5 or any(not isinstance(p, str) or len(p) > 3000 for p in prompts):
         raise InvalidReference("手动提示词最多五组，每组不超过 3000 字。")
@@ -174,6 +180,9 @@ class StewardPipeline:
                         run = self.db.snapshot(record["run_id"])
                         if run["state"] == "active" and run["dispatch"] == "active":
                             self.db.set_dispatch(run["id"], True)
+                    for route in record.get("race_progress", {}).values():
+                        if route["status"] == "running":
+                            route.update(status="queued", step="服务重启，等待继续出案。")
                     self._save(record)
 
     def _all(self):
@@ -219,8 +228,16 @@ class StewardPipeline:
             output = {k: record[k] for k in ("id", "markdown", "phase", "stage", "status", "error", "activity",
                       "activity_at", "timeout", "events", "messages", "settings", "gate",
                       "project_id", "run_id", "summary", "target", "delivery")}
-            output["groups"] = [dict(id=g["id"], focus=g["focus"], prompt=g["prompt"],
-                                      finished=g["id"] in record["drafts"]) for g in record["groups"]]
+            output["settings"].setdefault("race_parallel", DEFAULT_RACE_PARALLEL)
+            progress = record.get("race_progress", {})
+            output["groups"] = []
+            for group in record["groups"]:
+                id_ = group["id"]
+                finished = id_ in record["drafts"]
+                baseline = {"status":"done" if finished else "queued", "step":"已提交" if finished else "待派发"}
+                live = progress.get(id_, {}) if not finished else {}
+                output["groups"].append(dict(id=id_, focus=group["focus"], prompt=group["prompt"],
+                                             finished=finished, **(baseline | live)))
             if record["run_id"]:
                 run = self.workspace.run(record["project_id"], record["run_id"])
                 tasks = list(run["tasks"].values())
@@ -348,20 +365,13 @@ class StewardPipeline:
                 event(f"已确定 {len(groups)} 条讨论路线")
                 forward("race", groups=groups)
             elif stage == "race":
-                for group in row["groups"]:
-                    if group["id"] in row["drafts"]:
-                        continue
-                    if self._current_status(key) != "running":
-                        break
-                    kwargs = {"agent": agent} if agent else {}
-                    result = run_group(req, group["id"], prompt=group["prompt"], progress=event, **kwargs)
-                    row["drafts"][group["id"]] = result["draft"]
-                    self._update(key, drafts=row["drafts"])
-                    event(group["id"] + " 组已交案")
-                if self._current_status(key) != "running":
+                drafts = self._race(row, req, agent)
+                if drafts is None:
                     continue
                 with self.review_lock, self.db.tx():
-                    project = self.workspace.reviews.create(dict(requirement=req, drafts=list(row["drafts"].values())))
+                    if self._read(key)["status"] != "running":
+                        continue
+                    project = self.workspace.reviews.create(dict(requirement=req, drafts=drafts))
                     forward("evaluate", project_id=project["id"])
             elif stage == "evaluate":
                 event("开始独立评审各组的可行性、价值和成本", budget)
@@ -424,6 +434,68 @@ class StewardPipeline:
                 mode = "真实代码保存在目标 Git 仓库的任务分支。" if target["repo"] else "本轮为模拟执行，没有生成真实源代码。"
                 self._message(key, "steward", "本轮已经交付。"+mode+" 可以告诉我要改哪里，我会创建下一轮。")
                 return
+
+    def _race_progress(self, key, group_id, status, step, timeout=0, draft=None):
+        with self.db.tx():
+            row = self._read(key)
+            trail = row.setdefault("race_progress", {})
+            trail[group_id] = dict(status=status, step=step, since=time(), timeout=timeout)
+            if draft is not None:
+                row["drafts"][group_id] = draft
+            self._save(row)
+            self._event(key, step, timeout=timeout)
+
+    def _race(self, row, requirement, agent):
+        key = row["id"]
+        pending = iter(group for group in row["groups"] if group["id"] not in row["drafts"])
+        limit = row["settings"].get("race_parallel", DEFAULT_RACE_PARALLEL)
+        active, failures = {}, {}
+        exhausted = False
+
+        def from_group(group):
+            kwargs = {"agent": agent} if agent else {}
+            id_ = group["id"]
+            return run_group(deepcopy(requirement), id_, prompt=group["prompt"], **kwargs,
+                progress=lambda label, seconds=0: self._race_progress(key, id_, "running", label, seconds))["draft"]
+
+        with ThreadPoolExecutor(max_workers=limit, thread_name_prefix="steward-race") as pool:
+            while True:
+                while len(active) < limit and not exhausted:
+                    with self.db.tx():
+                        if self._read(key)["status"] != "running":
+                            break
+                        group = next(pending, None)
+                        if not group:
+                            exhausted = True
+                            break
+                        id_ = group["id"]
+                        self._race_progress(key, id_, "running", id_+" 组开始出案")
+                        active[pool.submit(from_group, group)] = id_
+                if not active:
+                    break
+                done, _ = wait(active, timeout=.2, return_when=FIRST_COMPLETED)
+                for future in done:
+                    id_ = active.pop(future)
+                    try:
+                        draft = future.result()
+                    except (AgentError, DomainError, TypeError, ValueError) as err:
+                        message = getattr(err, "message", str(err))[:400]
+                        failures[id_] = message
+                        self._race_progress(key, id_, "failed", id_+" 组："+message)
+                    except Exception:
+                        logging.exception("Unable to generate draft for group %s", id_)
+                        failures[id_] = "执行遇到内部错误"
+                        self._race_progress(key, id_, "failed", id_+" 组执行遇到内部错误")
+                    else:
+                        self._race_progress(key, id_, "done", id_+" 组已交案", draft=draft)
+        if self._current_status(key) != "running":
+            return None
+        if failures:
+            detail = "；".join(id_+" 组："+failures[id_] for id_ in sorted(failures))
+            raise AgentError(detail+"。重试只会处理未交案的小组。")
+        with self.db._lock:
+            record = self._read(key)
+            return [record["drafts"][group["id"]] for group in record["groups"]]
 
     def _summary(self, spec):
         return dict(version=spec["version"], markdown=spec["markdown"],

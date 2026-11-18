@@ -16,7 +16,7 @@ from .synthesis_preview import PreviewError
 from .workbench_preview import WorkbenchHandler, PROTOTYPES, PAGES
 from .workspace import ProjectReviews, Workspace
 from .workspace_experience import Progress, help_answer
-from .steward_pipeline import StewardPipeline
+from .steward_pipeline import DEFAULT_RACE_PARALLEL, StewardPipeline
 from .agent_client import AgentError, ChatAgent, configured_agent
 from .model_router import ModelRouter
 from .providers import OpenAICompatibleProvider
@@ -131,7 +131,7 @@ class Handler(WorkbenchHandler):
                     return
             if self.command == "GET":
                 if path == "/workspace/steward":
-                    self.respond(200, {"items":pipeline.list()})
+                    self.respond(200, {"items":pipeline.list(), "race_parallel":DEFAULT_RACE_PARALLEL})
                     return
                 match = re.fullmatch(r"/workspace/steward/([a-f0-9]{32})", path)
                 if match:

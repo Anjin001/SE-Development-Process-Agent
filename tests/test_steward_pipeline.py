@@ -1,10 +1,11 @@
 import tempfile
 import time
 from pathlib import Path
-from threading import RLock
+from threading import Barrier, Lock, RLock
 import unittest
 
 from se_agent import synthesis
+from se_agent.agent_client import AgentError
 from se_agent.intake import _mock_agent as intake_model
 from se_agent.providers import LLMResult
 from se_agent.steward_pipeline import StewardPipeline
@@ -40,6 +41,61 @@ class StewardPipelineTest(unittest.TestCase):
                 self.fail(result["error"])
             time.sleep(.05)
         self.fail(result)
+
+    def test_race_overlaps_groups_honors_limit_and_retries_only_failed_group(self):
+        meet = Barrier(2)
+        lock = Lock()
+        active = peak = 0
+        first_ideas = {}
+        built = []
+
+        def model(stage, context):
+            nonlocal active, peak
+            if stage == "steward_groups":
+                return {"groups":[{"focus":str(i),"prompt":f"从角度 {i} 独立设计。"} for i in range(4)]}
+            if stage == "idea":
+                group = context["group_id"]
+                with lock:
+                    active += 1
+                    peak = max(peak, active)
+                    first_ideas[group] = first_ideas.get(group, 0) + 1
+                    number = first_ideas[group]
+                try:
+                    if group in {"A","B"} and number == 1:
+                        meet.wait(timeout=3)
+                    if group == "B" and number == 1:
+                        raise AgentError("测试限流")
+                    return intake_model(stage,context)
+                finally:
+                    with lock:
+                        active -= 1
+            if stage == "draft":
+                with lock:
+                    built.append(context["group_id"])
+                return intake_model(stage,context)
+            if stage == "challenge":
+                return intake_model(stage,context)
+            if stage == "steward_decisions":
+                return {"decisions":[{"id":item["id"],"choice":"允许创建并完成任务。",
+                    "reason":"满足首版明确范围。"} for item in context["issues"]]}
+            if stage == "steward_plan":
+                return {"tasks": context["tasks"]}
+            raise AssertionError(stage)
+
+        self.agent = model
+        job = self.pipeline.start("制作待办清单。", {"race_parallel":2,"group_count":4,
+                                                      "gates":["plan"],"mode":"mock"})
+        failed = self.wait(job, "failed")
+        self.assertEqual(peak, 2)
+        self.assertEqual({g["id"]:g["status"] for g in failed["groups"]},
+                         {"A":"done","B":"failed","C":"done","D":"done"})
+        self.assertIn("B 组", failed["error"])
+        self.assertIsNone(failed["project_id"])
+        self.pipeline.chat(job["id"], "重试")
+        ready = self.wait(job, "gate")
+        self.assertTrue(all(g["finished"] for g in ready["groups"]))
+        self.assertCountEqual(built, ["A","B","C","D"])
+        self.assertEqual(first_ideas, {"A":2,"B":3,"C":2,"D":2})
 
     def test_one_requirement_message_completes_without_human_confirmation(self):
         job = self.pipeline.start("# 团队图文分享\n\n- 用户可以创建并浏览图文笔记。", {})

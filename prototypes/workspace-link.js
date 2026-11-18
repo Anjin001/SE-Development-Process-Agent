@@ -331,11 +331,12 @@ window.createWorkspaceLink = function (hooks) {
     if (state.groups.some(group => !group.prompt.trim())) { toast('每个小组都需要提示词。'); return; }
     state.queue = true;
     const currentEpoch = epoch;
-    for (const group of state.groups) {
-      if (state.paused || epoch !== currentEpoch) break;
-      if (group.status !== 'done') await runGroup(group);
-    }
-    state.queue = false; refresh();
+    const pending = state.groups.filter(group=>group.status!=='done' && group.status!=='running');
+    const worker = async () => {
+      while (!state.paused && epoch === currentEpoch && pending.length) await runGroup(pending.shift());
+    };
+    try { await Promise.all(Array.from({length: Math.min(3,pending.length)}, worker)); }
+    finally { state.queue = false; refresh(); }
   }
   async function handoff() {
     const payload = { requirement: state.frozen, drafts: state.groups.map(group => group.result.draft) };
@@ -1000,7 +1001,12 @@ window.createWorkspaceLink = function (hooks) {
       ? lastJob : null;
     const current = job?.steps?.at(-1);
     let status = runStatus();
-    if (job) {
+    const raceActive = state.module==='intake-race' && !linkedJob()
+      ? state.groups.filter(group=>group.status==='running') : [];
+    if(raceActive.length>1){
+      status={title:raceActive.map(group=>group.id+' 组').join('、')+'并发出案',
+        detail:'每组读同一份需求快照；已完成的小组不会重跑。',steps:job?.steps};
+    } else if (job) {
       const duration = (Date.now()-job.started)/1000;
       status = {title:(job.running?'正在处理 · ':job.failed?'执行失败 · ':'已完成 · ')+job.label,
         detail:job.failed || (job.running ? (current ? current.label+' · ' : '')+'已用 '+elapsed(duration)
@@ -1220,6 +1226,7 @@ window.createWorkspaceLink = function (hooks) {
       box.append(el('pre',job.markdown,'whitespace-pre-wrap text-sm bg-slate-50 p-3 rounded'));
       if(job.groups.length){
         box.append(text('主理人安排 '+job.groups.length+' 组，'+job.groups.filter(g=>g.finished).length+' 组已提交。'));
+        for(const g of job.groups.filter(g=>g.status==='running' || g.status==='failed'))box.append(text(g.step));
         const routes=el('details');
         routes.append(el('summary','查看分组和提示词','cursor-pointer font-semibold'));
         for(const group of job.groups) routes.append(text(group.id+' 组 · '+group.focus),text(group.prompt));

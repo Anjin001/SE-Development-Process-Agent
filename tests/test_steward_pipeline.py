@@ -1,3 +1,4 @@
+import json
 import tempfile
 import time
 from pathlib import Path
@@ -190,25 +191,42 @@ class StewardPipelineTest(unittest.TestCase):
                 return {"approved":True,"reason":"示例代码与任务对应。"}
             raise AssertionError(stage)
 
+        slices = []
         class Executor:
             def run_step(self, request, task, stage, provider):
                 outputs = task["outputs"]
                 path = outputs[0]["path"]
-                text = '{}' if path.endswith(".json") else "def publish():\n    return True\n"
+                if path=="docs/api-contract.json":
+                    module = request.get("contract_slice")
+                    self_check.assertIsNotNone(module,"A monolithic contract would hit the observed 4096-token cap")
+                    self_check.assertLessEqual(stage["max_output_tokens"],2048)
+                    slices.append(module["name"])
+                    text = json.dumps({"endpoints":[{"method":"POST","path":"/api/"+module["name"],
+                        "handler":"create_"+module["name"],"request":["title"],"response":["id"]}]})
+                elif path=="docs/technical-handoff.md":
+                    self_check.assertIn("docs/api-contract.json",request["generated_files"])
+                    text = "接口以 docs/api-contract.json 为准。"
+                elif path.startswith("app/") and path.endswith("routes.py"):
+                    self_check.assertIn("docs/api-contract.json",request["upstream_files"])
+                    text = "def routes():\n    return []\n"
+                else:
+                    text = "def publish():\n    return True\n"
                 return LLMResult(text, 1, 1)
+        self_check = self
 
         self.agent = model
         self.reviews.agent = {"agent":model}
         self.workspace.dispatch.worker = Worker(mode="mock", executor=Executor(), provider=object())
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)/"real-project"
-            done = self.wait(self.pipeline.start("- 做一个图文笔记应用，支持发布、浏览、关注作者和点赞。", {"directory":str(repo),"mode":"real"}))
+            done = self.wait(self.pipeline.start("做一个图文笔记应用，用户可以发布笔记，关注点赞作者", {"directory":str(repo),"mode":"real"}))
             data = self.workspace.project(done["project_id"])
             commits = [a for t in data["run"]["tasks"].values() for a in t["artifacts"] if a["kind"]=="git_commit"]
             self.assertTrue(commits)
             plan = data["planning"]["plan"]
             modules = [t for t in plan["tasks"] if t["phase"]=="development"]
             self.assertGreaterEqual(len(modules),4)
+            self.assertCountEqual(slices,["notes","follows","reactions"])
             self.assertTrue(all(t["depends_on"]==["T1"] and len(t["outputs"])>=3 for t in modules))
             verifier = self.store.verifier_for(done["project_id"])
             final_commit = done["delivery"]["git_commit"]
@@ -217,6 +235,8 @@ class StewardPipelineTest(unittest.TestCase):
                                     for a in data["run"]["tasks"][t["id"]]["artifacts"]))
             for expected in ("docs/technical-handoff.md","app/main.py","db/schema.sql"):
                 self.assertTrue(verifier._git("show",final_commit+":"+expected).strip())
+            contract = json.loads(verifier._git("show",final_commit+":docs/api-contract.json"))
+            self.assertEqual(set(contract["modules"]),{"notes","follows","reactions"})
             rebuilt = self.wait(self.pipeline.chat(done["id"],"按模块重新拆分"),"gate")
             self.assertEqual(rebuilt["project_id"],done["project_id"])
             self.assertEqual(rebuilt["gate"],"plan")

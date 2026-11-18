@@ -15,6 +15,8 @@ Concurrency rules that matter here:
 """
 import json
 import sqlite3
+
+from .api_contract import service_units
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -544,13 +546,15 @@ class Store:
                     (run["id"],task["id"])).fetchone()
                 retry_feedback = review["note"] if review else ""
         handoff = ""
+        units = []
         if task["phase"] == "planning":
             future = self.plan_tasks(run["project_id"],plan["id"],plan["version"])
+            units = service_units(future)
             handoff = "\n".join(t["title"]+" → "+", ".join(o["path"] or "" for o in t["outputs"])
                                 for t in future if t["phase"] != "planning")
         return {"project_id": run["project_id"], "run_id": run["id"],
                 "attempt_id": attempt_id, "task": task, "retry_feedback":retry_feedback[:900],
-                "handoff_package":handoff[:10000],
+                "handoff_package":handoff[:10000],"handoff_units":units,
                 "spec_ref": {"id": plan["spec_id"], "version": plan["spec_version"]},
                 "spec_context": self._spec_context(run["project_id"],
                                                    plan["spec_version"], task),

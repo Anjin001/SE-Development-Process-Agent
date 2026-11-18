@@ -225,8 +225,9 @@ class RealWorktreeTest(unittest.TestCase):
             result = execute_task(self.request([]), worker)
         self.assertEqual(requests[0]["thinking"], {"type":"disabled"})
         self.assertEqual(result["error"]["details"]["path"],"app/integration.py")
-        self.assertEqual(result["error"]["details"]["max_tokens"],4096)
-        self.assertEqual(result["usage"],{"input_tokens":260,"output_tokens":4096})
+        self.assertEqual([b["max_tokens"] for b in requests],[4096,8192])
+        self.assertEqual(result["error"]["details"]["max_tokens"],8192)
+        self.assertEqual(result["usage"],{"input_tokens":520,"output_tokens":12288})
         self.assertEqual(result["artifacts"],[])
         self.assertNotIn("not file content",result["error"]["message"])
 

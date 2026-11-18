@@ -14,6 +14,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
+from .api_contract import CONTRACT_PATH, parse_endpoints, view_for_file
 from .model_router import ModelRouter, load_config
 from .providers import (LLMResult, OpenAICompatibleProvider, ProviderError, ProviderOutputError,
                         ProviderTimeout, build_provider, estimate_tokens)
@@ -96,6 +97,21 @@ def in_scope(path, write_paths):
 
 def build_prompt(request, task, step):
     """把任务、规格上下文、上游产物和输出定义拼成一步的提示词。"""
+    if request.get("contract_slice"):
+        unit = request["contract_slice"]
+        relevant = request.get("spec_context") or {}
+        refs = set(unit["refs"])
+        facts = [item["text"][:450] for item in relevant.get("requirements",[]) if item["id"] in refs]
+        facts.extend(str(item.get("choice",""))[:260] for item in relevant.get("decisions",[])[:24])
+        data = {"module":unit["name"],"scope":unit["scope"][:650],"requirements_and_decisions":facts,
+                "occupied_routes":request.get("occupied_routes",[]),
+                "correction":request.get("contract_correction","")}
+        return ("只设计这个服务自己负责的 HTTP 接口，不展开其他服务。输出紧凑 JSON 且无解释："
+                '{"endpoints":[{"method":"POST","path":"/api/example","handler":"create_example",'
+                '"request":["title"],"response":["id"]}]}。'
+                "每个服务最多 8 个接口，每种请求或响应最多 12 个英文字段名；"
+                "不用写示例、JSON Schema、描述、错误对象或 OpenAPI 外壳。不重复已占用的路径和方法。\n"
+                +json.dumps(data,ensure_ascii=False,separators=(",",":")))
     spec = request.get("spec_ref") or {}
     supplied = request.get("supplied_inputs") or {}
     lines = [f'任务 {task["id"]}：{task["title"]}',
@@ -118,7 +134,10 @@ def build_prompt(request, task, step):
         lines.append("上次尝试的失败或复核反馈（本次修正）："+request["retry_feedback"])
     if request.get("handoff_package"):
         lines.append("随后并发开发的工作包：\n"+request["handoff_package"])
+    output_path = (task.get("outputs") or [{}])[0].get("path") or ""
     for path, content in request.get("upstream_files", {}).items():
+        if path == CONTRACT_PATH:
+            content = view_for_file(content,output_path)
         lines.append(f"已批准的上游文件 {path}：\n{content}")
     for path, content in request.get("generated_files", {}).items():
         lines.append(f"本任务已生成文件 {path}：\n{content}")
@@ -126,6 +145,10 @@ def build_prompt(request, task, step):
         lines.append("已确认的实现边界：" + request["boundary_guidance"])
     for path, content in request.get("existing_files", {}).items():
         lines.append(f"现有文件 {path}：\n{content}")
+    if output_path == "docs/technical-handoff.md" and CONTRACT_PATH in request.get("generated_files",{}):
+        lines.append("输出简短交接文档，直接引用已经统一的接口契约；不要复制整份 JSON、展开请求响应示例或重新设计路由。")
+    if request.get("compact_retry"):
+        lines.append("上一份输出过长。本次仍需返回完整目标文件；只实现当前文件职责，省略重复注释、示例和讲解。")
     for output in task.get("outputs", []):
         lines.append(f'输出 {output.get("id")}：{output.get("path") or "文本"}')
     return "\n".join(lines)
@@ -138,7 +161,7 @@ class PromptExecutor:
 
     def run_step(self, request, task, step, provider):
         prompt = build_prompt(request, task, step)
-        kwargs = {"file_output":step["stage"]!="boundary"} if isinstance(provider,OpenAICompatibleProvider) else {}
+        kwargs = {"file_output":step["stage"]!="boundary" or bool(request.get("compact_retry"))} if isinstance(provider,OpenAICompatibleProvider) else {}
         return provider.complete(step["model"], prompt, system=SYSTEM_PROMPT,
                                  max_output_tokens=step.get("max_output_tokens"), **kwargs)
 
@@ -324,7 +347,8 @@ class Worker:
                 source = (repository / PurePosixPath(path)).resolve()
                 if source.is_relative_to(repository) and source.is_file() and remaining>0 and path not in upstream:
                     with source.open(encoding="utf-8", errors="replace") as file:
-                        upstream[path] = file.read(min(12000,remaining))
+                        cap = 32000 if path == CONTRACT_PATH else 12000
+                        upstream[path] = file.read(min(cap,remaining))
                     remaining -= len(upstream[path])
         produced = self._run_steps(dict(request, existing_files=existing, upstream_files=upstream),
                                    task, steps, state, progress=progress)
@@ -366,38 +390,85 @@ class Worker:
         spent = 0.0
         total = {"input_tokens": 0, "output_tokens": 0}
         context = dict(request, generated_files={})
-        for step in steps:
-            outputs = [None] if step["stage"] == "boundary" else task.get("outputs", [])
-            for output in outputs:
-                current_task = task if output is None else dict(task, outputs=[output])
-                provider = self._provider(step)
-                if progress:
-                    label = "模型核对实现边界" if output is None else "模型生成 " + (output.get("path") or output["id"])
-                    timeout = getattr(provider, "timeout", 0)
-                    progress(label, int(timeout) if isinstance(timeout, (int, float)) else 0)
-                path = "实现边界" if output is None else output.get("path") or output["id"]
-                state["model"] = step["model"]
-                try:
-                    result = self.executor.run_step(context, current_task, step, provider)
-                except ProviderOutputError as exc:
-                    if exc.usage:
-                        for key in total:
-                            total[key] += exc.usage.get(key,0)
-                        state["usage"] = dict(total)
+        def charge(model, usage):
+            nonlocal spent
+            for key in total:
+                total[key] += usage.get(key,0)
+            state["usage"] = dict(total)
+            spent += self.router.cost_usd(model,usage)
+            if self.router.max_cost_usd and spent > self.router.max_cost_usd:
+                raise BudgetExceeded("费用超限",spent)
+
+        def generate(call_context, current_task, step, provider, path):
+            state["model"] = step["model"]
+            try:
+                result = self.executor.run_step(call_context,current_task,step,provider)
+            except ProviderOutputError as exc:
+                if exc.usage:
+                    charge(step["model"],exc.usage)
+                cap = step.get("max_output_tokens")
+                if not (exc.finish_reason=="length" and type(cap) is int and 0<cap<8192
+                        and isinstance(provider,OpenAICompatibleProvider)
+                        and provider.direct_deepseek(step["model"])):
                     raise FileResponseError(path,exc) from exc
-                total["input_tokens"] += result.input_tokens
-                total["output_tokens"] += result.output_tokens
-                state["usage"] = dict(total)
-                state["model"] = step["model"]
-                spent += self.router.cost_usd(step["model"], result.usage)
-                if self.router.max_cost_usd and spent > self.router.max_cost_usd:
-                    raise BudgetExceeded("费用超限", spent)
+                if progress:
+                    progress("输出触顶，缩短提示并补全 "+path,int(provider.timeout))
+                try:
+                    result = self.executor.run_step(dict(call_context,compact_retry=True),
+                        current_task,dict(step,max_output_tokens=min(8192,cap*2)),provider)
+                except ProviderOutputError as again:
+                    if again.usage:
+                        charge(step["model"],again.usage)
+                    raise FileResponseError(path,again) from again
+            charge(step["model"],result.usage)
+            return result.text
+
+        def contract_for(units, current_task, step, provider):
+            occupied, modules = set(), {}
+            cap = min(step.get("max_output_tokens") or 2048,2048)
+            for unit in units:
+                name = unit["name"]
+                path = f"{CONTRACT_PATH} [{name}]"
+                if progress:
+                    progress("生成独立接口片段 "+name, int(getattr(provider,"timeout",0) or 0))
+                scoped = dict(context,contract_slice=unit,occupied_routes=sorted(occupied))
+                for index in range(2):
+                    generated = generate(scoped,current_task,dict(step,max_output_tokens=cap),provider,path)
+                    generated = checked_content(generated,path,"git_commit")
+                    try:
+                        endpoints, keys = parse_endpoints(generated,occupied)
+                    except ValueError as exc:
+                        if index:
+                            raise OutputContentError(path,str(exc)) from exc
+                        scoped["contract_correction"] = str(exc)
+                    else:
+                        modules[name] = {"source_file":unit["path"],"endpoints":endpoints}
+                        occupied.update(keys)
+                        break
+            return json.dumps({"format":"se-agent-http-v1","modules":modules},
+                              ensure_ascii=False,indent=2)+"\n"
+
+        for step in steps:
+            units = context.get("handoff_units") or []
+            outputs = [None] if step["stage"]=="boundary" else task.get("outputs",[])
+            if units and outputs and outputs[0] is not None:
+                outputs = sorted(outputs,key=lambda item:item.get("path")!=CONTRACT_PATH)
+            for output in outputs:
+                current_task = task if output is None else dict(task,outputs=[output])
+                provider = self._provider(step)
+                path = "实现边界" if output is None else output.get("path") or output["id"]
+                if progress:
+                    timeout = getattr(provider,"timeout",0)
+                    progress("模型核对实现边界" if output is None else "模型生成 "+path,
+                             int(timeout) if isinstance(timeout,(int,float)) else 0)
+                text = (contract_for(units,current_task,step,provider) if units and path==CONTRACT_PATH
+                        else generate(context,current_task,step,provider,path))
+                content = checked_content(text,path,output.get("kind") if output else None)
                 if output is None:
-                    context["boundary_guidance"] = checked_content(result.text, "实现边界")
+                    context["boundary_guidance"] = content
                 else:
-                    content = checked_content(result.text,path,output.get("kind"))
                     produced[output["id"]] = content
-                    context["generated_files"][path] = content[:12000]
+                    context["generated_files"][path] = content[:32000 if path==CONTRACT_PATH else 12000]
         return produced
 
     def _provider(self, step):

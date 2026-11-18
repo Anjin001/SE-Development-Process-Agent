@@ -70,15 +70,18 @@ class OpenAICompatibleProvider(Provider):
     def api_key(self):
         return self._api_key if self._api_key is not None else os.environ.get(self.api_key_env, "")
 
+    def direct_deepseek(self, model):
+        endpoint = urlsplit(self.base_url)
+        return (endpoint.scheme == "https" and endpoint.hostname == "api.deepseek.com"
+                and model in ("deepseek-flash","deepseek-v4-pro"))
+
     def complete(self, model, prompt, system=None, max_output_tokens=None, *, file_output=False):
         if self._api_key is None and not self.api_key:
             raise ProviderError(f"缺少凭证：请设置环境变量 {self.api_key_env}")
         messages = ([{"role": "system", "content": system}] if system else []) + [
             {"role": "user", "content": prompt}]
         body = {"model": model, "messages": messages}
-        endpoint = urlsplit(self.base_url)
-        if (file_output and endpoint.scheme == "https" and endpoint.hostname == "api.deepseek.com"
-                and model in ("deepseek-flash","deepseek-v4-pro")):
+        if file_output and self.direct_deepseek(model):
             # Use the file's completion budget for content, not reasoning.
             body["thinking"] = {"type":"disabled"}
         if max_output_tokens:

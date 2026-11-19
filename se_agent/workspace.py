@@ -175,7 +175,7 @@ class Dispatch:
                 if self.stop.is_set():
                     return
 
-    def advance(self, run_id, manual=True):
+    def advance(self, run_id, manual=True, *, single=False):
         with self.lock:
             if run_id in self.busy:
                 return False
@@ -184,7 +184,7 @@ class Dispatch:
             with self.database.tx():
                 self.database.expire_leases(run_id)
                 if manual:
-                    self.database.step(run_id)
+                    self.database.step(run_id, single=single)
                 handed = self.database.claim(run_id, "workspace-worker")
                 worker = self.worker
                 if handed and self.delivery and isinstance(worker, Worker):
@@ -280,6 +280,13 @@ class Workspace:
                     (run_id, artifact["id"], artifact["version"])).fetchone()
                 artifact.update(content=row["content"],changed_paths=json.loads(row["changed_paths"]),
                                 attempt_id=row["attempt_id"])
+        snapshot["rework_edges"] = [
+            {"from": payload["verification_task_id"], "to": row["task_id"], "note": payload.get("note", "")}
+            for row in self.database.db.execute(
+                "SELECT task_id,payload FROM events WHERE run_id=? AND type='artifact.rejected' ORDER BY seq DESC LIMIT 30",
+                (run_id,))
+            for payload in [json.loads(row["payload"])] if payload.get("verification_task_id")
+        ]
         return snapshot
 
     def action(self, project_id, run_id, action, body):
@@ -292,11 +299,14 @@ class Workspace:
         if action == "stop":
             self.database.stop_run(run_id)
         elif action == "advance":
-            self.dispatch.advance(run_id)
+            self.dispatch.advance(run_id, single=body.get("single") is True)
         elif action in ("pause", "resume"):
             self.database.set_dispatch(run_id, action == "pause")
         elif action == "retry":
             self.database.retry(run_id, task_id)
+        elif action == "verification-return":
+            self.database.return_from_verification(run_id, task_id, body.get("target_task_id"),
+                                                   body.get("note", ""), self.actor)
         elif action == "supply-input":
             self.database.supply_input(run_id, task_id, body.get("values") or {}, self.actor)
         elif action in ("steward-answer", "steward-apply"):
@@ -333,6 +343,10 @@ class Workspace:
             plan_tasks = self.database.plan_tasks(project_id, snapshot["plan_ref"]["id"],
                                                   snapshot["plan_ref"]["version"])
             definition = next(row for row in plan_tasks if row["id"] == task_id)
+            review_note = body.get("note", "")
+            if (definition["phase"] == "verification" and body.get("decision") in ("approve", "revise")
+                    and (not isinstance(review_note, str) or not review_note.strip())):
+                raise InvalidReference("请记录实际验证的步骤和结果，再批准验收", field="note")
             for output_id, revision in revisions.items():
                 candidate = candidates.get(output_id)
                 if not candidate or not isinstance(revision, dict):
@@ -353,7 +367,7 @@ class Workspace:
                         revision["commit_sha"], attempt["checkout_commit"])
             self.database.review(run_id, task_id, body.get("decision"),
                                  body.get("expected_versions") or {}, body.get("revisions") or {},
-                                 body.get("note", ""), self.actor)
+                                 review_note, self.actor)
         else:
             raise InvalidReference("未知运行动作")
         return self.run(project_id, run_id)

@@ -111,7 +111,7 @@ window.createPlannerLink = function ({ q, el, switchModule, toast, showTask }) {
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   }
 
-  function renderGantt(plan, schedule) {
+  function renderGantt(plan, schedule, run = null, onInspect = null) {
     const card = el('section', null, cardClass);
     card.dataset.testid = 'task-gantt';
     card.setAttribute('aria-label', '任务甘特图');
@@ -119,6 +119,7 @@ window.createPlannerLink = function ({ q, el, switchModule, toast, showTask }) {
     const finish = Math.max(...schedule.map(row => row.early_finish_seconds), 1);
     card.append(el('p', '已保存计划 v' + plan.version + ' · 预计 ' + Number((finish / 60).toFixed(2)) +
       ' 分钟 · 并发上限 ' + plan.max_parallel + ' · 琥珀色表示关键路径', 'text-xs text-slate-600'));
+    card.append(el('p', '需评审的任务：提交产物 → 评审 → 通过后放行下游；退回则修改并重新提交。', 'text-xs text-slate-600'));
     const scroller = el('div', null, 'overflow-x-auto');
     const chart = el('div', null, 'relative');
     chart.style.minWidth = '760px';
@@ -132,7 +133,8 @@ window.createPlannerLink = function ({ q, el, switchModule, toast, showTask }) {
     chart.append(axis);
     const rows = el('div', null, 'relative');
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', '0 0 1000 ' + plan.tasks.length * 52);
+    const rowHeight = 64;
+    svg.setAttribute('viewBox', '0 0 1000 ' + plan.tasks.length * rowHeight);
     svg.setAttribute('preserveAspectRatio', 'none');
     svg.style.cssText = 'position:absolute;left:208px;top:0;width:calc(100% - 208px);height:100%;pointer-events:none;z-index:2';
     const slots = new Map(schedule.map(row => [row.task_id, row]));
@@ -141,21 +143,34 @@ window.createPlannerLink = function ({ q, el, switchModule, toast, showTask }) {
       const slot = slots.get(task.id);
       if (!slot) continue;
       const row = el('div', null, 'flex items-center border-t border-slate-100');
-      row.style.height = '52px';
+      row.style.height = rowHeight + 'px';
       const label = el('div', null, 'w-52 shrink-0 pr-3 text-xs');
       label.append(el('strong', task.id + ' · ' + task.title, 'block truncate text-slate-700'));
-      label.append(el('span', task.depends_on.length ? '前置 ' + task.depends_on.join(', ') : '无前置任务', 'text-slate-500'));
+      const dependencies = task.depends_on.length ? '前置 ' + task.depends_on.join(', ') : '无前置任务';
+      const dependencyLine = el('span', dependencies, 'block truncate text-slate-500');
+      dependencyLine.title = dependencies;
+      label.append(dependencyLine);
+      if (task.review_required) {
+        const current = run?.tasks?.[task.id];
+        const rejected = current?.artifacts?.some(item => item.status === 'rejected');
+        const status = current?.state;
+        const caption = status === 'done' ? '评审通过' : status === 'review' ? (rejected ? '返工后复审' : '待评审')
+          : rejected ? (status === 'failed' ? '已退回 · 等待返工' : '已退回 · 返工中') : '提交后评审';
+        label.append(el('span', caption, 'block font-semibold ' +
+          (rejected && status !== 'done' ? 'text-red-700' : status === 'done' ? 'text-emerald-700' : 'text-indigo-700')));
+      }
       const track = el('div', null, 'relative flex-1 h-full');
       track.style.backgroundImage = 'repeating-linear-gradient(to right,#e2e8f0 0,#e2e8f0 1px,transparent 1px,transparent 20%)';
       const bar = action(Number((task.estimate_seconds / 60).toFixed(2)) + 'm', () => {
-        if (q('#linked-task-' + task.id.slice(1))) {
+        if (onInspect) onInspect(task.id);
+        else if (q('#linked-task-' + task.id.slice(1))) {
           q('#linked-task-' + task.id.slice(1)).scrollIntoView({block:'center',behavior:'smooth'});
           q('#linked-task-' + task.id.slice(1)).focus();
         } else extension?.inspect(task.id);
       });
       bar.className = 'absolute rounded text-white text-xs font-semibold overflow-hidden whitespace-nowrap ' +
         (slot.critical ? 'bg-amber-600' : 'bg-indigo-500');
-      bar.style.cssText = 'top:14px;height:24px;left:' + slot.early_start_seconds / finish * 100 +
+      bar.style.cssText = 'top:20px;height:24px;left:' + slot.early_start_seconds / finish * 100 +
         '%;width:' + (slot.early_finish_seconds - slot.early_start_seconds) / finish * 100 + '%;min-width:3px';
       const caption = task.id + ' · ' + task.title + ' · ' + Number((slot.early_start_seconds / 60).toFixed(2)) +
         '—' + Number((slot.early_finish_seconds / 60).toFixed(2)) + ' 分钟' + (slot.critical ? ' · 关键路径' : '');
@@ -168,9 +183,9 @@ window.createPlannerLink = function ({ q, el, switchModule, toast, showTask }) {
         const before = slots.get(predecessor);
         if (!before) continue;
         const startX = before.early_finish_seconds / finish * 1000;
-        const startY = indices.get(predecessor) * 52 + 26;
+        const startY = (indices.get(predecessor) + .5) * rowHeight;
         const endX = slot.early_start_seconds / finish * 1000;
-        const endY = index * 52 + 26;
+        const endY = (index + .5) * rowHeight;
         const offset = Math.min(startX + 9, 998);
         const path = document.createElementNS(svg.namespaceURI, 'path');
         path.setAttribute('d', 'M ' + startX + ' ' + startY + ' H ' + offset + ' V ' + endY + ' H ' + endX);
@@ -387,11 +402,13 @@ window.createPlannerLink = function ({ q, el, switchModule, toast, showTask }) {
         estimateMin: Number((task.estimate_seconds / 60).toFixed(2)),
         spec: [...task.requirement_ids, ...task.decision_ids, ...task.open_item_ids].join(' · '),
         output: task.write_paths.join(' · '), deps: task.depends_on,
+        reviewRequired: task.review_required,
+        testFiles: task.outputs.filter(item=>item.path?.startsWith('tests/')).map(item=>item.path),
         critical: view.schedule?.find(row => row.task_id === task.id)?.critical || false,
         x: 27 + col * 234, y: 54 + row * 80,
       })),
     }));
-    return { phases, badge: '计划 v' + view.plan.version };
+    return { phases, badge: '计划 v' + view.plan.version, reworkEdges: extension?.reworkEdges() || [] };
   }
 
   function render(module) {

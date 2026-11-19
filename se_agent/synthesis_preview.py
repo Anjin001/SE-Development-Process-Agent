@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from . import synthesis
-from .agent_client import AgentError, configured_agent
+from .agent_client import CHAT_TIMEOUT_SECONDS, AgentError, configured_agent
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -182,7 +182,7 @@ class PreviewStore:
             evaluations = []
             for draft in project["drafts"]:
                 if progress:
-                    progress(f"独立评价 {draft['id']} 组草案", 60 if self.agent else 0)
+                    progress(f"独立评价 {draft['id']} 组草案", CHAT_TIMEOUT_SECONDS if self.agent else 0)
                 evaluations.append(synthesis.evaluate_draft(project["requirement"], draft, **self.agent))
             project["evaluations"] = evaluations
             return self.snapshot(project)
@@ -219,7 +219,7 @@ class PreviewStore:
             return self.snapshot(project)
         if action == "propose":
             if progress:
-                progress("比较各组方案并生成综合草稿", 60 if self.agent else 0)
+                progress("比较各组方案并生成综合草稿", CHAT_TIMEOUT_SECONDS if self.agent else 0)
             content = synthesis.propose_spec(project["requirement"], project["drafts"], project["evaluations"], payload.get("selection"), **self.agent)
             content["notes_markdown"] = ""
             selection = payload["selection"]

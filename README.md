@@ -56,3 +56,6 @@ python -m se_agent.synthesis_preview --port 8002
 ```
 
 打开 http://127.0.0.1:8002，加载取舍演示或导入 CLY 交接 JSON。详见 [运行、接口与验收说明](docs/评审与方案整合.md)。
+### 运行生成项目的模块测试
+
+设置 `SE_AGENT_TEST_IMAGE` 为本地 Docker 镜像名。镜像需提供 Python 和 Node.js，以及生成应用的测试依赖。工作台会在无网络、只读挂载的容器中运行当前任务的 `unittest` 或 `node:test`，失败时退回任务，等待修复后再提交。未设置时，运行记录会将生成的测试标为待实跑。

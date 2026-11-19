@@ -205,7 +205,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
   based_on_version INTEGER,
   kind           TEXT NOT NULL,                 -- git_commit / text
   origin         TEXT NOT NULL,                 -- agent / human
-  status         TEXT NOT NULL,                 -- draft / approved / rejected
+  status         TEXT NOT NULL,                 -- draft / approved / rejected / superseded
   commit_sha     TEXT,
   changed_paths  TEXT NOT NULL DEFAULT '[]',
   content        TEXT,

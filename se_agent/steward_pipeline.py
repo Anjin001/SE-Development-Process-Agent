@@ -10,18 +10,18 @@ from threading import Lock, Thread
 from time import sleep, time
 from uuid import uuid4
 
-from .agent_client import AgentError
+from .agent_client import CHAT_TIMEOUT_SECONDS, AgentError
 from .contracts import DomainError, InvalidReference, InvalidState, NotFound
 from .intake import build_snapshot, default_group_prompts, run_group
 from .synthesis_preview import PreviewError
-from .team_plan import fallback_modules, team_tasks, validate_modules
+from .team_plan import fallback_modules, repair_tasks, team_tasks, validate_modules
 
 STAGES = {
     "groups": "设计讨论路线", "race": "多组独立出案", "evaluate": "独立评审",
     "merge": "整合方案", "decisions": "主理人补齐决策", "confirm": "发布需求规格",
     "plan": "拆任务与排期", "start": "启动开发", "develop": "开发与复核", "delivery": "整理交付",
 }
-GATES = {"spec": "方案确认", "plan": "开工确认", "delivery": "交付确认"}
+GATES = {"spec": "方案确认", "plan": "开工确认", "verification": "集成验收确认", "delivery": "交付确认"}
 RUNNING = {"running", "pausing"}
 DEFAULT_RACE_PARALLEL = 3
 BASE = Path(__file__).resolve().parents[1]
@@ -329,12 +329,12 @@ class StewardPipeline:
             if state in RUNNING:
                 self._spawn(key)
 
-    def _gate(self, row, name):
+    def _gate(self, row, name, *, required=False):
         with self.db.tx():
             current = self._read(row["id"])
             if current["status"] != "running":
                 return True
-            if name in current["settings"]["gates"] and name not in current["accepted"]:
+            if (required or name in current["settings"]["gates"]) and name not in current["accepted"]:
                 current.update(status="gate", gate=name, timeout=0)
                 self._save(current)
                 self._message(row["id"], "steward", f"已到你选的「{GATES[name]}」点。可以直接告诉我继续，或说要改哪里。")
@@ -359,7 +359,7 @@ class StewardPipeline:
             pid = row["project_id"]
             cfg = row["settings"]
             agent = self.agent()
-            budget = 60 if agent else 0
+            budget = CHAT_TIMEOUT_SECONDS if agent else 0
             event = lambda title, sec=0: self._event(key, title, timeout=sec)
             forward = lambda following, **fields: self._update(key, stage=following, **fields)
             req = None
@@ -414,7 +414,8 @@ class StewardPipeline:
             elif stage == "plan":
                 event("生成任务、连接依赖并计算排期")
                 self._prepare_plan(key, pid, cfg, agent)
-                forward("start")
+                if self._current_status(key) == "running":
+                    forward("start")
             elif stage == "start":
                 if self._gate(row, "plan"):
                     return
@@ -423,7 +424,8 @@ class StewardPipeline:
                     plan = self.workspace.plans.latest(pid)["plan"]
                     if plan["base_commit"] and not agent:
                         raise InvalidState("任务清单已保存。请先配置模型 API，再继续开工，避免启动空的真实执行。")
-                    run = self.db.create_run(pid, plan["id"], plan["version"], "auto")
+                    run = self.db.create_run(pid, plan["id"], plan["version"],
+                                             "manual" if row.get("manual_debug") else "auto")
                     forward("develop", run_id=run["id"])
             elif stage == "develop":
                 if self._development(row, agent):
@@ -441,7 +443,8 @@ class StewardPipeline:
                     if artifact and target["repo"] and data["run"]:
                         run = data["run"]
                         planned = self.db.get_plan(pid,run["plan_ref"]["id"],run["plan_ref"]["version"])["plan"]
-                        integrators = [t["id"] for t in planned["tasks"] if t["phase"]=="integration"]
+                        integrators = [t["id"] for t in planned["tasks"]
+                                       if t["phase"] in ("integration", "verification", "documentation")]
                         for id_ in reversed(integrators):
                             commit = next((a for a in run["tasks"][id_]["artifacts"] if a["kind"]=="git_commit"
                                            and a["status"]=="approved"),None)
@@ -542,23 +545,63 @@ class StewardPipeline:
             plan = self.workspace.plans.generate(review, review["specification"]["version"])["plan"]
         requirements = review["requirement"]["items"]
         modules = fallback_modules(requirements)
-        if agent:
-            self._event(key,"按功能划分工作包、对齐接口和文件所有权",timeout=60)
+        spec_version = review["specification"]["version"]
+        with self.db._lock:
+            checkpoint = self._read(key).get("plan_checkpoint")
+        if checkpoint and checkpoint["spec_version"] != spec_version:
+            checkpoint = None
+        if agent and not checkpoint:
+            self._event(key,"按功能划分工作包、对齐接口和文件所有权",timeout=CHAT_TIMEOUT_SECONDS)
             context = dict(requirements=requirements, decisions=review["specification"]["decisions"],
                 guidance=cfg["guidance"], suggested=[dict(slug=m["slug"],scope=m["scope"]) for m in modules],
                 minimum_modules=min(len(modules),4))
             try:
                 proposed = agent("steward_plan", context)
                 modules = validate_modules(proposed.get("modules"),requirements,min(len(modules),4))
-            except (AgentError, TypeError, ValueError, AttributeError):
-                self._event(key,"模型拆分不完整，采用按需求行为识别出的工作包")
-        tasks = team_tasks(review,modules)
+            except (AgentError, TypeError, ValueError, AttributeError) as exc:
+                self._event(key, "模型拆分未通过结构检查，生成备用工作包", str(exc)[:600])
+        tasks = checkpoint["tasks"] if checkpoint else team_tasks(review,modules)
+        parallel = cfg["parallel"] or min(3, sum(t["phase"] == "development" for t in tasks))
+        if agent and target["repo"]:
+            review_input = dict(task={"title": "开工前复核任务编排",
+                                      "completion_condition": "每条需求有实现与验收路径，每项前端能力有后端责任，交接完成后才能并发开发。"},
+                                requirements=requirements, decisions=review["specification"]["decisions"])
+            feedback = checkpoint.get("feedback", "") if checkpoint else ""
+            for round_ in range(4):
+                if self._current_status(key) != "running":
+                    return
+                self._update(key, plan_checkpoint=dict(spec_version=spec_version, tasks=tasks, feedback=feedback))
+                if feedback:
+                    self._event(key, f"按退回意见修复已有任务 · 第 {round_+1} 次", feedback, CHAT_TIMEOUT_SECONDS)
+                    correction = agent("steward_plan_repair", dict(review_input, tasks=tasks, review_feedback=feedback))
+                    try:
+                        tasks = repair_tasks(tasks, correction)
+                    except ValueError as exc:
+                        feedback = (feedback + f"\n上次修复结果无效：{exc}")[:1500]
+                        continue
+                    self._update(key, plan_checkpoint=dict(spec_version=spec_version, tasks=tasks, feedback=""))
+                self._event(key, "复核任务覆盖、接口责任与验收依赖", timeout=CHAT_TIMEOUT_SECONDS)
+                verdict = agent("steward_review", dict(review_input, tasks=tasks))
+                if not isinstance(verdict, dict) or type(verdict.get("approved")) is not bool:
+                    feedback = ""
+                    reason = "模型连续未提供有效的复核结论"
+                    continue
+                reason = str(verdict.get("reason") or "没有说明理由")[:1200]
+                if verdict["approved"]:
+                    self._event(key, "计划复核通过", reason)
+                    break
+                feedback = reason
+                self._event(key, "计划被退回，自动修复相关任务", feedback)
+            else:
+                self._update(key, plan_checkpoint=dict(spec_version=spec_version, tasks=tasks, feedback=feedback))
+                raise InvalidState(f"计划复核达到上限，已保留最新草稿：{feedback or reason}")
+        if self._current_status(key) != "running":
+            return
         with self.review_lock:
-            saved = self.workspace.plans.save(review,plan["version"],tasks,
-                                               cfg["parallel"] or min(3,len(modules)))
+            saved = self.workspace.plans.save(review,plan["version"],tasks,parallel)
             plan = saved["plan"]
-        self._event(key,f"已安排技术交接 → {len(modules)} 个并发工作包 → Git 合并与交付")
-        self._update(key, target=target, summary={**self._summary(review["specification"]),
+        self._event(key,"计划已发布：技术交接 → 功能开发 → 集成 → 验收 → 交付")
+        self._update(key, target=target, plan_checkpoint=None, summary={**self._summary(review["specification"]),
             "tasks": [dict(id=t["id"], title=t["title"], depends_on=t["depends_on"],
                            estimate_seconds=t["estimate_seconds"],outputs=[a["path"] for a in t["outputs"]])
                       for t in plan["tasks"]],
@@ -568,13 +611,15 @@ class StewardPipeline:
         key, pid, rid = row["id"], row["project_id"], row["run_id"]
         with self.db._lock:
             run = self.workspace.run(pid, rid)
+            plan = self.db.get_plan(pid, run["plan_ref"]["id"], run["plan_ref"]["version"])["plan"]
+        verification_ids = {task["id"] for task in plan["tasks"] if task["phase"] == "verification"}
         if run["state"] == "completed":
             return True
         if run["state"] != "active":
             raise InvalidState("开发运行已结束，可在对话中发起新一轮。")
         if (row.get("summary") or {}).get("mode") == "real" and not agent:
             raise InvalidState("真实开发已暂停。配置模型 API 后，可以从当前开发任务继续。")
-        if run["dispatch"] == "paused":
+        if run["dispatch"] == "paused" and run["mode"] != "manual":
             with self.db.tx():
                 self.db.set_dispatch(rid, False)
         exhausted = []
@@ -584,6 +629,8 @@ class StewardPipeline:
                 return False
             id_ = task["task_id"]
             if task["state"] == "failed":
+                if run["mode"] == "manual":
+                    continue
                 detail = self._failure_reason(rid,id_,task) or "没有记录详细失败原因"
                 retries = row["retries"]
                 if retries.get(id_, 0) >= 1:
@@ -592,11 +639,20 @@ class StewardPipeline:
                 with self.db.tx():
                     self.db.retry(rid, id_)
                     retries[id_] = retries.get(id_, 0) + 1
-                    self._update(key, retries=retries)
+                    if id_ in verification_ids:
+                        self._update(key, retries=retries,
+                                     accepted=[gate for gate in row["accepted"] if gate != "verification"])
+                    else:
+                        self._update(key, retries=retries)
                 can_advance = True
                 self._event(key, f"{id_} 失败，自动重试一次", detail)
             elif task["state"] == "review":
-                self._review_task(row, task, agent)
+                acceptance = id_ in verification_ids
+                real_acceptance = acceptance and bool(plan["base_commit"])
+                if acceptance and self._gate(row, "verification", required=real_acceptance):
+                    return False
+                if run["mode"] != "manual" and not real_acceptance:
+                    self._review_task(row, task, agent)
         if can_advance:
             return False
         if exhausted:
@@ -644,7 +700,7 @@ class StewardPipeline:
         drafts = [a for a in task["artifacts"] if a["status"] == "draft"]
         if not drafts:
             return
-        self._event(key, f"主理人复核 {id_} 的产物", timeout=60 if agent else 0)
+        self._event(key, f"主理人复核 {id_} 的产物", timeout=CHAT_TIMEOUT_SECONDS if agent else 0)
         note = "离线模拟：产物已通过编排器的结构检查。"
         verdict = "approve"
         if agent:
@@ -713,7 +769,7 @@ class StewardPipeline:
                 if parallel:
                     settings["parallel"] = convert(parallel[1])
                 intent = "redo"
-            gate_names = {"方案确认":"spec", "开工确认":"plan", "交付确认":"delivery"}
+            gate_names = {"方案确认":"spec", "开工确认":"plan", "集成验收确认":"verification", "交付确认":"delivery"}
             matched = [value for label, value in gate_names.items() if label in message]
             if not intent and (matched or "全部确认" in message) and re.search(r"打开|开启|关闭|取消",message):
                 current = set(row["settings"]["gates"])
@@ -733,8 +789,9 @@ class StewardPipeline:
                 intent = "retry"
             elif words in {"重跑","重新跑","重新开始"}:
                 intent = "redo"
-            elif words in {"重拆任务","重新拆分任务","重新编排","按模块重新拆分"}:
-                intent = "replan"
+            elif (words in {"重拆任务","重新拆分任务","重新编排","按模块重新拆分"}
+                  or re.search(r"(?:重做|重新|重跑|从).{0,18}(?:编排|任务分解)", words)):
+                intent = "replan_manual" if "单步" in words else "replan"
             elif re.match(r"^(改成|把|请改|想改|修改|增加|删除|去掉|加上|调整|改一下|别做)", message):
                 intent = "revise"
             elif re.search(r"到哪一?步|还要|进度|还在跑|没动|为什么|状态|卡在哪", message):
@@ -754,10 +811,10 @@ class StewardPipeline:
                     return self.public(key)
             else:
                 intent = "ask"
-        if intent not in ("pause", "continue", "retry", "status", "ask", "revise", "redo", "replan"):
+        if intent not in ("pause", "continue", "retry", "status", "ask", "revise", "redo", "replan", "replan_manual"):
             raise InvalidReference("未知主理人指令。")
         self._message(key, "user", message)
-        if intent == "replan":
+        if intent in ("replan", "replan_manual"):
             if not row["project_id"] or row["status"] not in ("failed","paused","completed","gate"):
                 raise InvalidState("请在本轮暂停或失败后再重新拆分。")
             with self.review_lock, self.db.tx():
@@ -771,8 +828,10 @@ class StewardPipeline:
                         self.db.stop_run(run["id"])
                 cfg = options({"gates":[*row["settings"]["gates"],"plan"]},row["settings"])
                 self._update(key,settings=cfg,stage="plan",status="running",run_id=None,retries={},
-                             gate=None,accepted=[g for g in row["accepted"] if g!="plan"],error=None,delivery=None)
-            self._message(key,"steward","保留原需求、方案和历史尝试。重拆之后会停在开工前，让你先看新的任务与文件清单。")
+                             manual_debug=intent=="replan_manual", gate=None, plan_checkpoint=None,
+                             accepted=[g for g in row["accepted"] if g=="spec"],error=None,delivery=None)
+            note = "开工后到工作台点「单步派发」，有待审产物时可批准或退回。" if intent=="replan_manual" else ""
+            self._message(key,"steward","从已确认的方案重新编排，保留历史运行。新计划会先停在开工前。"+note)
             self._spawn(key)
             return self.public(key)
         if intent in ("revise", "redo"):

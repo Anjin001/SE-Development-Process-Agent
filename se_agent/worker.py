@@ -11,12 +11,15 @@ import ast
 import hashlib
 import json
 import os
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from time import sleep
+from uuid import uuid4
 
 from .api_contract import CONTRACT_PATH, parse_endpoints, view_for_file
 from .model_router import ModelRouter, load_config
-from .providers import (LLMResult, OpenAICompatibleProvider, ProviderError, ProviderOutputError,
+from .providers import (LLMResult, OpenAICompatibleProvider, ProviderConnectionError, ProviderError, ProviderOutputError,
                         ProviderTimeout, build_provider, estimate_tokens)
 from .worktree import MergeConflict, WorkspaceError, WorktreeAdapter
 
@@ -107,8 +110,7 @@ def build_prompt(request, task, step):
         refs = set(unit["refs"])
         facts = [item["text"][:450] for item in relevant.get("requirements",[]) if item["id"] in refs]
         facts.extend(str(item.get("choice",""))[:260] for item in relevant.get("decisions",[])[:24])
-        prefix = "/api/"+unit["name"]
-        data = {"module":unit["name"],"route_prefix":prefix,"scope":unit["scope"][:650],
+        data = {"module":unit["name"],"scope":unit["scope"][:1000],
                 "requirements_and_decisions":facts,
                 "occupied_routes":request.get("occupied_routes",[]),
                 "correction":request.get("contract_correction","")}
@@ -116,7 +118,8 @@ def build_prompt(request, task, step):
                 '{"endpoints":[{"method":"POST","path":"/api/example","handler":"create_example",'
                 '"request":["title"],"response":["id"]}]}。'
                 "每个服务最多 8 个接口，每种请求或响应最多 12 个英文字段名；"
-                "所有路径都必须等于 route_prefix 或从 route_prefix 加斜杠开始。"
+                "保留任务和规格已经指定的完整业务路径。模块名称只是代码归属，不作为路由前缀。"
+                "同一方法和路径只能归一个模块，避开 occupied_routes。"
                 "相同需求编号可由多个服务共同实现，但这里只做本服务范围，不负责其他模块。"
                 "每个接口的 handler 在本片段内唯一；不用写示例、JSON Schema、描述或 OpenAPI 外壳。\n"
                 +json.dumps(data,ensure_ascii=False,separators=(",",":")))
@@ -374,11 +377,46 @@ class Worker:
                 target = workspace.path / PurePosixPath(output["path"])
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(produced[output["id"]], encoding="utf-8")
+            if task.get("phase") in ("development", "verification"):
+                self._run_task_tests(workspace.path, git_outputs, progress)
             state["commit_sha"] = workspace.commit_paths(
                 f'{task["id"]} {task["title"]}（尝试 {request["attempt_id"]}）',
                 [o["path"] for o in git_outputs])
             changed = workspace.diff_paths(state["checkout_commit"])
         return [self._real_artifact(output, produced, changed, state) for output in outputs]
+
+    @staticmethod
+    def _run_task_tests(workspace, outputs, progress):
+        paths = [output["path"] for output in outputs if output["path"].startswith("tests/")]
+        test_paths = [path for path in paths if path.endswith((".py", ".test.mjs"))]
+        if not test_paths:
+            return
+        image = os.environ.get("SE_AGENT_TEST_IMAGE")
+        if not image:
+            progress("模块测试已生成 · 待实跑（未配置测试容器）")
+            return
+        for path in test_paths:
+            progress("运行测试 "+path, 60)
+            name = "se-agent-test-"+uuid4().hex
+            command = ["node", "--test", path] if path.endswith(".mjs") else [
+                "python", "-B", "-m", "unittest", "discover", "-s", "tests", "-p", PurePosixPath(path).name]
+            try:
+                result = subprocess.run(
+                    ["docker", "run", "--rm", "--name", name, "--pull", "never", "--network", "none",
+                     "--read-only", "--tmpfs", "/tmp", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                     "--pids-limit", "64", "--memory", "512m", "--cpus", "1",
+                     "--mount", f"type=bind,source={workspace.resolve()},target=/work,readonly",
+                     "-w", "/work", "--entrypoint", command[0], image, *command[1:]],
+                    capture_output=True, encoding="utf-8", errors="replace", timeout=60)
+            except subprocess.TimeoutExpired:
+                subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=10, check=False)
+                raise OutputContentError(path, "测试执行超过 60 秒，退回当前任务") from None
+            except FileNotFoundError:
+                raise OutputContentError(path, "未找到 Docker，测试未运行") from None
+            output = result.stdout + "\n" + result.stderr
+            if result.returncode or "Ran 0 tests" in output or "# tests 0" in output:
+                raise OutputContentError(path, "测试未通过，退回当前任务："+output.strip()[-600:])
+            progress("测试通过 "+path)
 
     @staticmethod
     def _real_artifact(output, produced, changed, state):
@@ -422,8 +460,20 @@ class Worker:
 
         def generate(call_context, current_task, step, provider, path, *, compact_retry=True):
             state["model"] = step["model"]
+
+            def call(inputs, options):
+                for index in range(3):
+                    try:
+                        return self.executor.run_step(inputs, current_task, options, provider)
+                    except ProviderConnectionError as exc:
+                        if index == 2:
+                            raise WorkspaceError(f"{path}：{exc}，当前文件自动重试两次仍未完成") from exc
+                        if progress:
+                            progress(f"{path} · 连接中断，重试 {index+1}/2", int(getattr(provider, "timeout", 0) or 0))
+                        sleep(index + 1)
+
             try:
-                result = self.executor.run_step(call_context,current_task,step,provider)
+                result = call(call_context, step)
             except ProviderOutputError as exc:
                 if exc.usage:
                     charge(step["model"],exc.usage)
@@ -433,8 +483,7 @@ class Worker:
                 if progress:
                     progress("输出触顶，缩短提示并补全 "+path,int(provider.timeout))
                 try:
-                    result = self.executor.run_step(dict(call_context,compact_retry=True),
-                        current_task,expanded,provider)
+                    result = call(dict(call_context,compact_retry=True), expanded)
                 except ProviderOutputError as again:
                     if again.usage:
                         charge(step["model"],again.usage)
@@ -455,7 +504,7 @@ class Worker:
                     generated = generate(scoped,current_task,dict(step,max_output_tokens=cap),provider,path)
                     try:
                         generated = checked_content(generated,path,"git_commit")
-                        endpoints, keys = parse_endpoints(generated,occupied,prefix="/api/"+name)
+                        endpoints, keys = parse_endpoints(generated,occupied)
                     except (ValueError, OutputContentError) as exc:
                         if index:
                             raise OutputContentError(path,str(exc)) from exc

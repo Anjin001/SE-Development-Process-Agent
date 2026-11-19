@@ -2009,7 +2009,7 @@
             <span class="text-[9px] font-semibold px-1.5 py-0.2 rounded border ${meta.badgeCls}">${meta.label}</span>
           </div>
           <div class="text-[11px] font-semibold text-slate-800 truncate mt-1" title="${escapeText(t.name)}">${escapeText(t.name)}</div>
-          <div class="text-[10px] text-slate-400 truncate mt-0.5">${escapeText(t.output)}</div>
+          <div class="text-[10px] text-slate-500 truncate mt-0.5">${t.testFiles?.length ? '单测 → ' : ''}${t.reviewRequired ? '评审 · ' : ''}${escapeText(t.output)}</div>
         `;
         node.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -2017,6 +2017,23 @@
           renderAll();
         });
         nodesLayer.append(node);
+      }
+
+      for (const edge of data.reworkEdges || []) {
+        const source = nodeMap.get(edge.from), target = nodeMap.get(edge.to);
+        if (!source || !target) continue;
+        const x1 = source.x + NODE_W / 2, x2 = target.x + NODE_W / 2;
+        const y1 = source.y, y2 = target.y;
+        const path = document.createElementNS(svg.namespaceURI, 'path');
+        path.setAttribute('d', `M ${x1} ${y1} C ${x1} 8, ${x2} 8, ${x2} ${y2}`);
+        path.setAttribute('fill', 'none');
+        path.setAttribute('stroke', markerColors.red);
+        path.setAttribute('stroke-width', '2');
+        path.setAttribute('stroke-dasharray', '5 3');
+        path.setAttribute('marker-end', 'url(#arrow-red)');
+        const title = document.createElementNS(svg.namespaceURI, 'title');
+        title.textContent = edge.note;
+        path.append(title); svg.append(path);
       }
 
       const sel = findTask(selectedTaskId);
@@ -2037,6 +2054,12 @@
         </div>
       `;
       if (plannerLink) {
+        if (sel.reviewRequired) inspector.append(el('p', sel.testFiles?.length
+          ? '实现 → 本任务单测 → 提交评审 → 通过放行；失败或退回时修复并重测。'
+          : '提交评审 → 通过放行；退回时按意见修改并重新提交。', 'text-xs text-slate-700'));
+        for (const edge of (data.reworkEdges || []).filter(item=>item.from===sel.id || item.to===sel.id)) {
+          inspector.append(el('p', edge.from+' 退回 '+edge.to+' · '+edge.note, 'text-xs text-red-700'));
+        }
         const edit = el('button', '返回任务分解', 'text-indigo-700 hover:underline');
         edit.type = 'button';
         edit.addEventListener('click', () => plannerLink.open('task-planner'));

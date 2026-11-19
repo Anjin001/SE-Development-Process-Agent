@@ -1,5 +1,7 @@
 """v2 Worker 验收：模拟链路形状、缺输入、写入范围、真实 worktree 纳入上游与冲突。"""
 import json
+import ssl
+from urllib.error import URLError
 import subprocess
 import tempfile
 import unittest
@@ -11,7 +13,7 @@ from io import BytesIO
 from unittest.mock import patch
 from se_agent.providers import LLMResult, OpenAICompatibleProvider
 from se_agent.runner import execute_task
-from se_agent.worker import Worker
+from se_agent.worker import OutputContentError, Worker
 
 ROOT = Path(__file__).resolve().parent.parent
 SCENARIO = json.loads((ROOT / "examples" / "v2" / "scenario.json").read_text(encoding="utf-8"))
@@ -151,6 +153,17 @@ class ContractOwnershipTest(unittest.TestCase):
 
 
 class RealWorktreeTest(unittest.TestCase):
+    def test_failed_module_tests_reject_candidate_before_commit(self):
+        outputs = [{"path": "tests/test_notes.py"}]
+        result = subprocess.CompletedProcess([], 1, "", "AssertionError: expected status 201")
+        with patch.dict("os.environ", {"SE_AGENT_TEST_IMAGE":"test-runtime"}), \
+                patch("se_agent.worker.subprocess.run", return_value=result) as launch:
+            with self.assertRaisesRegex(OutputContentError, "AssertionError: expected status 201"):
+                Worker._run_task_tests(self.root, outputs, lambda *args: None)
+        command = launch.call_args.args[0]
+        self.assertIn("none", command)
+        self.assertEqual(command[-1], "test_notes.py")
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.root = Path(self.tmp.name)
@@ -246,6 +259,25 @@ class RealWorktreeTest(unittest.TestCase):
         self.assertEqual(result["usage"],{"input_tokens":520,"output_tokens":49152})
         self.assertEqual(result["artifacts"],[])
         self.assertNotIn("not file content",result["error"]["message"])
+
+    def test_deepseek_short_file_retries_tls_eof_in_place(self):
+        chunk = {"choices":[{"delta":{"content":"VALUE = 1\n"}, "finish_reason":"stop"}]}
+        wire = ("data: "+json.dumps(chunk)+"\n\ndata: [DONE]\n").encode()
+        provider = OpenAICompatibleProvider("https://api.deepseek.com", api_key="fixture")
+        router = ModelRouter({"tiers":{"low_cost":{"provider":"openai_compatible","model":"deepseek-flash",
+                                  "max_output_tokens":2048}}, "routing":{"default_tier":"low_cost"}})
+        worker = Worker(mode="real", repo_root=str(self.root), provider=provider, router=router)
+        with patch("se_agent.worker.sleep"), patch("se_agent.providers.urllib.request.urlopen",
+                side_effect=[URLError(ssl.SSLEOFError(8, "unexpected EOF")), BytesIO(wire)]) as send:
+            request = self.request([])
+            request["task"]["outputs"][0]["path"] = "docs/example.md"
+            request["task"]["write_paths"] = ["docs/example.md"]
+            result = execute_task(request, worker)
+        self.assertEqual(result["status"], "succeeded", result["error"])
+        self.assertEqual(send.call_count, 2)
+        for call in send.call_args_list:
+            self.assertTrue(json.loads(call.args[0].data)["stream"])
+        self.assertEqual(git(self.root, "show", result["artifacts"][0]["commit_sha"]+":docs/example.md"), "VALUE = 1")
 
     def test_invalid_python_repairs_only_target_file_before_committing(self):
         request = self.request([])

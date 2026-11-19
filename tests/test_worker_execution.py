@@ -222,9 +222,10 @@ class RealWorktreeTest(unittest.TestCase):
         def respond(req, **kwargs):
             body = json.loads(req.data)
             requests.append(body)
-            return BytesIO(json.dumps({"choices":[{"finish_reason":"length","message":{
-                "reasoning_content":"not file content","content":""}}],
-                "usage":{"prompt_tokens":260,"completion_tokens":body["max_tokens"]}}).encode())
+            chunk = {"choices": [{"finish_reason": "length", "delta": {
+                "reasoning_content": "not file content", "content": "partial source"}}],
+                "usage": {"prompt_tokens": 260, "completion_tokens": body["max_tokens"]}}
+            return BytesIO(("data: "+json.dumps(chunk)+"\n\ndata: [DONE]\n\n").encode())
 
         provider = OpenAICompatibleProvider("https://api.deepseek.com", api_key="fixture")
         router = ModelRouter({"tiers":{"low_cost":{"provider":"openai_compatible","model":"deepseek-flash",
@@ -238,6 +239,7 @@ class RealWorktreeTest(unittest.TestCase):
         with patch("se_agent.providers.urllib.request.urlopen", side_effect=respond):
             result = execute_task(request, worker)
         self.assertEqual(requests[0]["thinking"], {"type":"disabled"})
+        self.assertTrue(all(body["stream"] for body in requests))
         self.assertEqual(result["error"]["details"]["path"],"web/client/view.js")
         self.assertEqual([b["max_tokens"] for b in requests],[16384,32768])
         self.assertEqual(result["error"]["details"]["max_tokens"],32768)

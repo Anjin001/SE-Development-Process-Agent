@@ -5,6 +5,7 @@
 """
 import json
 import os
+import ssl
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -75,12 +76,38 @@ class OpenAICompatibleProvider(Provider):
         return (endpoint.scheme == "https" and endpoint.hostname == "api.deepseek.com"
                 and model in ("deepseek-flash","deepseek-v4-pro"))
 
+    @staticmethod
+    def _read_stream(response):
+        parts, finish, usage = [], None, {}
+        try:
+            for line in response:
+                if not line.startswith(b"data:"):
+                    continue
+                data = line[5:].strip()
+                if data == b"[DONE]" and finish is not None:
+                    return {"choices": [{"finish_reason": finish, "message": {
+                        "content": "".join(parts)}}], "usage": usage}
+                chunk = json.loads(data)
+                if chunk.get("usage"):
+                    usage = chunk["usage"]
+                for choice in chunk.get("choices", []):
+                    finish = choice.get("finish_reason") or finish
+                    content = (choice.get("delta") or {}).get("content")
+                    if isinstance(content, str):
+                        parts.append(content)
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ProviderError("模型流式响应格式不完整") from exc
+        raise ProviderError("模型流式响应在完成前中断")
+
     def complete(self, model, prompt, system=None, max_output_tokens=None, *, file_output=False):
         if self._api_key is None and not self.api_key:
             raise ProviderError(f"缺少凭证：请设置环境变量 {self.api_key_env}")
         messages = ([{"role": "system", "content": system}] if system else []) + [
             {"role": "user", "content": prompt}]
         body = {"model": model, "messages": messages}
+        stream = file_output and self.direct_deepseek(model) and (max_output_tokens or 0) > 8192
+        if stream:
+            body["stream"] = True
         if file_output and self.direct_deepseek(model):
             # Use the file's completion budget for content, not reasoning.
             body["thinking"] = {"type":"disabled"}
@@ -94,10 +121,10 @@ class OpenAICompatibleProvider(Provider):
             request.add_unredirected_header("Authorization", f"Bearer {self.api_key}")
         try:
             timeout = self.timeout
-            if file_output and self.direct_deepseek(model) and (max_output_tokens or 0) > 8192:
+            if stream:
                 timeout = max(timeout, 240)
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                payload = json.loads(response.read().decode("utf-8"))
+                payload = self._read_stream(response) if stream else json.loads(response.read().decode("utf-8"))
         except TimeoutError as exc:
             raise ProviderTimeout(f"{model} 调用超时") from exc
         except urllib.error.HTTPError as exc:
@@ -108,6 +135,8 @@ class OpenAICompatibleProvider(Provider):
             if isinstance(exc.reason, TimeoutError):
                 raise ProviderTimeout(f"{model} 调用超时") from exc
             raise ProviderError(f"{model} 调用失败：{exc.reason}") from exc
+        except ssl.SSLError as exc:
+            raise ProviderError(f"{model} 接收响应时 TLS 连接中断") from exc
         try:
             choice = payload["choices"][0]
             message = choice["message"]
@@ -122,13 +151,15 @@ class OpenAICompatibleProvider(Provider):
         counts = {local: usage[remote] for local,remote in
                   (("input_tokens","prompt_tokens"),("output_tokens","completion_tokens"))
                   if type(usage.get(remote)) is int and usage[remote]>=0}
-        if not has_text or finish == "length":
+        if not has_text or finish == "length" or (stream and finish != "stop"):
             if finish == "length":
                 detail = "达到生成上限，正文未返回或不完整"
                 if "output_tokens" in counts and max_output_tokens:
                     detail += f"（本次生成 {counts['output_tokens']} / 上限 {max_output_tokens} token）"
                 elif max_output_tokens:
                     detail += f"（请求上限 {max_output_tokens} token）"
+            elif stream and finish != "stop":
+                detail = "响应提前结束，文件未保存"
             else:
                 detail = "没有返回可写入文件的正文"
             raise ProviderOutputError(f"{model} {detail}",finish,max_output_tokens,counts)

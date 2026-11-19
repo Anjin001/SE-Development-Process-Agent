@@ -56,3 +56,5 @@ python -m se_agent.synthesis_preview --port 8002
 ```
 
 打开 http://127.0.0.1:8002，加载取舍演示或导入 CLY 交接 JSON。详见 [运行、接口与验收说明](docs/评审与方案整合.md)。
+
+Windows 可双击 start-local.cmd，然后在浏览器打开 http://127.0.0.1:8008。关闭启动窗口可停止服务。

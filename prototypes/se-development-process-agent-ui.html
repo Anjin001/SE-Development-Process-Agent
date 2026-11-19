@@ -4,7 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SE-Agent · 开发流程工作台</title>
-  <script src="vendor/tailwindcss-3.4.17.js"></script>
+  <script src="vendor/tailwindcss-3.4.17.js" onerror="var s=document.createElement('script');s.src='https://cdn.tailwindcss.com/3.4.17';document.head.appendChild(s);"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     * { box-sizing: border-box; }
     body {
@@ -74,17 +77,39 @@
       z-index: 1;
     }
 
-    /* Left Sidebar Collapsed State: keep toggle button clearly clickable */
+    .graph-node.dimmed { opacity: 0.25; }
+    .graph-node.critical-ring { box-shadow: 0 0 0 1.5px #4f46e5, 0 2px 8px rgba(79, 70, 229, 0.14); }
+
+    /* Left Sidebar Collapsed State: 52px wide with centered toggle (fixes 56px > 48px overflow) */
     #left-sidebar.collapsed {
-      width: 48px;
+      width: 52px;
     }
     #left-sidebar.collapsed .sb-hide-on-collapse {
       display: none !important;
+    }
+    #left-sidebar.collapsed .sb-brand-head {
+      padding-left: 0;
+      padding-right: 0;
+      justify-content: center;
     }
     #left-sidebar.collapsed .nav-item {
       justify-content: center;
       padding-left: 0;
       padding-right: 0;
+    }
+    @media (max-width: 1120px) {
+      #right-steward-sidebar {
+        position: fixed;
+        top: 48px;
+        right: 0;
+        bottom: 0;
+        z-index: 40;
+        box-shadow: -8px 0 24px rgba(15, 23, 42, 0.14);
+      }
+    }
+    @media (max-width: 820px) {
+      #workbench-split-view { flex-direction: column; }
+      #workbench-task-rail { width: 100% !important; max-height: 220px; border-right: 0; border-bottom: 1px solid #e2e8f0; }
     }
   </style>
 </head>
@@ -94,7 +119,7 @@
   <aside id="left-sidebar" class="w-60 bg-[#f3f5f9] border-r border-slate-200/90 flex flex-col justify-between shrink-0 h-full overflow-y-auto transition-all duration-150">
     <div>
       <!-- Brand Header -->
-      <div class="px-3.5 py-3.5 flex items-center justify-between border-b border-slate-200/70">
+      <div class="sb-brand-head px-3.5 py-3.5 flex items-center justify-between border-b border-slate-200/70">
         <div class="flex items-center gap-2 sb-hide-on-collapse">
           <div class="flex items-center">
             <span class="font-extrabold text-base tracking-tight text-slate-900">SE-Agent</span>
@@ -110,6 +135,13 @@
 
       <!-- Navigation Tree -->
       <nav class="p-2 space-y-3 text-[13px]" aria-label="SE Development Process Agent 导航">
+        <!-- 0. 项目主理人 (main 分支最新入口) -->
+        <div class="space-y-0.5">
+          <button type="button" data-module="steward" data-title="项目主理人" class="nav-item w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-slate-700 hover:bg-slate-200/60 font-medium" title="项目主理人">
+            <span class="flex items-center gap-2"><span class="text-indigo-500 text-xs">★</span><span class="sb-hide-on-collapse">项目主理人</span></span>
+            <span class="mono text-[10px] text-indigo-600 sb-hide-on-collapse">AI</span>
+          </button>
+        </div>
         <!-- 1. 需求与赛马中心 -->
         <div class="space-y-1">
           <div class="px-2.5 py-1 flex items-center justify-between text-xs font-semibold text-slate-500 sb-hide-on-collapse">
@@ -138,6 +170,10 @@
             </button>
             <button type="button" data-module="workbench" data-title="开发流程工作台" class="nav-item active-nav w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-indigo-50/90 text-indigo-600 font-semibold border border-indigo-200/60" title="开发流程工作台">
               <span class="flex items-center gap-2"><span class="text-indigo-600 text-xs">⊞</span><span class="sb-hide-on-collapse">开发流程工作台</span></span>
+            </button>
+            <button type="button" data-module="code-review" data-title="Agent 代码审查中心" class="nav-item w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-slate-600 hover:bg-slate-200/60" title="Agent 代码审查中心">
+              <span class="flex items-center gap-2"><span class="text-slate-400 text-xs">🤖</span><span class="sb-hide-on-collapse">Agent 代码审查</span></span>
+              <span id="nav-review-badge" class="mono text-[10px] px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 font-semibold sb-hide-on-collapse">1 审查中</span>
             </button>
           </div>
         </div>
@@ -187,7 +223,7 @@
     <div class="p-3 border-t border-slate-200/80 text-[11px] text-slate-500 flex items-center justify-between sb-hide-on-collapse">
       <span class="flex items-center gap-1.5">
         <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-        <span>Python · SQLite</span>
+        <span>FastAPI · SQLite 就绪</span>
       </span>
       <span id="sidebar-req-ver" class="mono">REQ-01@v1</span>
     </div>
@@ -212,16 +248,17 @@
         <button id="btn-toggle-right-sidebar" type="button" class="px-2.5 py-1 rounded-md border border-indigo-200 bg-indigo-50/70 text-indigo-700 font-semibold hover:bg-indigo-100 transition">
           主理侧边栏 ◨
         </button>
-        <span id="worker-online-indicator" class="hidden" aria-hidden="true"></span>
+        <span id="planner-model-mode" class="mono text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">模拟演示</span>
+        <span id="worker-online-indicator" class="w-2 h-2 rounded-full bg-emerald-500" title="独立 Worker 在线"></span>
       </div>
     </header>
 
     <!-- 二级工具栏：项目切换与快捷操作 -->
-    <div class="h-11 px-5 bg-slate-50/70 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
+    <div class="min-h-[44px] py-1.5 px-5 bg-slate-50/70 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
       <div class="flex flex-wrap items-center gap-2.5 text-xs">
         <span class="flex items-center gap-1.5 font-semibold text-slate-700">
           <span class="text-indigo-600">⊞</span>
-          <span>当前项目</span>
+          <span>当前演示案例</span>
         </span>
 
         <select id="select-project" aria-label="选择演示案例" class="bg-white border border-slate-300 rounded-md px-2.5 py-1 text-xs font-medium text-slate-700 focus:outline-none focus:border-indigo-500">
@@ -235,13 +272,16 @@
         </select>
 
         <span id="active-badge" class="mono text-[11px] font-semibold px-2 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-200">
-          版本化规格与经验
+          DEC-01 · EXP-012
         </span>
       </div>
 
       <div class="flex items-center gap-2 text-xs">
+        <button id="btn-auto-loop" type="button" class="px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition shadow-2xs">
+          ↻ 启动持续开发-审查闭环
+        </button>
         <button id="btn-step-sim" type="button" class="px-2.5 py-1 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-medium transition shadow-2xs">
-          ▶ 推进一轮派发
+          ▶ 单轮推进
         </button>
         <button id="btn-fit-graph" type="button" class="px-2.5 py-1 rounded-md bg-white hover:bg-slate-100 text-slate-600 border border-slate-300 transition">
           重置画布
@@ -262,7 +302,7 @@
         <div id="workbench-split-view" class="flex-1 flex min-h-0 overflow-hidden">
 
           <!-- 2A. 左侧任务完成进度与 Phase 列表 -->
-          <section class="w-[304px] border-r border-slate-200 flex flex-col h-full bg-[#fbfcfe] shrink-0">
+          <section id="workbench-task-rail" class="w-[304px] border-r border-slate-200 flex flex-col h-full bg-[#fbfcfe] shrink-0">
             <div class="p-4 border-b border-slate-200/80 space-y-2">
               <div class="flex items-center justify-between">
                 <span class="text-xs font-bold text-slate-700">整体任务进度</span>
@@ -275,7 +315,7 @@
                 <span id="progress-count" class="mono">8 / 11 项任务已完成</span>
                 <div class="flex items-center gap-1">
                   <button id="filter-all" type="button" class="px-1.5 py-0.5 rounded text-[10px] bg-indigo-50 text-indigo-700 font-semibold">全部</button>
-                  <button id="filter-异常" type="button" class="px-1.5 py-0.5 rounded text-[10px] hover:bg-slate-200/60 text-slate-600">待审/受阻</button>
+                  <button id="filter-异常" type="button" class="px-1.5 py-0.5 rounded text-[10px] hover:bg-slate-200/60 text-slate-600">审查中/受阻</button>
                 </div>
               </div>
             </div>
@@ -290,13 +330,16 @@
             <div class="h-10 px-5 border-b border-slate-200 flex items-center justify-between shrink-0 bg-white">
               <div class="flex items-center gap-6 text-xs font-semibold h-full" role="tablist">
                 <button type="button" data-tab="details" class="ws-tab h-full border-b-2 border-transparent text-slate-500 hover:text-slate-800 transition">
-                  任务详情与交付审阅
+                  任务详情与审查记录
                 </button>
                 <button type="button" data-tab="monitor" class="ws-tab h-full border-b-2 border-transparent text-slate-500 hover:text-slate-800 transition">
                   甘特排期与并发监控
                 </button>
                 <button type="button" data-tab="activity" class="ws-tab h-full border-b-2 border-transparent text-slate-500 hover:text-slate-800 transition">
                   活动记录与经验检索
+                </button>
+                <button type="button" data-tab="review" class="ws-tab h-full border-b-2 border-transparent text-slate-500 hover:text-slate-800 transition">
+                  Agent 代码审查
                 </button>
                 <button type="button" data-tab="graph" class="ws-tab h-full border-b-2 border-indigo-600 text-indigo-600 transition">
                   Workflow 依赖图
@@ -311,11 +354,14 @@
 
             <!-- Tab 1: Workflow 依赖图画布 -->
             <div id="panel-graph" class="flex-1 relative overflow-hidden graph-canvas-bg">
-              <div class="absolute top-3 left-4 z-20 flex items-center gap-2">
-                <span class="px-2.5 py-1 rounded-md bg-indigo-50/95 border border-indigo-200 text-indigo-700 text-[11px] font-semibold shadow-2xs">
-                  <span id="graph-caption">Workflow 编排图 · 阶段容器与关键路径</span>
+              <div class="absolute top-3 left-4 z-20 flex flex-wrap items-center gap-2">
+                <span id="graph-caption" class="px-2.5 py-1 rounded-md bg-indigo-50/95 border border-indigo-200 text-indigo-700 text-[11px] font-semibold shadow-2xs">
+                  Workflow 编排图 · 阶段容器与关键路径
                 </span>
-                <span id="graph-hint" class="text-[11px] text-slate-400 hidden xl:inline">拖拽画布平移 · 点击节点审阅产物或重试异常任务</span>
+                <button id="btn-focus-critical" type="button" class="px-2.5 py-1 rounded-md bg-white/95 hover:bg-indigo-50 border border-slate-300 text-slate-700 text-[11px] font-semibold shadow-2xs transition">
+                  聚焦关键路径
+                </button>
+                <span id="graph-hint" class="text-[11px] text-slate-400 hidden xl:inline">滚轮缩放 · 拖拽平移 · 点击节点查看审查或重试</span>
               </div>
 
               <div class="absolute top-3 right-4 z-20 flex items-center bg-white/95 border border-slate-200 rounded-lg shadow-2xs text-xs overflow-hidden">
@@ -325,9 +371,9 @@
               </div>
 
               <div id="graph-viewport" class="w-full h-full cursor-grab active:cursor-grabbing overflow-hidden relative">
-                <div id="graph-stage" class="origin-top-left transition-transform duration-75" style="width: 1320px; height: 820px; transform: translate(0px, 0px) scale(1);">
+                <div id="graph-stage" class="origin-top-left transition-transform duration-75" style="width: 1320px; height: 860px; transform: translate(0px, 0px) scale(1);">
                   <div id="graph-phases-layer"></div>
-                  <svg id="graph-edges-svg" class="absolute inset-0 w-full h-full pointer-events-none" width="1320" height="820" style="z-index: 1;"></svg>
+                  <svg id="graph-edges-svg" class="absolute inset-0 w-full h-full pointer-events-none" width="1320" height="860" style="z-index: 1;"></svg>
                   <div id="graph-nodes-layer"></div>
                 </div>
               </div>
@@ -345,7 +391,7 @@
                 </span>
                 <span class="flex items-center gap-1.5">
                   <span class="w-2 h-2 rounded-full bg-amber-500 inline-block"></span>
-                  <span>待人工审核 / 运行中</span>
+                  <span>Agent 执行中 / 审查中</span>
                 </span>
                 <span class="flex items-center gap-1.5">
                   <span class="w-2 h-2 rounded-full bg-red-500 inline-block"></span>
@@ -354,7 +400,7 @@
               </div>
             </div>
 
-            <!-- Tab 2: 任务详情与交付审阅 -->
+            <!-- Tab 2: 任务详情与审查记录 -->
             <div id="panel-details" class="hidden flex-1 overflow-y-auto p-6 bg-slate-50/50"></div>
 
             <!-- Tab 3: 甘特排期与并发监控 -->
@@ -363,12 +409,15 @@
             <!-- Tab 4: 活动记录与 EXP-012 -->
             <div id="panel-activity" class="hidden flex-1 overflow-y-auto p-6 bg-slate-50/50"></div>
 
+            <!-- Tab 5: Agent 自动化代码审查 -->
+            <div id="panel-review" class="hidden flex-1 overflow-y-auto p-6 bg-slate-50/50"></div>
+
           </section>
         </div>
       </div>
 
       <!-- ==================== 3. 新增右侧常驻主理控制侧边栏 (STAGE STEWARD) ==================== -->
-      <aside id="right-steward-sidebar" aria-label="主理 AI 与人工控制侧边栏" class="w-72 bg-[#f8fafc] border-l border-slate-200 flex flex-col justify-between shrink-0 h-full overflow-y-auto p-4 space-y-4">
+      <aside id="right-steward-sidebar" aria-label="主理 AI 与 Agent 调度侧边栏" class="w-72 bg-[#f8fafc] border-l border-slate-200 flex flex-col justify-between shrink-0 h-full overflow-y-auto p-4 space-y-4">
         <div id="steward-sidebar-body" class="space-y-3.5 text-xs"></div>
 
         <div class="pt-3 border-t border-slate-200/80 space-y-1.5 text-[11px] text-slate-500">
@@ -403,17 +452,15 @@
     <span id="toast-msg"></span>
   </div>
 
-  <script src="/planner-link.js"></script>
   <script>
   (() => {
     // =========================================================================
     // 1. 全局状态：主体结构完全保持上一版 (S0.1~T3.1 & C1.1~C2.2)，同时支持双案例全局联动
     // =========================================================================
     let activeModule = 'workbench';
-    let plannerLink = null;
     let currentProjectKey = 'lab';
     let currentTab = 'graph';
-    let selectedTaskId = 'T2.1';
+    let selectedTaskId = 'R2.1';
     let collapsedPhases = new Set();
     let filterMode = 'all';
     let zoom = 1;
@@ -422,6 +469,101 @@
     let isPanning = false;
     let panStartX = 0;
     let panStartY = 0;
+    let focusCritical = false;
+    let ganttScale = 5;
+    let planVersion = 1;
+    let planLocked = false;
+    let dispatchPaused = false;
+    let sqliteAfterSeq = 0;
+
+    // 1.5 Agent 自动化代码审查状态（嵌入 Phase 3 流程，由代码审查 Agent 全自动执行，无人工审查）
+    const agentReviewStore = {};
+    const autoLoopState = {
+      running: false,
+      timer: null,
+      maxRounds: 6,
+      totalRoundsExecuted: 0,
+      activeRollbackEdge: null, // { from: 'R2.1', to: 'T2.1', reason: '...' }
+      timeline: []
+    };
+
+    function stopAutoLoop(silent = false) {
+      if (autoLoopState.timer) {
+        clearInterval(autoLoopState.timer);
+        autoLoopState.timer = null;
+      }
+      autoLoopState.running = false;
+      updateAutoLoopBtn();
+      if (!silent) renderAll();
+    }
+
+    function updateAutoLoopBtn() {
+      const btn = q('#btn-auto-loop');
+      if (!btn) return;
+      if (autoLoopState.running) {
+        btn.textContent = '⏹ 停止持续闭环';
+        btn.className = 'px-2.5 py-1 rounded-md bg-red-600 hover:bg-red-500 text-white font-semibold transition shadow-2xs';
+      } else {
+        btn.textContent = '↻ 启动持续开发-审查闭环';
+        btn.className = 'px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition shadow-2xs';
+      }
+    }
+    function getAgentReview(task) {
+      if (!agentReviewStore[task.id]) {
+        const isR21 = task.id === 'R2.1' || task.id === 'T2.1';
+        const isR22 = task.id === 'R2.2' || task.id === 'T2.2';
+        const orig = task.originalContent || `def run_${task.id.toLowerCase().replace(/[^a-z0-9]/g, '_')}():\n    # 开发 Agent 初始提交 (${task.spec})\n    return {"status": "ok"}`;
+        const autoFixed = task.revisedContent || (isR21
+          ? 'GET /devices 返回设备列表。停用设备保留在列表中，显示「停用」状态，隐藏新预约入口 (can_reserve=false)。'
+          : orig + '\n    # 代码审查 Agent 自动校验通过');
+        agentReviewStore[task.id] = {
+          reviewerAgent: '代码审查 Agent (AG-05)',
+          commitSha: isR21 ? 'c4e9a12' : (isR22 ? 'f08b3d1' : '9a17c40'),
+          excerptRange: isR21 ? 'src/api/device_query.py · L14–L36' : `${task.worktree}/handler.py · L1–L42`,
+          round: 1,
+          phaseStep: 'review', // 'review' | 'redevelop'
+          verdict: task.status === 'completed' ? 'passed' : (isR22 ? 'needs_fix' : 'needs_fix'),
+          checks: [
+            { id: 'ast', name: 'AST 静态语法与类型校验', status: isR22 ? 'failed' : 'passed', detail: isR22 ? 'booking_service.py:L29 缺少事务异常回滚' : '0 errors, 0 warnings' },
+            { id: 'pytest', name: '自动化单元测试与回归 (pytest)', status: isR22 ? 'failed' : 'passed', detail: isR22 ? 'test_disabled_device_booking 断言失败' : '14 passed in 0.38s' },
+            { id: 'paths', name: '授权修改路径白名单校验 (write_paths)', status: 'passed', detail: `全部变更文件位于 ${task.worktree} 授权范围` },
+            { id: 'exp', name: '领域经验卡 EXP-012 / 规格条款自动走查', status: (isR22 || isR21) ? 'failed' : 'passed', detail: isR22 ? '未覆盖停用设备存量预约取消通知' : (isR21 ? 'REQ-01 停用设备未隐藏新预约入口 (can_reserve 缺失)' : '已覆盖停用状态展示与预约拦截') }
+          ],
+          findings: isR21 ? [
+            { id: 'F-01', line: 'L22', severity: 'warning', text: '原稿 v1 仅返回设备列表，未显式隐藏停用设备的新预约入口；已自动生成补丁建议并通知后端 Agent A 修订为 v2。', resolved: false }
+          ] : (isR22 ? [
+            { id: 'F-02', line: 'L29', severity: 'blocker', text: '阻断项：并发预约写入缺少状态锁校验，且单元测试失败；需自动退回后端 Agent B 修复后复审。', resolved: false }
+          ] : []),
+          origCode: orig,
+          fixedCode: autoFixed,
+          history: task.status === 'completed' ? [
+            { round: 1, agent: '代码审查 Agent', action: '自动审查通过并放行', commit: '9a17c40', time: '10:18:12', note: '4 项自动化门禁全绿，已释放下游依赖' }
+          ] : []
+        };
+      }
+      return agentReviewStore[task.id];
+    }
+
+    function buildLineDiff(aStr, bStr) {
+      const a = String(aStr || '').split('\n');
+      const b = String(bStr || '').split('\n');
+      const out = [];
+      const n = Math.max(a.length, b.length);
+      for (let i = 0; i < n; i++) {
+        if (a[i] === b[i]) out.push({ type: 'ctx', ln: i + 1, text: a[i] ?? '' });
+        else {
+          if (a[i] !== undefined) out.push({ type: 'del', ln: i + 1, text: a[i] });
+          if (b[i] !== undefined) out.push({ type: 'add', ln: i + 1, text: b[i] });
+        }
+      }
+      return out;
+    }
+    let stewardState = {
+      gates: { review: true, plan: true, delivery: true },
+      chat: [
+        { role: 'steward', text: '项目主理人已就绪。当前已同步 main 分支全流程状态，可在此下达推进、门禁调整或异常重试指令。' }
+      ]
+    };
 
     // 1.1 按案例隔离的需求与赛马状态
     const intakeByProject = {
@@ -586,7 +728,8 @@
         agents: [
           { id: 'AG-01', name: '校园数字化产品顾问', role: '方案组成员 / 交叉评审员', domain: '校园预约、资源生命周期、通知触达', focus: '资源状态变更对在途业务单据的边界影响', history: '亲历自习室座位预约复查，在本项目中提前提出设备停用检查并引用 EXP-012' },
           { id: 'AG-02', name: '高校教务与实验室架构师', role: '方案组成员 / 规划与整合 Agent', domain: '设备台账、并发锁、模块接口契约', focus: '状态枚举一致性、接口幂等与共享文件冲突规避', history: '亲历大型仪器共享试点与课程报名原型，提供改期与冲突边界设计' },
-          { id: 'AG-03', name: '质量与合规复查官', role: '评审 Agent / 经验归纳复查者', domain: '需求双向追踪、异常恢复、权限审计', focus: '核查无依据范围膨胀、跨组隐私隔离与证据级别', history: '独立核查本项目 B 组自动取消规则并触发 DEC-01 人工确认门禁' }
+          { id: 'AG-03', name: '质量与合规复查官', role: '评审 Agent / 经验归纳复查者', domain: '需求双向追踪、异常恢复、权限审计', focus: '核查无依据范围膨胀、跨组隐私隔离与证据级别', history: '独立核查本项目 B 组自动取消规则并关联 DEC-01 决策' },
+          { id: 'AG-05', name: '自动化代码审查官', role: '代码审查 Agent', domain: 'AST 静态分析、单元测试、接口契约、write_paths 白名单与 EXP-012 走查', focus: '作为独立 Phase 审查节点自动审查开发 Agent 产出，不通过则自动退回修复并复审', history: '负责本项目 Phase 3 自动化代码审查节点 R2.1 与 R2.2，全自动放行至集成阶段' }
         ],
         experience: {
           id: 'EXP-012',
@@ -634,7 +777,7 @@
     // 1.4 编排与工作台 DAG 数据集 (保持上一版主体结构，精简括号与人名)
     const datasets = {
       lab: {
-        badge: '版本化规格与经验',
+        badge: 'DEC-01 · EXP-012',
         baseDone: 0,
         baseTotal: 0,
         phases: [
@@ -695,7 +838,7 @@
                 status: 'completed',
                 owner: '评审与整合模块',
                 worktree: 'wt/review-synthesis',
-                spec: '版本化规格与经验/V1',
+                spec: 'DEC-01 · EXP-012/V1',
                 output: '综合方案 SPEC-01@v2',
                 estimateMin: 5,
                 critical: true,
@@ -744,24 +887,24 @@
           },
           {
             id: 'P3',
-            title: 'Phase 2 & Phase 3 · 功能并行开发、交付审阅与集成工作台',
-            box: { x: 35, y: 395, w: 1155, h: 350 },
+            title: 'Phase 2 · 功能并行开发（后端 Agent）',
+            box: { x: 35, y: 395, w: 720, h: 200 },
             tasks: [
               {
                 id: 'T2.1',
                 code: 'Task 2.1',
                 name: '开发设备查询',
-                status: 'in_progress',
+                status: 'completed',
                 owner: '后端 Agent A',
                 worktree: 'wt/t2-1-devices',
                 spec: 'REQ-01 · 停用保留并展示状态',
-                output: '查询模块 · 待审阅放行 v2',
+                output: '查询模块提交 v1',
                 originalContent: 'GET /devices 返回设备列表。默认展示所有设备。',
                 revisedContent: 'GET /devices 返回设备列表。停用设备保留在列表中，显示「停用」状态，隐藏新预约入口。',
-                reviewNote: '补充停用设备的状态展示和预约入口规则。',
+                reviewNote: '',
                 estimateMin: 5,
                 critical: false,
-                x: 65,
+                x: 60,
                 y: 445,
                 deps: ['T1.1']
               },
@@ -776,7 +919,7 @@
                 output: '预约服务提交 · 尝试1失败',
                 estimateMin: 10,
                 critical: true,
-                x: 365,
+                x: 295,
                 y: 445,
                 deps: ['T1.1']
               },
@@ -787,13 +930,39 @@
                 status: 'pending',
                 owner: '后端 Agent B',
                 worktree: 'wt/t2-3-deactivation',
-                spec: 'REQ-03 · 版本化规格与经验',
+                spec: 'REQ-03 · DEC-01 · EXP-012',
                 output: '停用处置提交 · 等待 T2.2',
                 estimateMin: 5,
                 critical: true,
-                x: 665,
+                x: 530,
                 y: 445,
                 deps: ['T2.2']
+              }
+            ]
+          },
+          {
+            id: 'P4',
+            title: 'Phase 3 · Agent 自动化代码审查与质量门禁',
+            box: { x: 35, y: 615, w: 720, h: 175 },
+            tasks: [
+              {
+                id: 'R2.1',
+                code: 'Review 2.1',
+                name: '代码审查：设备查询模块',
+                status: 'in_progress',
+                owner: '代码审查 Agent',
+                worktree: 'wt/review-t2-1',
+                spec: 'REQ-01 · 显式摘录 L14–L36',
+                output: '审查报告 R2.1 · Agent 审查中',
+                isReviewNode: true,
+                targetTaskId: 'T2.1',
+                originalContent: 'GET /devices 返回设备列表。默认展示所有设备。',
+                revisedContent: 'GET /devices 返回设备列表。停用设备保留在列表中，显示「停用」状态，隐藏新预约入口。',
+                estimateMin: 5,
+                critical: false,
+                x: 60,
+                y: 665,
+                deps: ['T2.1']
               },
               {
                 id: 'M0.12',
@@ -804,12 +973,38 @@
                 worktree: 'memory/experiences/EXP-012',
                 spec: '触发词：停用/送修/下架',
                 output: '验证通过条件：取消并告知原因',
+                isReviewNode: true,
+                targetTaskId: 'T2.3',
                 estimateMin: 5,
                 critical: false,
-                x: 365,
-                y: 615,
+                x: 295,
+                y: 665,
                 deps: ['T2.1']
               },
+              {
+                id: 'R2.2',
+                code: 'Review 2.2',
+                name: '代码审查：预约与停用处置',
+                status: 'pending',
+                owner: '代码审查 Agent',
+                worktree: 'wt/review-t2-2-3',
+                spec: 'REQ-02/03 · DEC-01 · 回归测试',
+                output: '审查报告 R2.2 · 等待前置',
+                isReviewNode: true,
+                targetTaskId: 'T2.2',
+                estimateMin: 5,
+                critical: true,
+                x: 530,
+                y: 665,
+                deps: ['T2.2', 'T2.3']
+              }
+            ]
+          },
+          {
+            id: 'P5',
+            title: 'Phase 4 · 集成交付（审查通过后放行）',
+            box: { x: 805, y: 495, w: 385, h: 210 },
+            tasks: [
               {
                 id: 'T3.1',
                 code: 'Task 3.1',
@@ -817,13 +1012,13 @@
                 status: 'pending',
                 owner: '集成 Agent',
                 worktree: 'wt/t3-1-workbench',
-                spec: '规格 §4 · 合并并行分支路由',
-                output: '集成提交 · T2.1@v2 + T2.3@v1',
+                spec: '规格 §4 · 仅消费通过审查的提交',
+                output: '集成提交 · 等待 R2.1 / R2.2 通过',
                 estimateMin: 5,
                 critical: true,
-                x: 960,
-                y: 535,
-                deps: ['T2.1', 'T2.3', 'M0.12']
+                x: 895,
+                y: 565,
+                deps: ['R2.1', 'R2.2', 'M0.12']
               }
             ]
           }
@@ -849,8 +1044,9 @@
             title: 'Phase 2 · 整合复查踩坑与 EXP-012 经验卡提炼',
             box: { x: 180, y: 260, w: 880, h: 180 },
             tasks: [
-              { id: 'C2.1', code: '整合复查', name: '走查发现：停用周三14点已约座位漏处理', status: 'completed', owner: '校园数字化产品顾问', worktree: 'case/review-walkthrough', spec: '方案走查验证层级', output: '补充取消已有预约并显示原因', estimateMin: 10, critical: true, x: 230, y: 315, deps: ['C1.1', 'C1.3'] },
-              { id: 'C2.2', code: '经验入库', name: '发布经验卡 EXP-012 / V1', status: 'completed', owner: '复盘归纳 Agent', worktree: 'sqlite/experiences', spec: '状态：已发布 · 证据：方案走查', output: '供后续实验室设备预约项目复用', estimateMin: 5, critical: true, x: 680, y: 315, deps: ['C2.1'] }
+              { id: 'C2.1', code: '整合复查', name: '走查发现：停用周三14点已约座位漏处理', status: 'completed', owner: '代码审查 Agent', worktree: 'case/review-walkthrough', spec: '方案走查验证层级', output: '自动检出遗漏并补齐退订规则', isReviewNode: true, estimateMin: 10, critical: true, x: 210, y: 315, deps: ['C1.1', 'C1.3'] },
+              { id: 'R-SR1', code: 'Review SR1', name: '代码审查：座位停用与契约回归', status: 'completed', owner: '代码审查 Agent', worktree: 'case/review-sr1', spec: 'AST + 单测 + EXP-012', output: 'Agent 审查通过 v1', isReviewNode: true, estimateMin: 5, critical: true, x: 485, y: 315, deps: ['C2.1'] },
+              { id: 'C2.2', code: '经验入库', name: '发布经验卡 EXP-012 / V1', status: 'completed', owner: '复盘归纳 Agent', worktree: 'sqlite/experiences', spec: '状态：已发布 · 证据：方案走查', output: '供后续实验室设备预约项目复用', estimateMin: 5, critical: true, x: 760, y: 315, deps: ['R-SR1'] }
             ]
           }
         ]
@@ -864,10 +1060,128 @@
       { time: 'Stage 2', seq: 'seq#2', actor: '记忆服务', text: '检测到「管理员停用设备 + 有效预约」，命中标准标签与别名，自动召回经验卡 EXP-012 / V1。' },
       { time: 'Stage 3', seq: 'seq#3', actor: '评审与整合模块', text: '复查指出 B 组草案新增「自动取消预约」无原文依据；经人工确认 DEC-01 后定稿 SPEC-01@v2。' },
       { time: 'Stage 4', seq: 'seq#4', actor: '任务分解模块', text: '按交付物拆分 T1.1 ~ T3.1 任务卡，导出 workflow.json 与 task.md，通过无环校验。' },
-      { time: 'Stage 6', seq: 'seq#5', actor: '编排器与执行器', text: 'T1.1 交付状态约定 v1；T2.1 提交查询模块进入「待人工审核」；T2.2 预约服务模拟失败，下游 T2.3、T3.1 受阻。' }
+      { time: 'Stage 6', seq: 'seq#5', actor: '编排器与执行器', text: 'T1.1 交付状态约定 v1；T2.1 提交查询模块进入「Agent 审查中」；T2.2 预约服务模拟失败，下游 T2.3、T3.1 受阻。' }
     ];
 
     const q = (s) => document.querySelector(s);
+    const escapeHtml = (str) => String(str ?? '')
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+    function addLog(actor, text, stage = 'Stage 6') {
+      const nextNum = activityLogs.length + 1;
+      activityLogs.push({ time: stage, seq: `seq#${nextNum}`, actor, text });
+    }
+
+    function detectCycle(tasks) {
+      const map = new Map(tasks.map((t) => [t.id, t]));
+      const color = new Map();
+      const stack = [];
+      let cycle = null;
+      function dfs(id) {
+        color.set(id, 1);
+        stack.push(id);
+        const t = map.get(id);
+        for (const depId of (t?.deps || [])) {
+          if (!map.has(depId)) continue;
+          const c = color.get(depId) || 0;
+          if (c === 1) {
+            cycle = stack.slice(stack.indexOf(depId)).concat(depId).reverse();
+            return true;
+          }
+          if (c === 0 && dfs(depId)) return true;
+        }
+        stack.pop();
+        color.set(id, 2);
+        return false;
+      }
+      for (const t of tasks) {
+        if (!color.get(t.id) && dfs(t.id)) return cycle;
+      }
+      return null;
+    }
+
+    function computeSchedule(tasks, maxParallel) {
+      const map = new Map(tasks.map((t) => [t.id, t]));
+      const indeg = new Map();
+      const children = new Map();
+      tasks.forEach((t) => {
+        const valid = (t.deps || []).filter((d) => map.has(d));
+        indeg.set(t.id, valid.length);
+        children.set(t.id, []);
+      });
+      tasks.forEach((t) => {
+        (t.deps || []).forEach((d) => { if (map.has(d)) children.get(d).push(t.id); });
+      });
+      const queue = tasks.filter((t) => indeg.get(t.id) === 0).map((t) => t.id);
+      const topo = [];
+      while (queue.length) {
+        const id = queue.shift();
+        topo.push(id);
+        for (const ch of children.get(id)) {
+          indeg.set(ch, indeg.get(ch) - 1);
+          if (indeg.get(ch) === 0) queue.push(ch);
+        }
+      }
+      tasks.forEach((t) => { if (!topo.includes(t.id)) topo.push(t.id); });
+
+      const es = new Map(), ef = new Map();
+      topo.forEach((id) => {
+        const t = map.get(id);
+        const valid = (t.deps || []).filter((d) => map.has(d));
+        const s = valid.length ? Math.max(...valid.map((d) => ef.get(d) ?? 0)) : 0;
+        es.set(id, s);
+        ef.set(id, s + Math.max(1, Number(t.estimateMin) || 5));
+      });
+      const cpmTotal = Math.max(0, ...Array.from(ef.values()));
+      const ls = new Map(), lf = new Map();
+      [...topo].reverse().forEach((id) => {
+        const t = map.get(id);
+        const chs = children.get(id);
+        const e = chs.length ? Math.min(...chs.map((c) => ls.get(c) ?? cpmTotal)) : cpmTotal;
+        lf.set(id, e);
+        ls.set(id, e - Math.max(1, Number(t.estimateMin) || 5));
+      });
+      const criticalSet = new Set();
+      topo.forEach((id) => {
+        if (Math.abs((ls.get(id) ?? 0) - (es.get(id) ?? 0)) < 0.001) criticalSet.add(id);
+      });
+
+      const planStart = new Map(), planEnd = new Map();
+      const remaining = new Set(topo);
+      const active = [];
+      let now = 0;
+      const limit = Math.max(1, Number(maxParallel) || 2);
+      let guard = 0;
+      while ((remaining.size > 0 || active.length > 0) && guard++ < 500) {
+        for (let i = active.length - 1; i >= 0; i--) {
+          if (active[i].end <= now) active.splice(i, 1);
+        }
+        const ready = [...remaining].filter((id) => {
+          const valid = (map.get(id).deps || []).filter((d) => map.has(d));
+          return valid.every((d) => planEnd.has(d) && planEnd.get(d) <= now);
+        }).sort((a, b) => {
+          const ca = criticalSet.has(a) ? 0 : 1;
+          const cb = criticalSet.has(b) ? 0 : 1;
+          return ca !== cb ? ca - cb : a.localeCompare(b);
+        });
+        for (const id of ready) {
+          if (active.length >= limit) break;
+          const t = map.get(id);
+          if (active.some((a) => a.owner === t.owner)) continue;
+          const dur = Math.max(1, Number(t.estimateMin) || 5);
+          planStart.set(id, now);
+          planEnd.set(id, now + dur);
+          active.push({ id, owner: t.owner, end: now + dur });
+          remaining.delete(id);
+        }
+        if (!remaining.size && !active.length) break;
+        if (active.length) now = Math.min(...active.map((a) => a.end));
+        else break;
+      }
+      const plannedTotal = Math.max(cpmTotal, ...Array.from(planEnd.values()), 0);
+      return { topo, es, ef, ls, lf, criticalSet, planStart, planEnd, cpmTotal, plannedTotal };
+    }
     const el = (tag, text, cls) => {
       const n = document.createElement(tag);
       if (text !== undefined && text !== null) n.textContent = text;
@@ -883,10 +1197,7 @@
       window.__seToast = setTimeout(() => box.classList.add('hidden'), 2600);
     }
 
-    const escapeText = value => String(value ?? '').replace(/[&<>"']/g, char => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    })[char]);
-    function getActiveData() { return plannerLink?.graphData() || datasets[currentProjectKey]; }
+    function getActiveData() { return datasets[currentProjectKey]; }
     function getIntakeState() { return intakeByProject[currentProjectKey]; }
     function getSynthesisState() { return synthesisByProject[currentProjectKey]; }
     function getMemoryState() { return memoryByProject[currentProjectKey]; }
@@ -907,14 +1218,10 @@
 
     function statusMeta(status) {
       switch (status) {
-        case 'running':
-          return { label: '执行中', dot: 'bg-blue-500', icon: '◔', iconCls: 'text-blue-600 bg-blue-50 border-blue-200', badgeCls: 'bg-blue-50 text-blue-700 border-blue-200' };
-        case 'planned':
-          return { label: '已规划', dot: 'bg-indigo-500', icon: '○', iconCls: 'text-indigo-600 bg-indigo-50 border-indigo-200', badgeCls: 'bg-indigo-50 text-indigo-700 border-indigo-200' };
         case 'completed':
           return { label: '已完成', dot: 'bg-emerald-500', icon: '✓', iconCls: 'text-emerald-600 bg-emerald-50 border-emerald-200', badgeCls: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
         case 'in_progress':
-          return { label: '待人工审核', dot: 'bg-amber-500', icon: '◔', iconCls: 'text-amber-600 bg-amber-50 border-amber-200', badgeCls: 'bg-amber-50 text-amber-700 border-amber-200' };
+          return { label: 'Agent 审查中', dot: 'bg-amber-500', icon: '◔', iconCls: 'text-amber-600 bg-amber-50 border-amber-200', badgeCls: 'bg-amber-50 text-amber-700 border-amber-200' };
         case 'failed':
           return { label: '执行失败', dot: 'bg-red-500', icon: '!', iconCls: 'text-red-600 bg-red-50 border-red-200', badgeCls: 'bg-red-50 text-red-700 border-red-200' };
         default:
@@ -1068,12 +1375,12 @@
         const failedTask = all.find((t) => t.status === 'failed');
 
         if (pendingReviewTask) {
-          const btnRev = el('button', `🔍 审阅并放行 ${pendingReviewTask.id}`, 'w-full py-2 px-3 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-semibold transition');
+          const btnRev = el('button', `🤖 查看代码审查 Agent (${pendingReviewTask.id})`, 'w-full py-2 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition');
           btnRev.type = 'button';
           btnRev.addEventListener('click', () => {
             selectedTaskId = pendingReviewTask.id;
             activeModule = 'workbench';
-            currentTab = 'details';
+            currentTab = 'review';
             renderAll();
           });
           body.append(btnRev);
@@ -1097,6 +1404,35 @@
           body.append(btnRetry);
         }
 
+        const ctrlRow = el('div', undefined, 'grid grid-cols-2 gap-2');
+        const pauseBtn = el('button', dispatchPaused ? '▶ 继续派发' : '⏸ 暂停派发', `py-1.5 px-2 rounded-lg border text-[11px] font-semibold transition ${dispatchPaused ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'}`);
+        pauseBtn.type = 'button';
+        pauseBtn.addEventListener('click', () => {
+          dispatchPaused = !dispatchPaused;
+          addLog('执行控制', dispatchPaused ? '人工暂停派发新任务（已运行任务可回报）' : '人工恢复任务派发');
+          toast(dispatchPaused ? '已暂停派发' : '已恢复派发');
+          renderAll();
+        });
+        const lockBtn = el('button', planLocked ? `🔓 升级 Plan v${planVersion + 1}` : `🔒 锁定 Plan v${planVersion}`, 'py-1.5 px-2 rounded-lg border border-indigo-200 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-700 text-[11px] font-semibold transition');
+        lockBtn.type = 'button';
+        lockBtn.addEventListener('click', () => {
+          if (planLocked) {
+            planVersion += 1;
+            planLocked = false;
+            addLog('计划版本', `创建新计划版本 Plan v${planVersion}，已解锁未开始任务配置`);
+            toast(`已切换至 Plan v${planVersion}`);
+          } else {
+            const cyc = detectCycle(getAllTasks());
+            if (cyc) { toast(`存在循环依赖：${cyc.join(' → ')}`); return; }
+            planLocked = true;
+            addLog('计划版本', `确认工作区并锁定 Plan v${planVersion}`);
+            toast(`已锁定 Plan v${planVersion}`);
+          }
+          renderAll();
+        });
+        ctrlRow.append(pauseBtn, lockBtn);
+        body.append(ctrlRow);
+
         const expMemCard = el('div', undefined, 'p-3 rounded-xl bg-amber-50/80 border border-amber-200 space-y-1');
         const exp = getMemoryState().experience;
         expMemCard.innerHTML = `
@@ -1110,6 +1446,93 @@
     // =========================================================================
     // 3. 独立模块界面渲染器 (保留原版主体结构，精简括号与人名，评分改为只读展示)
     // =========================================================================
+
+    // 模块 0：项目主理人 (main 分支最新入口)
+    function renderModuleSteward(container) {
+      const wrap = el('div', undefined, 'max-w-5xl mx-auto space-y-4 text-xs');
+      const tasks = getAllTasks();
+      const done = tasks.filter((t) => t.status === 'completed').length;
+      const stages = ['需求快照', '并发赛马', '五维评审', '决策拍板', '任务分解', 'DAG 编排', '并行开发', '交付审阅', '集成交付'];
+      const curIdx = done === tasks.length ? 8 : (planLocked ? 6 : 5);
+
+      const topCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-3');
+      topCard.innerHTML = `
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+          <div>
+            <span class="text-[11px] font-bold uppercase tracking-wider text-indigo-600">PROJECT STEWARD · 单对话驱动全流程</span>
+            <h2 class="text-base font-bold text-slate-900 mt-0.5">${currentProjectKey === 'lab' ? '实验室设备预约系统' : '自习室座位预约系统'} · Plan v${planVersion}</h2>
+          </div>
+          <span class="mono px-2.5 py-1 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-semibold">${done} / ${tasks.length} 项任务已完成</span>
+        </div>
+      `;
+      const pipeGrid = el('div', undefined, 'grid grid-cols-3 sm:grid-cols-9 gap-1.5');
+      stages.forEach((st, idx) => {
+        pipeGrid.append(el('div', st, `px-2 py-1.5 rounded-lg border text-center text-[11px] font-semibold ${
+          idx < curIdx ? 'bg-emerald-50 border-emerald-200 text-emerald-700' :
+          idx === curIdx ? 'bg-indigo-600 border-indigo-600 text-white' :
+          'bg-slate-50 border-slate-200 text-slate-400'
+        }`));
+      });
+      topCard.append(pipeGrid);
+
+      const gateBar = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-4 shadow-2xs flex flex-wrap items-center justify-between gap-3');
+      gateBar.append(el('strong', 'Agent 自动化门禁策略（由代码审查 Agent 与验证器自动执行）', 'text-slate-800'));
+      const gatesWrap = el('div', undefined, 'flex flex-wrap items-center gap-4');
+      for (const [gk, glbl] of [['review', '代码审查 Agent 门禁'], ['plan', 'DAG 无环与契约门禁'], ['delivery', '自动修复与回归门禁']]) {
+        const lbl = el('label', undefined, 'inline-flex items-center gap-1.5 cursor-pointer font-medium text-slate-700');
+        const cb = el('input');
+        cb.type = 'checkbox';
+        cb.checked = !!stewardState.gates[gk];
+        cb.addEventListener('change', () => {
+          stewardState.gates[gk] = cb.checked;
+          toast(`${glbl}已${cb.checked ? '开启' : '关闭'}`);
+        });
+        lbl.append(cb, el('span', glbl));
+        gatesWrap.append(lbl);
+      }
+      gateBar.append(gatesWrap);
+
+      const chatCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-3');
+      const msgBox = el('div', undefined, 'space-y-2 max-h-64 overflow-y-auto');
+      for (const m of stewardState.chat) {
+        msgBox.append(el('div', `${m.role === 'user' ? '负责人：' : '项目主理人：'}${m.text}`, `p-3 rounded-lg leading-relaxed ${m.role === 'user' ? 'bg-indigo-50 border border-indigo-200 text-indigo-900 ml-8' : 'bg-slate-50 border border-slate-200 text-slate-700 mr-8'}`));
+      }
+      const inputRow = el('div', undefined, 'flex gap-2');
+      const chatInp = el('input', undefined, 'flex-1 border border-slate-300 rounded-lg px-3 py-2 text-xs');
+      chatInp.placeholder = '输入主理指令（例如：推进一轮 / 重试失败任务 / 打开甘特图 / 进入工作台）';
+      const sendMsg = () => {
+        const val = chatInp.value.trim();
+        if (!val) return;
+        stewardState.chat.push({ role: 'user', text: val });
+        if (val.includes('甘特')) {
+          stewardState.chat.push({ role: 'steward', text: '正在切换至甘特排期与并发监控视图。' });
+          currentTab = 'monitor';
+          switchModule('workbench', '开发流程工作台');
+          return;
+        }
+        if (val.includes('工作台')) {
+          switchModule('workbench', '开发流程工作台');
+          return;
+        }
+        if (val.includes('推进') || val.includes('重试')) {
+          q('#btn-step-sim').click();
+          stewardState.chat.push({ role: 'steward', text: '已触发一轮任务派发，最新状态已同步至工作台与活动记录。' });
+        } else {
+          stewardState.chat.push({ role: 'steward', text: `已记录指令「${val}」，并写入当前运行上下文。` });
+          addLog('项目主理人', `记录指令：${val}`);
+        }
+        renderAll();
+      };
+      chatInp.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendMsg(); });
+      const sendBtn = el('button', '发送指令', 'px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold');
+      sendBtn.type = 'button';
+      sendBtn.addEventListener('click', sendMsg);
+      inputRow.append(chatInp, sendBtn);
+      chatCard.append(msgBox, inputRow);
+
+      wrap.append(topCard, gateBar, chatCard);
+      container.append(wrap);
+    }
 
     // 模块 1：需求快照与赛马出案
     function renderModuleIntakeRace(container) {
@@ -1546,7 +1969,7 @@
           status: 'pending',
           owner: '后端 Agent C',
           worktree: `wt/${newId.toLowerCase()}-notify`,
-          spec: '版本化规格与经验',
+          spec: 'DEC-01 · EXP-012',
           output: '通知服务提交',
           estimateMin: 5,
           critical: false,
@@ -1710,11 +2133,15 @@
           renderAll();
         });
 
-        const isCounter = memSimQuery.includes('改名') || memSimQuery.includes('名称') || memSimQuery.includes('不重叠') || memSimQuery.includes('编号');
-        const resBox = el('div', undefined, `p-4 rounded-xl border ${isCounter ? 'bg-slate-100 border-slate-300 text-slate-700' : 'bg-emerald-50 border-emerald-300 text-emerald-900'}`);
+        const aliasList = exp.aliases.split(/[、,，\s]+/).filter(Boolean);
+        const isCounter = /改名|名称|不重叠|编号/.test(memSimQuery);
+        const matchedAlias = aliasList.find((w) => memSimQuery.includes(w));
+        const resBox = el('div', undefined, `p-4 rounded-xl border ${isCounter ? 'bg-slate-100 border-slate-300 text-slate-700' : (matchedAlias ? 'bg-emerald-50 border-emerald-300 text-emerald-900' : 'bg-amber-50 border-amber-200 text-amber-900')}`);
         resBox.innerHTML = isCounter
-          ? `<strong>判定结果：命中适用边界/反例 → 本次不触发已有预约处置检查项</strong><p class="mt-1">原因：输入场景属于「${exp.counterExample}」，记忆服务已记录本次无需触发退订检查。</p>`
-          : `<strong>判定结果：命中 ${exp.id} · 证据层级：${exp.evidStatus}</strong><p class="mt-1">匹配同义词库 [${exp.aliases}] → 自动注入纠正动作：${exp.action}</p>`;
+          ? `<strong>判定结果：命中适用边界/反例 → 本次不触发已有预约处置检查项</strong><p class="mt-1">原因：输入场景属于「${escapeHtml(exp.counterExample)}」，记忆服务已记录本次无需触发退订检查。</p>`
+          : matchedAlias
+            ? `<strong>判定结果：命中 ${escapeHtml(exp.id)}（关键词「${escapeHtml(matchedAlias)}」）· 证据层级：${escapeHtml(exp.evidStatus)}</strong><p class="mt-1">自动注入纠正动作：${escapeHtml(exp.action)}</p>`
+            : `<strong>判定结果：未命中现有同义词库</strong><p class="mt-1">当前词表 [${escapeHtml(exp.aliases)}] 未覆盖该表述，可在上方词表补充新别名以立即生效。</p>`;
 
         simRow.append(qInp, resBox);
         card.append(simRow);
@@ -1757,7 +2184,13 @@
         paraInp.value = String(modelRouterConfig.maxParallel);
         paraInp.onchange = () => {
           modelRouterConfig.maxParallel = Number(paraInp.value) || 2;
-          renderRightStewardSidebar();
+          const reviewBadge = q('#nav-review-badge');
+      if (reviewBadge) {
+        const revPending = getAllTasks().filter((t) => t.isReviewNode && t.status !== 'completed').length;
+        reviewBadge.textContent = revPending ? `${revPending} 审查中` : '全部通过';
+        reviewBadge.className = `mono text-[10px] px-1.5 py-0.2 rounded font-semibold sb-hide-on-collapse ${revPending ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-700'}`;
+      }
+      renderRightStewardSidebar();
           toast(`已保存全局并发上限 max_parallel = ${modelRouterConfig.maxParallel}`);
         };
         paraBox.append(paraInp);
@@ -1766,38 +2199,136 @@
         card.append(formGrid);
         wrap.append(card);
 
-      } else {
+      } else if (activeModule === 'autogen-resume') {
         const tasks = getAllTasks();
         const card = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-2xs');
         card.innerHTML = `
-          <div class="flex items-center justify-between border-b border-slate-100 pb-3">
-            <strong class="text-sm text-slate-900">${caseTitle} · 编排器运行存储、会话恢复与 Git Worktree 沙箱表</strong>
-            <span class="mono text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded font-semibold">GroupChatManager.resume + SQLite</span>
+          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+            <strong class="text-sm text-slate-900">${caseTitle} · AutoGen 0.2 会话恢复与阶段隔离</strong>
+            <span class="mono text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded font-semibold">GroupChatManager.resume</span>
           </div>
-          <table class="w-full text-left border-collapse">
-            <thead>
-              <tr class="bg-slate-50 border-b border-slate-200 text-slate-500">
-                <th class="py-2 px-3">任务编号</th>
-                <th class="py-2 px-3">任务名称</th>
-                <th class="py-2 px-3">Git Worktree 路径</th>
-                <th class="py-2 px-3">规格与版本引用</th>
-                <th class="py-2 px-3">当前状态</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-slate-100">
-              ${tasks.map((t) => {
-                const m = statusMeta(t.status);
-                return `<tr>
-                  <td class="py-2 px-3 mono font-bold text-indigo-600">${t.id}</td>
-                  <td class="py-2 px-3 font-medium">${t.name}</td>
-                  <td class="py-2 px-3 mono text-slate-500">${t.worktree}</td>
-                  <td class="py-2 px-3 mono text-slate-600">${t.spec}</td>
-                  <td class="py-2 px-3"><span class="px-2 py-0.5 rounded border text-[10px] font-semibold ${m.badgeCls}">${m.label}</span></td>
-                </tr>`;
-              }).join('')}
-            </tbody>
-          </table>
+          <p class="text-slate-500">Worker 中断时保留最后检查点，恢复前先对账工作区与已有提交，避免重复修改代码。</p>
         `;
+        const list = el('div', undefined, 'space-y-2');
+        for (const t of tasks) {
+          const real = findTask(t.id);
+          const sState = real.sessionState || (real.status === 'failed' ? 'interrupted' : (real.status === 'completed' ? 'checkpointed' : 'standby'));
+          const row = el('div', undefined, 'p-3 rounded-lg bg-slate-50 border border-slate-200 flex flex-wrap items-center justify-between gap-2');
+          row.append(
+            el('div', undefined, 'space-y-0.5'),
+            el('div', undefined, 'flex items-center gap-1.5')
+          );
+          row.children[0].innerHTML = `<div class="font-semibold text-slate-800"><span class="mono text-indigo-600 mr-1.5">${escapeHtml(t.id)}</span>${escapeHtml(t.name)}</div><div class="mono text-[11px] text-slate-500">角色：${escapeHtml(t.owner)} · 会话状态：${escapeHtml(sState)} · 隔离上下文：${escapeHtml(t.spec)}</div>`;
+          const btnInt = el('button', '模拟中断', 'px-2.5 py-1 rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800 font-semibold text-[11px]');
+          btnInt.type = 'button';
+          btnInt.addEventListener('click', () => {
+            real.sessionState = 'interrupted';
+            addLog('AutoGen 会话', `${real.id} Worker 中断，已冻结会话检查点等待对账`);
+            toast(`${real.id} 已模拟 Worker 中断`);
+            renderAll();
+          });
+          const btnRec = el('button', '对账并恢复', 'px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-[11px]');
+          btnRec.type = 'button';
+          btnRec.addEventListener('click', () => {
+            real.sessionState = 'recovered';
+            if (real.status === 'failed') real.status = 'in_progress';
+            addLog('AutoGen 会话', `${real.id} 完成工作区对账并从检查点恢复执行`);
+            toast(`${real.id} 已从检查点恢复`);
+            renderAll();
+          });
+          row.children[1].append(btnInt, btnRec);
+          list.append(row);
+        }
+        card.append(list);
+        wrap.append(card);
+
+      } else if (activeModule === 'git-worktree') {
+        const tasks = getAllTasks();
+        const wtOwners = new Map();
+        tasks.forEach((t) => {
+          const key = t.worktree || 'default';
+          if (!wtOwners.has(key)) wtOwners.set(key, []);
+          wtOwners.get(key).push(t.id);
+        });
+        const conflicts = [...wtOwners.entries()].filter(([, ids]) => ids.length > 1);
+
+        const card = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-2xs');
+        card.innerHTML = `
+          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+            <strong class="text-sm text-slate-900">${caseTitle} · Git Worktree 沙箱分支隔离与冲突检测</strong>
+            <span class="mono px-2.5 py-1 rounded font-semibold ${conflicts.length ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}">${conflicts.length ? `检测到 ${conflicts.length} 处路径重叠` : '并行工作区无路径冲突'}</span>
+          </div>
+        `;
+        const table = el('table', undefined, 'w-full text-left border-collapse');
+        table.innerHTML = `<thead><tr class="bg-slate-50 border-b border-slate-200 text-slate-500"><th class="py-2 px-3">任务</th><th class="py-2 px-3">Worktree 目录</th><th class="py-2 px-3">上游依赖</th><th class="py-2 px-3">状态</th><th class="py-2 px-3">沙箱操作</th></tr></thead>`;
+        const tbody = el('tbody', undefined, 'divide-y divide-slate-100');
+        for (const t of tasks) {
+          const m = statusMeta(t.status);
+          const tr = el('tr');
+          tr.innerHTML = `
+            <td class="py-2 px-3"><span class="mono font-bold text-indigo-600 mr-1">${escapeHtml(t.id)}</span>${escapeHtml(t.name)}</td>
+            <td class="py-2 px-3 mono text-slate-600">${escapeHtml(t.worktree)}</td>
+            <td class="py-2 px-3 mono text-slate-500">${t.deps.length ? escapeHtml(t.deps.join(', ')) : '仓库基线'}</td>
+            <td class="py-2 px-3"><span class="px-2 py-0.5 rounded border text-[10px] font-semibold ${m.badgeCls}">${m.label}</span></td>
+            <td class="py-2 px-3"></td>
+          `;
+          const syncBtn = el('button', '纳入上游提交', 'px-2.5 py-1 rounded border border-indigo-200 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-700 font-semibold text-[11px]');
+          syncBtn.type = 'button';
+          syncBtn.addEventListener('click', () => {
+            addLog('Git Worktree', `已将上游已放行提交纳入 ${t.worktree} 工作目录`);
+            toast(`${t.id} 工作区已同步上游提交`);
+            renderAll();
+          });
+          tr.lastElementChild.append(syncBtn);
+          tbody.append(tr);
+        }
+        table.append(tbody);
+        card.append(table);
+        wrap.append(card);
+
+      } else {
+        const tasks = getAllTasks();
+        const doneCount = tasks.filter((t) => t.status === 'completed').length;
+        const card = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-2xs');
+        card.innerHTML = `
+          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+            <strong class="text-sm text-slate-900">${caseTitle} · SQLite 检查点事务存储与事件增量回放</strong>
+            <span class="mono text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded font-semibold">data/workbench.sqlite3</span>
+          </div>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200"><div class="text-[11px] text-slate-500">当前计划版本</div><div class="mono font-bold text-sm text-indigo-600 mt-0.5">Plan v${planVersion}</div></div>
+            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200"><div class="text-[11px] text-slate-500">已登记交付物</div><div class="mono font-bold text-sm text-emerald-600 mt-0.5">${doneCount} / ${tasks.length}</div></div>
+            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200"><div class="text-[11px] text-slate-500">事务写入模式</div><div class="mono font-bold text-sm text-slate-800 mt-0.5">WAL · 幂等</div></div>
+            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200"><div class="text-[11px] text-slate-500">最新事件序号</div><div class="mono font-bold text-sm text-slate-800 mt-0.5">seq#${activityLogs.length}</div></div>
+          </div>
+        `;
+        const pollBar = el('div', undefined, 'flex flex-wrap items-center justify-between gap-2 pt-1');
+        pollBar.append(el('strong', '事件增量轮询模拟 · GET /runs/{id}/events?after=序号', 'text-slate-700'));
+        const pollCtrl = el('div', undefined, 'flex items-center gap-2');
+        const afterInp = el('input', undefined, 'w-16 border border-slate-300 rounded px-2 py-1 mono text-center bg-white');
+        afterInp.type = 'number';
+        afterInp.min = '0';
+        afterInp.value = String(sqliteAfterSeq);
+        const pollBtn = el('button', '拉取增量事件', 'px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-semibold');
+        pollBtn.type = 'button';
+        pollBtn.addEventListener('click', () => {
+          sqliteAfterSeq = Math.max(0, Number(afterInp.value) || 0);
+          renderAll();
+        });
+        pollCtrl.append(el('span', 'after ='), afterInp, pollBtn);
+        pollBar.append(pollCtrl);
+        card.append(pollBar);
+
+        const evList = el('div', undefined, 'space-y-1.5 max-h-64 overflow-y-auto');
+        const filteredEv = activityLogs.filter((_, i) => i + 1 > sqliteAfterSeq);
+        if (filteredEv.length) {
+          filteredEv.forEach((ev) => {
+            evList.append(el('div', `${ev.seq} | ${ev.time} | ${ev.actor} | ${ev.text}`, 'p-2.5 rounded-lg bg-slate-50 border border-slate-200 mono text-[11px] text-slate-700'));
+          });
+        } else {
+          evList.append(el('div', '当前序号之后暂无新增持久化事件。', 'text-slate-400 py-3'));
+        }
+        card.append(evList);
         wrap.append(card);
       }
 
@@ -1816,8 +2347,7 @@
 
       q('#progress-pct').textContent = `${pct}%`;
       q('#progress-bar').style.width = `${pct}%`;
-      const planningOnly = plannerLink && tasks.every((task) => task.status === 'planned');
-      q('#progress-count').textContent = planningOnly ? `${totalCount} 项已规划任务` : `${doneCount} / ${totalCount} 项任务已完成`;
+      q('#progress-count').textContent = `${doneCount} / ${totalCount} 项任务已完成`;
       q('#active-badge').textContent = data.badge;
 
       const container = q('#phase-list-container');
@@ -1848,7 +2378,7 @@
           </span>
           <span class="mono text-[11px] font-semibold shrink-0 ${
             pDone === pTotal ? 'text-emerald-600' : 'text-amber-600'
-          }">${plannerLink ? `${pTotal} 项` : `${pDone}/${pTotal} (${pPct}%)`}</span>
+          }">${pDone}/${pTotal} (${pPct}%)</span>
         `;
         headerBtn.addEventListener('click', () => {
           if (collapsedPhases.has(phase.id)) collapsedPhases.delete(phase.id);
@@ -1877,7 +2407,7 @@
                 ${meta.icon}
               </span>
               <div class="min-w-0 flex-1">
-                <div class="text-xs font-semibold text-slate-800 truncate">${t.code}: ${escapeText(t.name)}</div>
+                <div class="text-xs font-semibold text-slate-800 truncate">${t.code}: ${t.name}</div>
                 <div class="mono text-[11px] text-slate-400 mt-0.5 flex items-center justify-between">
                   <span>${t.id}</span>
                   <span>${t.estimateMin}m${t.critical ? ' · 关键路径' : ''}</span>
@@ -1906,10 +2436,6 @@
       svg.replaceChildren();
 
       const nodeMap = new Map();
-      if (plannerLink) {
-        q('#graph-stage').style.width = Math.max(1320, ...data.phases.map(({box}) => box.x + box.w + 24)) + 'px';
-        q('#graph-stage').style.height = Math.max(820, ...data.phases.map(({box}) => box.y + box.h + 24)) + 'px';
-      }
 
       for (const phase of data.phases) {
         const box = el('div', undefined, 'phase-group-box');
@@ -1944,8 +2470,12 @@
       }
       svg.appendChild(defs);
 
+      const sched = computeSchedule(getAllTasks(), modelRouterConfig.maxParallel);
+      const capEl = q('#graph-caption');
+      if (capEl) capEl.textContent = `Workflow 编排图 · 关键路径 ${sched.cpmTotal}m · 排期 ${sched.plannedTotal}m`;
+
       const NODE_W = 196;
-      const NODE_H = 58;
+      const NODE_H = 66;
 
       for (const t of nodeMap.values()) {
         for (const depId of t.deps) {
@@ -1969,34 +2499,61 @@
             const midY = Math.round(startY + (endY - startY) * 0.5);
             d = `M ${startX} ${startY} L ${startX} ${midY} L ${endX} ${midY} L ${endX} ${endY}`;
           } else {
-            startX = from.x;
-            startY = from.y + NODE_H / 2;
-            endX = t.x + NODE_W;
-            endY = t.y + NODE_H / 2;
-            const midX = Math.round((startX + endX) / 2);
-            d = `M ${startX} ${startY} L ${midX} ${startY} L ${midX} ${endY} L ${endX} ${endY}`;
+            // Non-piercing detour underneath when same-column or backward edge
+            startX = from.x + NODE_W / 2;
+            startY = from.y + NODE_H;
+            endX = t.x + NODE_W / 2;
+            endY = t.y + NODE_H;
+            const detourY = Math.max(startY, endY) + 22;
+            d = `M ${startX} ${startY} L ${startX} ${detourY} L ${endX} ${detourY} L ${endX} ${endY}`;
           }
 
-          const isHighlighted = from.id === selectedTaskId || t.id === selectedTaskId;
+          const isCritEdge = sched.criticalSet.has(from.id) && sched.criticalSet.has(t.id);
+          const isHighlighted = isCritEdge || from.id === selectedTaskId || t.id === selectedTaskId;
           let colorKey = 'indigo';
           if (t.status === 'failed' || from.status === 'failed') colorKey = 'red';
           else if (t.status === 'in_progress') colorKey = 'amber';
-          else if (t.status === 'pending') colorKey = 'slate';
+          else if (!isCritEdge && t.status === 'pending') colorKey = 'slate';
 
           const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
           pathEl.setAttribute('d', d);
           pathEl.setAttribute('fill', 'none');
           pathEl.setAttribute('stroke', markerColors[colorKey]);
-          pathEl.setAttribute('stroke-width', isHighlighted ? '2.2' : '1.5');
+          pathEl.setAttribute('stroke-width', isCritEdge ? '2.4' : (isHighlighted ? '2.1' : '1.4'));
+          pathEl.setAttribute('opacity', focusCritical && !isCritEdge && colorKey !== 'red' ? '0.16' : '0.95');
           pathEl.setAttribute('class', t.status === 'in_progress' || isHighlighted ? 'edge-animated' : 'edge-static-dashed');
           pathEl.setAttribute('marker-end', `url(#arrow-${colorKey})`);
           svg.appendChild(pathEl);
         }
       }
 
+      // Render live animated rollback edge when Code Review Agent rejects & sends task back to Dev Agent
+      if (autoLoopState.activeRollbackEdge) {
+        const rbFrom = nodeMap.get(autoLoopState.activeRollbackEdge.from);
+        const rbTo = nodeMap.get(autoLoopState.activeRollbackEdge.to);
+        if (rbFrom && rbTo) {
+          const sx = rbFrom.x + NODE_W * 0.25;
+          const sy = rbFrom.y;
+          const ex = rbTo.x + NODE_W * 0.25;
+          const ey = rbTo.y + NODE_H;
+          const ctrlX = Math.min(sx, ex) - 48;
+          const midY = Math.round((sy + ey) / 2);
+          const rbPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+          rbPath.setAttribute('d', `M ${sx} ${sy} C ${ctrlX} ${midY}, ${ctrlX} ${midY}, ${ex} ${ey}`);
+          rbPath.setAttribute('fill', 'none');
+          rbPath.setAttribute('stroke', '#dc2626');
+          rbPath.setAttribute('stroke-width', '2.8');
+          rbPath.setAttribute('class', 'edge-animated');
+          rbPath.setAttribute('marker-end', 'url(#arrow-red)');
+          svg.appendChild(rbPath);
+        }
+      }
+
       for (const t of nodeMap.values()) {
         const meta = statusMeta(t.status);
-        const node = el('div', undefined, `graph-node ${t.id === selectedTaskId ? 'selected' : ''}`);
+        const isCrit = sched.criticalSet.has(t.id);
+        const dimmed = focusCritical && !isCrit && t.status !== 'failed';
+        const node = el('div', undefined, `graph-node ${t.id === selectedTaskId ? 'selected' : ''} ${isCrit ? 'critical-ring' : ''} ${dimmed ? 'dimmed' : ''}`);
         node.dataset.status = t.status;
         node.style.left = t.x + 'px';
         node.style.top = t.y + 'px';
@@ -2004,12 +2561,12 @@
           <div class="flex items-center justify-between gap-1">
             <span class="flex items-center gap-1.5 min-w-0">
               <span class="w-2 h-2 rounded-full shrink-0 ${meta.dot}"></span>
-              <span class="mono text-[10px] font-bold text-slate-600 truncate">${t.id} · ${t.estimateMin}m</span>
+              <span class="mono text-[10px] font-bold text-slate-600 truncate">${escapeHtml(t.id)} · ${t.estimateMin}m${isCrit ? ' ★' : ''}</span>
             </span>
             <span class="text-[9px] font-semibold px-1.5 py-0.2 rounded border ${meta.badgeCls}">${meta.label}</span>
           </div>
-          <div class="text-[11px] font-semibold text-slate-800 truncate mt-1" title="${escapeText(t.name)}">${escapeText(t.name)}</div>
-          <div class="text-[10px] text-slate-400 truncate mt-0.5">${escapeText(t.output)}</div>
+          <div class="text-[11px] font-semibold text-slate-800 truncate mt-1" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</div>
+          <div class="text-[10px] text-slate-400 truncate mt-0.5">${escapeHtml(t.output)}</div>
         `;
         node.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -2026,36 +2583,23 @@
         <div class="flex items-center justify-between gap-3">
           <div class="flex items-center gap-2">
             <span class="mono font-bold text-indigo-600">${sel.id}</span>
-            <strong class="text-slate-800">${escapeText(sel.name)}</strong>
+            <strong class="text-slate-800">${sel.name}</strong>
           </div>
           <span class="px-2 py-0.5 rounded border text-[10px] font-semibold ${selMeta.badgeCls}">${selMeta.label}</span>
         </div>
         <div class="text-[11px] text-slate-500 flex flex-wrap gap-x-4 gap-y-0.5">
-          <span>执行角色: <strong class="text-slate-700">${escapeText(sel.owner)}</strong></span>
-          <span>来源: <code class="mono text-slate-700">${escapeText(sel.spec)}</code></span>
-          <span>交付物: <code class="mono text-slate-700">${escapeText(sel.output)}</code></span>
+          <span>执行角色: <strong class="text-slate-700">${sel.owner}</strong></span>
+          <span>来源: <code class="mono text-slate-700">${sel.spec}</code></span>
+          <span>交付物: <code class="mono text-slate-700">${sel.output}</code></span>
         </div>
       `;
-      if (plannerLink) {
-        const edit = el('button', '返回任务分解', 'text-indigo-700 hover:underline');
-        edit.type = 'button';
-        edit.addEventListener('click', () => plannerLink.open('task-planner'));
-        inspector.append(edit);
-        if (plannerLink.isFullWorkspace) {
-          const details = el('button', '查看任务详情', 'ml-3 text-indigo-700 hover:underline');
-          details.type = 'button';
-          details.addEventListener('click', () => plannerLink.inspect(sel.id));
-          inspector.append(details);
-        }
-        return;
-      }
       const actionRow = el('div', undefined, 'flex items-center gap-2 pt-1');
 
-      if (sel.id === 'T2.1' && sel.status === 'in_progress') {
-        const reviewBtn = el('button', '🔍 打开交付审阅并放行 v2', 'px-2.5 py-1 rounded bg-amber-500 hover:bg-amber-600 text-white font-semibold text-[11px] transition');
+      if (sel.status === 'in_progress' || sel.isReviewNode) {
+        const reviewBtn = el('button', '🤖 打开 Agent 审查报告', 'px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-[11px] transition');
         reviewBtn.type = 'button';
         reviewBtn.addEventListener('click', () => {
-          currentTab = 'details';
+          currentTab = 'review';
           renderAll();
         });
         actionRow.append(reviewBtn);
@@ -2094,6 +2638,403 @@
       inspector.append(actionRow);
     }
 
+    // =========================================================================
+    // 4A. 多轮持续自驱开发-审查闭环引擎（审查不通过 → 自动打回上一轮重开 → 复审直至达标）
+    // =========================================================================
+    function executeOneLoopTick() {
+      if (dispatchPaused) {
+        stopAutoLoop(true);
+        toast('派发已暂停，持续闭环已自动停止');
+        renderAll();
+        return;
+      }
+      const tasks = getAllTasks();
+      const map = new Map(tasks.map((t) => [t.id, t]));
+
+      // Check convergence: all tasks completed
+      if (tasks.every((t) => t.status === 'completed')) {
+        autoLoopState.activeRollbackEdge = null;
+        stopAutoLoop(true);
+        addLog('持续闭环引擎', `全部阶段与审查节点均已达标（共执行 ${autoLoopState.totalRoundsExecuted} 轮迭代），流水线自动收敛完成`);
+        toast('🎉 全部任务与 Agent 审查已达标，持续开发闭环完成！');
+        renderAll();
+        return;
+      }
+
+      if (autoLoopState.totalRoundsExecuted >= autoLoopState.maxRounds * 4) {
+        stopAutoLoop(true);
+        toast('已达到最大迭代保护步数，请检查阻塞项');
+        renderAll();
+        return;
+      }
+
+      const reviewNodes = tasks.filter((t) => t.isReviewNode && t.status !== 'completed');
+
+      // Priority 1: Handle any Review Node currently in 'redevelop' (Dev Agent finishing its rework round and re-submitting to Review Agent)
+      for (const rn of reviewNodes) {
+        const realRev = findTask(rn.id);
+        const rev = getAgentReview(realRev);
+        const target = realRev.targetTaskId ? findTask(realRev.targetTaskId) : null;
+        if (rev.phaseStep === 'redevelop' && target) {
+          rev.round += 1;
+          rev.phaseStep = 'review';
+          autoLoopState.activeRollbackEdge = null;
+          autoLoopState.totalRoundsExecuted += 1;
+
+          // Progressive fixing: each rework round fixes up to 2 failing checks so R2.2 demonstrates multi-round (2 rounds) rework!
+          const failing = rev.checks.filter((c) => c.status === 'failed');
+          const fixQuota = failing.length >= 3 ? 2 : failing.length;
+          for (let i = 0; i < fixQuota; i++) {
+            failing[i].status = 'passed';
+            failing[i].detail = `第 ${rev.round} 轮开发 Agent 已自动修复并通过验证`;
+          }
+          const newSha = Math.random().toString(16).slice(2, 9);
+          rev.commitSha = newSha;
+          target.status = 'completed';
+          target.output = `${target.output.split('·')[0].trim()} · 第 ${rev.round} 轮提交 (${newSha})`;
+          if (realRev.id === 'R2.2') {
+            const t23 = findTask('T2.3');
+            if (t23 && t23.status === 'pending' && target.status === 'completed') {
+              t23.status = 'completed';
+              t23.output = `停用处置提交 · 第 ${rev.round} 轮`;
+            }
+          }
+          realRev.status = 'in_progress';
+          realRev.output = `审查报告 ${realRev.id} · 第 ${rev.round} 轮复审中`;
+          selectedTaskId = realRev.id;
+
+          const msg = `第 ${rev.round} 轮：${target.owner} 完成 ${target.id} 重新开发（提交 ${newSha}），自动回流至 ${realRev.id} 复审`;
+          rev.history.unshift({ round: rev.round, agent: target.owner, action: '重新开发并提审', commit: newSha, time: new Date().toTimeString().slice(0, 8), note: msg });
+          autoLoopState.timeline.unshift({ step: autoLoopState.totalRoundsExecuted, type: 'redev', text: msg });
+          addLog(target.owner, msg);
+          toast(msg);
+          renderAll();
+          return;
+        }
+      }
+
+      // Priority 2: Execute Code Review Agent on ready/active Review Nodes
+      for (const rn of reviewNodes) {
+        const realRev = findTask(rn.id);
+        const rev = getAgentReview(realRev);
+        const target = realRev.targetTaskId ? findTask(realRev.targetTaskId) : null;
+        const failedChecks = rev.checks.filter((c) => c.status === 'failed');
+
+        // Review fails -> AUTOMATICALLY ROLLBACK to previous Dev Agent task!
+        if (failedChecks.length > 0 && target) {
+          rev.phaseStep = 'redevelop';
+          rev.verdict = 'needs_fix';
+          autoLoopState.totalRoundsExecuted += 1;
+          autoLoopState.activeRollbackEdge = {
+            from: realRev.id,
+            to: target.id,
+            reason: `第 ${rev.round} 轮审查未通过 (${failedChecks.length} 项阻断)`
+          };
+          realRev.status = 'failed';
+          realRev.output = `第 ${rev.round} 轮未通过 · 已打回 ${target.id}`;
+          target.status = 'in_progress';
+          target.output = `${target.output.split('·')[0].trim()} · 第 ${rev.round + 1} 轮重开发中`;
+          selectedTaskId = realRev.id;
+
+          const failNames = failedChecks.map((c) => c.name).join('、');
+          const msg = `第 ${rev.round} 轮：${realRev.id} 审查不通过（${failNames}），自动打回上一轮 ${target.id}（${target.owner}）重新开发`;
+          rev.history.unshift({ round: rev.round, agent: '代码审查 Agent', action: '审查不通过 · 自动打回', commit: rev.commitSha, time: new Date().toTimeString().slice(0, 8), note: failNames });
+          autoLoopState.timeline.unshift({ step: autoLoopState.totalRoundsExecuted, type: 'reject', text: msg });
+          addLog('代码审查 Agent', msg);
+          toast(`↩ ${realRev.id} 审查不通过，已自动打回 ${target.id} 重开`);
+          renderAll();
+          return;
+        }
+
+        // All checks passed -> Review Agent approves automatically!
+        if (failedChecks.length === 0) {
+          rev.verdict = 'passed';
+          rev.findings.forEach((f) => { f.resolved = true; });
+          realRev.status = 'completed';
+          realRev.output = `审查报告 ${realRev.id} · 第 ${rev.round} 轮通过 (${rev.commitSha})`;
+          autoLoopState.activeRollbackEdge = null;
+          autoLoopState.totalRoundsExecuted += 1;
+          selectedTaskId = realRev.id;
+
+          const msg = `第 ${rev.round} 轮：${realRev.id} 全部 ${rev.checks.length} 项门禁达标，代码审查 Agent 自动放行`;
+          rev.history.unshift({ round: rev.round, agent: '代码审查 Agent', action: '审查通过 · 自动放行', commit: rev.commitSha, time: new Date().toTimeString().slice(0, 8), note: '全部门禁与规格走查通过' });
+          autoLoopState.timeline.unshift({ step: autoLoopState.totalRoundsExecuted, type: 'pass', text: msg });
+          addLog('代码审查 Agent', msg);
+          toast(`✓ ${realRev.id} 第 ${rev.round} 轮审查通过`);
+          renderAll();
+          return;
+        }
+      }
+
+      // Priority 3: Advance remaining ready non-review tasks (e.g. Phase 4 T3.1 integration)
+      const readyTask = tasks.find((t) => t.status !== 'completed' && t.deps.every((d) => map.get(d)?.status === 'completed'));
+      if (readyTask) {
+        const real = findTask(readyTask.id);
+        autoLoopState.totalRoundsExecuted += 1;
+        real.status = 'completed';
+        real.output = `${real.output.split('·')[0].trim()} · 已集成交付`;
+        selectedTaskId = real.id;
+        const msg = `${real.owner} 完成 ${real.id}（${real.name}），全部审查通过的提交已合并交付`;
+        autoLoopState.timeline.unshift({ step: autoLoopState.totalRoundsExecuted, type: 'pass', text: msg });
+        addLog(real.owner, msg);
+        toast(`✓ ${real.id} 已完成交付`);
+        renderAll();
+      }
+    }
+
+    function toggleContinuousAutoLoop() {
+      if (autoLoopState.running) {
+        stopAutoLoop(false);
+        toast('已停止持续开发-审查自动闭环');
+        return;
+      }
+      autoLoopState.running = true;
+      updateAutoLoopBtn();
+      executeOneLoopTick();
+      if (autoLoopState.running) {
+        autoLoopState.timer = setInterval(() => {
+          if (!autoLoopState.running) return;
+          executeOneLoopTick();
+        }, 1250);
+      }
+    }
+
+    // =========================================================================
+    // 4B. Agent 自动化代码审查中心（Phase 3 独立审查角色，全自动审查与自愈闭环，无人工审查）
+    // =========================================================================
+    function renderAgentReviewCenter(container) {
+      container.replaceChildren();
+      const tasks = getAllTasks();
+      const reviewNodes = tasks.filter((t) => t.isReviewNode);
+      const sel = findTask(selectedTaskId);
+      const activeReviewTask = sel.isReviewNode ? sel : (reviewNodes.find((r) => r.targetTaskId === sel.id) || reviewNodes[0] || sel);
+      const realTask = findTask(activeReviewTask.id);
+      const rev = getAgentReview(realTask);
+      const meta = statusMeta(realTask.status);
+      const downstream = tasks.filter((t) => t.deps.includes(realTask.id)).map((t) => t.id);
+
+      const wrap = el('div', undefined, 'max-w-5xl mx-auto space-y-4 text-xs');
+
+      // 1. Phase 3 Agent Review Pipeline Switcher
+      const topCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-3');
+      const activeCount = reviewNodes.filter((r) => r.status !== 'completed').length;
+      topCard.innerHTML = `
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+          <div>
+            <span class="text-[11px] font-bold uppercase tracking-wider text-indigo-600">PHASE 3 · AGENT AUTOMATED CODE REVIEW</span>
+            <h2 class="text-base font-bold text-slate-900 mt-0.5">代码审查 Agent 自动化审查与闭环修复（全流程内嵌，无人工审批）</h2>
+          </div>
+          <span class="mono px-2.5 py-1 rounded font-semibold ${activeCount ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}">
+            ${activeCount ? `${activeCount} 个审查节点待通过` : '全部审查节点已自动放行'}
+          </span>
+        </div>
+      `;
+      const pillRow = el('div', undefined, 'flex flex-wrap gap-2');
+      for (const rn of (reviewNodes.length ? reviewNodes : tasks)) {
+        const rm = statusMeta(rn.status);
+        const isCur = rn.id === realTask.id;
+        const btn = el('button', undefined, `px-3 py-1.5 rounded-lg border text-left transition ${isCur ? 'bg-indigo-50 border-indigo-400 text-indigo-800 font-semibold shadow-2xs' : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'}`);
+        btn.type = 'button';
+        btn.innerHTML = `<div class="mono text-[11px] font-bold">${escapeHtml(rn.id)} · ${escapeHtml(rn.name)}</div><div class="text-[10px] text-slate-500 mt-0.5">${escapeHtml(rn.owner)} · ${rm.label}</div>`;
+        btn.addEventListener('click', () => { selectedTaskId = rn.id; renderAll(); });
+        pillRow.append(btn);
+      }
+      topCard.append(pillRow);
+      if (autoLoopState.activeRollbackEdge) {
+        const rbBanner = el('div', `↩ 自动回退触发：${autoLoopState.activeRollbackEdge.from} → ${autoLoopState.activeRollbackEdge.to}（${autoLoopState.activeRollbackEdge.reason}），开发 Agent 正在执行新一轮重构并准备回流复审。`, 'p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-700 font-semibold text-[11px]');
+        topCard.append(rbBanner);
+      }
+      if (autoLoopState.timeline.length) {
+        const tlWrap = el('div', undefined, 'pt-2 border-t border-slate-100 space-y-1.5');
+        tlWrap.append(el('div', `持续开发-审查多轮迭代轨迹（已自动执行 ${autoLoopState.totalRoundsExecuted} 步 · 当前节点第 ${rev.round} 轮）`, 'text-[11px] font-bold text-slate-600'));
+        const tlList = el('div', undefined, 'space-y-1 max-h-32 overflow-y-auto');
+        for (const item of autoLoopState.timeline.slice(0, 8)) {
+          const cls = item.type === 'reject' ? 'bg-red-50 text-red-800 border-red-200' : (item.type === 'redev' ? 'bg-amber-50 text-amber-900 border-amber-200' : 'bg-emerald-50 text-emerald-800 border-emerald-200');
+          tlList.append(el('div', `[Step ${item.step}] ${item.text}`, `px-2.5 py-1 rounded border text-[11px] ${cls}`));
+        }
+        tlWrap.append(tlList);
+        topCard.append(tlWrap);
+      }
+      wrap.append(topCard);
+
+      // 2. Automated Gate Checks + Review Agent Verdict & Actions
+      const grid = el('div', undefined, 'grid grid-cols-1 lg:grid-cols-12 gap-4');
+
+      const gateCard = el('div', undefined, 'lg:col-span-7 bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-2.5');
+      gateCard.innerHTML = `
+        <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+          <strong class="text-slate-900">Phase 3 自动化验证门禁（确定性检查）</strong>
+          <span class="mono text-[11px] text-slate-500">执行角色：${escapeHtml(rev.reviewerAgent)}</span>
+        </div>
+      `;
+      for (const c of rev.checks) {
+        const cls = c.status === 'passed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200';
+        const row = el('div', undefined, 'p-2.5 rounded-lg bg-slate-50 border border-slate-200/80 flex items-center justify-between gap-2');
+        row.innerHTML = `<div class="min-w-0"><div class="font-semibold text-slate-800">${escapeHtml(c.name)}</div><div class="text-[11px] text-slate-500 truncate">${escapeHtml(c.detail)}</div></div><span class="px-2 py-0.5 rounded border text-[10px] font-semibold shrink-0 ${cls}">${c.status === 'passed' ? '✓ 通过' : '✕ 阻断'}</span>`;
+        gateCard.append(row);
+      }
+
+      const verdictCard = el('div', undefined, 'lg:col-span-5 bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-3');
+      const vBadge = rev.verdict === 'passed'
+        ? { txt: 'Agent 审查通过', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' }
+        : (rev.verdict === 'needs_fix'
+          ? { txt: '检出缺陷 · 需自动修复', cls: 'bg-red-50 text-red-700 border-red-200' }
+          : { txt: 'Agent 审查执行中', cls: 'bg-amber-50 text-amber-800 border-amber-200' });
+      verdictCard.innerHTML = `
+        <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+          <strong class="text-slate-900">代码审查 Agent 判定与自动化动作</strong>
+          <span class="px-2 py-0.5 rounded border text-[10px] font-semibold ${vBadge.cls}">${vBadge.txt}</span>
+        </div>
+        <div class="p-2.5 rounded-lg bg-indigo-50/60 border border-indigo-200/70 space-y-1 text-[11px]">
+          <div><strong class="text-indigo-900">审查对象：</strong><span class="mono text-indigo-700">${escapeHtml(realTask.targetTaskId || realTask.id)} · ${escapeHtml(rev.excerptRange)}</span></div>
+          <div><strong class="text-indigo-900">当前提交：</strong><span class="mono text-indigo-700">${escapeHtml(rev.commitSha)}</span> · <span class="text-slate-600">下游放行：${escapeHtml(downstream.join(', ') || '无')}</span></div>
+        </div>
+      `;
+
+      const actWrap = el('div', undefined, 'space-y-2');
+      const btnLoop = el('button', autoLoopState.running ? '⏹ 停止多轮持续闭环' : '🚀 启动多轮持续开发-审查闭环（直至全部达标）', `w-full py-2 px-3 rounded-lg text-white font-semibold transition ${autoLoopState.running ? 'bg-red-600 hover:bg-red-500' : 'bg-emerald-600 hover:bg-emerald-500'}`);
+      btnLoop.type = 'button';
+      btnLoop.addEventListener('click', toggleContinuousAutoLoop);
+
+      const btnOneTick = el('button', '⏭ 单步推进一轮（审查 → 打回重开 / 复审）', 'w-full py-2 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition');
+      btnOneTick.type = 'button';
+      btnOneTick.addEventListener('click', executeOneLoopTick);
+
+      const btnForceReject = el('button', `↩ 模拟 ${realTask.id} 审查不通过并打回上一轮重开`, 'w-full py-1.5 px-3 rounded-lg border border-red-300 bg-red-50 hover:bg-red-100 text-red-700 font-semibold transition');
+      btnForceReject.type = 'button';
+      btnForceReject.addEventListener('click', () => {
+        rev.checks[0].status = 'failed';
+        rev.checks[0].detail = `第 ${rev.round} 轮检出边界缺陷，触发自动打回重开`;
+        rev.phaseStep = 'review';
+        realTask.status = 'in_progress';
+        executeOneLoopTick();
+      });
+
+      actWrap.append(btnLoop, btnOneTick, btnForceReject);
+      const _unusedLegacyStart = null;
+      if (_unusedLegacyStart) {
+      const btnAutoReview = el('button', '▶ 执行代码审查 Agent 自动审查与放行', 'w-full py-2 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition');
+      btnAutoReview.type = 'button';
+      btnAutoReview.addEventListener('click', () => {
+        if (rev.checks.some((c) => c.status === 'failed')) {
+          toast('存在阻断级门禁失败，请先点击「派发开发 Agent 自动修复并复审」');
+          return;
+        }
+        rev.verdict = 'passed';
+        rev.findings.forEach((f) => { f.resolved = true; });
+        const newSha = Math.random().toString(16).slice(2, 9);
+        rev.commitSha = newSha;
+        realTask.status = 'completed';
+        realTask.output = `审查报告 ${realTask.id} · Agent 审查通过 (${newSha})`;
+        rev.history.unshift({
+          round: rev.history.length + 1, agent: '代码审查 Agent', action: '自动审查通过并放行',
+          commit: newSha, time: new Date().toTimeString().slice(0, 8),
+          note: `全部 4 项确定性门禁与规格走查通过，自动释放下游 [${downstream.join(', ') || '无'}]`
+        });
+        addLog('代码审查 Agent', `${realTask.id} 自动审查通过（提交 ${newSha}），已自动放行下游 ${downstream.join(', ') || ''}`);
+        toast(`${realTask.id} 已由代码审查 Agent 自动通过并放行`);
+        renderAll();
+      });
+
+      const btnAutoFix = el('button', '🔧 退回开发 Agent 自动修复并重新复审', 'w-full py-2 px-3 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-semibold transition');
+      btnAutoFix.type = 'button';
+      btnAutoFix.addEventListener('click', () => {
+        rev.checks.forEach((c) => { c.status = 'passed'; c.detail = '开发 Agent 已自动修复并通过回归验证'; });
+        rev.findings.forEach((f) => { f.resolved = true; });
+        rev.verdict = 'passed';
+        const fixSha = Math.random().toString(16).slice(2, 9);
+        rev.commitSha = fixSha;
+        if (realTask.targetTaskId) {
+          const tgt = findTask(realTask.targetTaskId);
+          if (tgt && tgt.status === 'failed') {
+            tgt.status = 'completed';
+            tgt.output = `${tgt.output.split('·')[0].trim()} · 自动修复通过`;
+          }
+        }
+        if (realTask.id === 'R2.2') {
+          const t23 = findTask('T2.3');
+          if (t23 && t23.status === 'pending') { t23.status = 'completed'; t23.output = '停用处置提交 v1'; }
+        }
+        realTask.status = 'completed';
+        realTask.output = `审查报告 ${realTask.id} · 自动修复复审通过 (${fixSha})`;
+        rev.history.unshift({
+          round: rev.history.length + 1, agent: '开发 Agent → 代码审查 Agent', action: '自动修复并复审通过',
+          commit: fixSha, time: new Date().toTimeString().slice(0, 8),
+          note: '按审查缺陷清单完成自动补丁生成、单测回归与二次复审'
+        });
+        addLog('自动修复闭环', `${realTask.id} 触发开发 Agent 自动修复并复审通过（提交 ${fixSha}）`);
+        toast(`${realTask.id} 自动修复与复审闭环完成`);
+        renderAll();
+      });
+
+      actWrap.append(btnAutoReview, btnAutoFix);
+      }
+      verdictCard.append(actWrap);
+      grid.append(gateCard, verdictCard);
+      wrap.append(grid);
+
+      // 3. Automated Code Diff & Agent Findings + End-to-End Traceability
+      const diffCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-3');
+      diffCard.innerHTML = `
+        <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+          <strong class="text-sm text-slate-900">Agent 自动审查差异对比（开发初稿 → 自动修复补丁）</strong>
+          <span class="mono text-[11px] text-slate-500">${escapeHtml(rev.excerptRange)}</span>
+        </div>
+      `;
+      const diffBody = el('div', undefined, 'p-3 rounded-lg border border-slate-200 bg-slate-50 mono text-[11px] space-y-1 max-h-44 overflow-y-auto');
+      for (const r of buildLineDiff(rev.origCode, rev.fixedCode)) {
+        const cls = r.type === 'del' ? 'bg-red-50 text-red-800 px-2 py-0.5 rounded' : (r.type === 'add' ? 'bg-emerald-50 text-emerald-800 px-2 py-0.5 rounded' : 'text-slate-600 px-2 py-0.5');
+        diffBody.append(el('div', `${r.type === 'del' ? '−' : (r.type === 'add' ? '+' : ' ')} L${r.ln}  ${r.text}`, cls));
+      }
+      diffCard.append(diffBody);
+
+      if (rev.findings.length) {
+        const fWrap = el('div', undefined, 'space-y-1.5');
+        fWrap.append(el('strong', '代码审查 Agent 检出条目', 'block text-slate-800'));
+        for (const f of rev.findings) {
+          const fCls = f.resolved ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900' : (f.severity === 'blocker' ? 'bg-red-50 border-red-200 text-red-800' : 'bg-amber-50 border-amber-200 text-amber-900');
+          fWrap.append(el('div', `[${f.id} · ${f.line}] ${f.text}${f.resolved ? '（已自动修复验证 ✓）' : ''}`, `p-2.5 rounded-lg border text-[11px] ${fCls}`));
+        }
+        diffCard.append(fWrap);
+      }
+      wrap.append(diffCard);
+
+      // 4. Review Execution History & Traceability Chain
+      const bottomGrid = el('div', undefined, 'grid grid-cols-1 lg:grid-cols-2 gap-4');
+      const histCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-2');
+      histCard.append(el('strong', 'Agent 审查轮次与放行记录', 'block text-slate-900 border-b border-slate-100 pb-2'));
+      if (rev.history.length) {
+        for (const h of rev.history) {
+          const row = el('div', undefined, 'p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-[11px] space-y-0.5');
+          row.innerHTML = `<div class="flex justify-between"><strong class="text-indigo-700 mono">Round ${h.round} · ${escapeHtml(h.action)}</strong><span class="mono text-slate-400">${escapeHtml(h.time)} · ${escapeHtml(h.commit)}</span></div><div class="text-slate-600">${escapeHtml(h.agent)}：${escapeHtml(h.note)}</div>`;
+          histCard.append(row);
+        }
+      } else {
+        histCard.append(el('div', '尚未完成审查放行，点击上方「执行代码审查 Agent 自动审查与放行」即可自动流转。', 'text-slate-400 py-2'));
+      }
+
+      const traceCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-2.5');
+      traceCard.append(el('strong', '端到端双向追溯链（需求 → 开发 → Agent 审查 → 集成）', 'block text-slate-900 border-b border-slate-100 pb-2'));
+      const chain = [
+        { k: '原始需求', v: realTask.spec },
+        { k: '前置开发提交', v: realTask.deps.join(', ') || '仓库基线' },
+        { k: 'Phase 3 审查节点', v: `${realTask.id} (${rev.commitSha})` },
+        { k: '下游放行目标', v: downstream.join(', ') || '最终集成交付' }
+      ];
+      const trRow = el('div', undefined, 'flex flex-wrap items-center gap-1.5');
+      chain.forEach((n, idx) => {
+        const box = el('div', undefined, 'px-2.5 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-[11px]');
+        box.innerHTML = `<div class="text-[10px] text-slate-400">${n.k}</div><div class="mono font-semibold text-slate-800">${escapeHtml(n.v)}</div>`;
+        trRow.append(box);
+        if (idx < chain.length - 1) trRow.append(el('span', '→', 'text-indigo-400 font-bold'));
+      });
+      traceCard.append(trRow);
+      bottomGrid.append(histCard, traceCard);
+      wrap.append(bottomGrid);
+
+      container.append(wrap);
+    }
+
     function renderDetailsTab() {
       const sel = findTask(selectedTaskId);
       const meta = statusMeta(sel.status);
@@ -2106,19 +3047,39 @@
       card.innerHTML = `
         <div class="flex items-center justify-between border-b border-slate-100 pb-3">
           <div>
-            <div class="mono text-xs text-indigo-600 font-semibold">${sel.code} · ${sel.id}</div>
-            <h2 class="text-base font-bold text-slate-900 mt-0.5">${sel.name}</h2>
+            <div class="mono text-xs text-indigo-600 font-semibold">${escapeHtml(sel.code)} · ${escapeHtml(sel.id)} · Plan v${planVersion}</div>
+            <h2 class="text-base font-bold text-slate-900 mt-0.5">${escapeHtml(sel.name)}</h2>
           </div>
           <span class="px-3 py-1 rounded-full border text-xs font-semibold ${meta.badgeCls}">${meta.label}</span>
         </div>
       `;
 
+      if (planLocked) {
+        const lockNote = el('div', undefined, 'p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 flex flex-wrap items-center justify-between gap-2');
+        lockNote.append(el('span', `Plan v${planVersion} 已锁定运行，如需调整任务配置请升级新计划版本。`));
+        const unBtn = el('button', `创建 Plan v${planVersion + 1}`, 'px-2.5 py-1 rounded bg-white border border-amber-300 text-amber-900 font-semibold');
+        unBtn.type = 'button';
+        unBtn.addEventListener('click', () => {
+          planVersion += 1;
+          planLocked = false;
+          addLog('计划版本', `创建 Plan v${planVersion}，已解锁任务配置`);
+          renderAll();
+        });
+        lockNote.append(unBtn);
+        card.append(lockNote);
+      }
+
+      const cycErr = el('div', undefined, 'hidden p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-700 font-medium');
+      card.append(cycErr);
+
       const editGrid = el('div', undefined, 'grid grid-cols-1 sm:grid-cols-2 gap-3.5');
-      const makeField = (label, val, onChange) => {
+      const makeField = (label, val, onChange, type = 'text') => {
         const box = el('label', undefined, 'space-y-1 block');
         box.append(el('span', label, 'text-slate-500 font-medium block'));
-        const inp = el('input', undefined, 'w-full border border-slate-300 rounded-lg px-3 py-1.5 bg-white font-medium text-slate-800');
+        const inp = el('input', undefined, 'w-full border border-slate-300 rounded-lg px-3 py-1.5 bg-white font-medium text-slate-800 disabled:bg-slate-100 disabled:text-slate-500');
+        inp.type = type;
         inp.value = val;
+        inp.disabled = planLocked;
         inp.addEventListener('input', () => onChange(inp.value));
         box.append(inp);
         return box;
@@ -2130,67 +3091,56 @@
         makeField('隔离工作区路径', sel.worktree, (v) => { sel.worktree = v; }),
         makeField('规格来源与关联决定', sel.spec, (v) => { sel.spec = v; }),
         makeField('预期交付产物', sel.output, (v) => { sel.output = v; }),
-        makeField('估时 (分钟)', String(sel.estimateMin), (v) => { sel.estimateMin = Math.max(5, Number(v) || 5); renderPhaseList(); })
+        makeField('估时 (分钟)', String(sel.estimateMin), (v) => { sel.estimateMin = Math.max(1, Number(v) || 5); renderPhaseList(); }, 'number')
       );
       card.append(editGrid);
+
+      // Direct dependencies checklist with real-time DAG cycle check
+      const depSec = el('div', undefined, 'space-y-1.5');
+      depSec.append(el('span', '直接前置任务（勾选时自动执行 DAG 循环依赖检测）', 'text-slate-500 font-medium block'));
+      const depWrap = el('div', undefined, 'flex flex-wrap gap-2 p-3 rounded-lg bg-slate-50 border border-slate-200');
+      for (const other of getAllTasks().filter((x) => x.id !== sel.id)) {
+        const lbl = el('label', undefined, 'inline-flex items-center gap-1.5 px-2 py-1 rounded bg-white border border-slate-200 cursor-pointer');
+        const cb = el('input');
+        cb.type = 'checkbox';
+        cb.checked = sel.deps.includes(other.id);
+        cb.disabled = planLocked;
+        cb.addEventListener('change', () => {
+          const nextDeps = cb.checked ? [...new Set([...sel.deps, other.id])] : sel.deps.filter((d) => d !== other.id);
+          const simulated = getAllTasks().map((t) => (t.id === sel.id ? { ...t, deps: nextDeps } : t));
+          const cyc = detectCycle(simulated);
+          if (cyc) {
+            cb.checked = !cb.checked;
+            cycErr.textContent = `检测到循环依赖：${cyc.join(' → ')}，已阻止本次依赖修改。`;
+            cycErr.classList.remove('hidden');
+            return;
+          }
+          cycErr.classList.add('hidden');
+          sel.deps = nextDeps;
+          addLog('任务配置', `更新 ${sel.id} 前置依赖为 [${nextDeps.join(', ') || '无'}]`);
+          toast(`已更新 ${sel.id} 依赖并重排`);
+        });
+        lbl.append(cb, el('span', `${other.id} ${other.name}`, 'text-[11px]'));
+        depWrap.append(lbl);
+      }
+      depSec.append(depWrap);
+      card.append(depSec);
       wrap.append(card);
 
-      const reviewCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-6 shadow-2xs space-y-4');
-      const origText = sel.originalContent || `${sel.output} · 由 ${sel.owner} 根据 ${sel.spec} 生成的初始产物 (v1)。`;
-      const revText = sel.revisedContent || origText;
-
-      reviewCard.innerHTML = `
-        <div class="flex items-center justify-between">
-          <strong class="text-sm text-slate-900">交付审阅与人工修订</strong>
-          <span class="mono text-slate-500">下游任务消费人工批准的最新版本</span>
+      const revSummaryCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-3');
+      const revData = getAgentReview(sel);
+      revSummaryCard.innerHTML = `
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+          <strong class="text-sm text-slate-900">Phase 3 · 代码审查 Agent 自动化审查摘要</strong>
+          <span class="mono text-[11px] text-indigo-600 font-semibold">${escapeHtml(revData.reviewerAgent)}</span>
         </div>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div class="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
-            <strong class="text-slate-700 block">Agent 原始产物 · v1</strong>
-            <pre class="mono text-xs whitespace-pre-wrap text-slate-600 bg-white p-3 rounded border border-slate-200">${origText}</pre>
-          </div>
-          <div class="p-4 rounded-xl bg-blue-50/40 border border-blue-200 space-y-2">
-            <strong class="text-blue-900 block">人工修订内容 · v2</strong>
-            <textarea id="review-editor-ta" rows="4" class="w-full mono text-xs p-2.5 rounded border border-slate-300 bg-white">${revText}</textarea>
-          </div>
-        </div>
+        <div class="text-slate-600">当前提交 <code class="mono text-slate-800">${escapeHtml(revData.commitSha)}</code> · 摘录边界 <code class="mono text-slate-800">${escapeHtml(revData.excerptRange)}</code> · 自动化检查通过 ${revData.checks.filter((c) => c.status === 'passed').length}/${revData.checks.length} 项。</div>
       `;
-
-      const noteInput = el('input', undefined, 'w-full border border-slate-300 rounded-lg px-3 py-1.5');
-      noteInput.value = sel.reviewNote || '补充停用设备的状态展示和预约入口规则。';
-      noteInput.placeholder = '输入审核备注...';
-
-      const btnRow = el('div', undefined, 'flex flex-wrap items-center gap-2');
-      const approveRevBtn = el('button', '批准修订版并生成 v2', 'px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition');
-      approveRevBtn.type = 'button';
-      approveRevBtn.addEventListener('click', () => {
-        sel.revisedContent = q('#review-editor-ta').value.trim();
-        sel.reviewNote = noteInput.value.trim();
-        sel.status = 'completed';
-        sel.output = `${sel.output.split(' ')[0]} · 已放行 v2`;
-        toast(`已批准 ${sel.id} 人工修订版 v2`);
-        renderAll();
-      });
-
-      const approveOrigBtn = el('button', '直接批准原稿 v1', 'px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition');
-      approveOrigBtn.type = 'button';
-      approveOrigBtn.addEventListener('click', () => {
-        sel.status = 'completed';
-        toast(`已直接批准 ${sel.id} 原稿 v1`);
-        renderAll();
-      });
-
-      const rejectBtn = el('button', '退回重做', 'px-3.5 py-2 rounded-lg bg-white hover:bg-red-50 text-red-600 border border-red-300 font-semibold transition');
-      rejectBtn.type = 'button';
-      rejectBtn.addEventListener('click', () => {
-        sel.status = 'pending';
-        toast(`已将 ${sel.id} 退回待派发队列`);
-        renderAll();
-      });
-
-      btnRow.append(approveRevBtn, approveOrigBtn, rejectBtn);
-      reviewCard.append(noteInput, btnRow);
-      wrap.append(reviewCard);
+      const goAgentReviewBtn = el('button', '🤖 进入「Agent 代码审查」执行自动审查或修复闭环 →', 'px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition');
+      goAgentReviewBtn.type = 'button';
+      goAgentReviewBtn.addEventListener('click', () => { currentTab = 'review'; renderAll(); });
+      revSummaryCard.append(goAgentReviewBtn);
+      wrap.append(revSummaryCard);
 
       panel.append(wrap);
     }
@@ -2199,53 +3149,73 @@
       const panel = q('#panel-monitor');
       panel.replaceChildren();
       const wrap = el('div', undefined, 'max-w-4xl space-y-4 text-xs');
+      const tasks = getAllTasks();
+      const sched = computeSchedule(tasks, modelRouterConfig.maxParallel);
+      const extraDelay = tasks.some((t) => t.status === 'failed') ? 5 : 0;
+      const totalActual = sched.plannedTotal + extraDelay;
+      const axisMax = Math.ceil((Math.max(totalActual, 25) + ganttScale) / ganttScale) * ganttScale;
+      const tickCount = Math.max(1, Math.round(axisMax / ganttScale));
 
       const ganttCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-3');
-      ganttCard.innerHTML = `
-        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-          <div>
-            <strong class="text-sm text-slate-900">甘特图与进度对照 · 并发上限 = ${modelRouterConfig.maxParallel}</strong>
-            <p class="text-slate-500 mt-0.5">原计划关键路径基线 25 分钟；T2.2 预约服务失败重试后总用时顺延至 30 分钟。</p>
-          </div>
-          <span class="mono font-semibold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded">计划 25 分钟 · 实际 30 分钟</span>
+      const header = el('div', undefined, 'flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3');
+      header.innerHTML = `
+        <div>
+          <strong class="text-sm text-slate-900">动态甘特排期与并发监控 · 并发上限 = ${modelRouterConfig.maxParallel}</strong>
+          <p class="text-slate-500 mt-0.5">理论关键路径 ${sched.cpmTotal} 分钟 · 计入并发与角色排期 ${sched.plannedTotal} 分钟${extraDelay ? `（含失败重试顺延 +${extraDelay} 分钟）` : ''}。</p>
         </div>
-        <div class="space-y-2.5 pt-1">
-          <div class="grid grid-cols-12 items-center gap-2">
-            <div class="col-span-3 font-semibold text-slate-700">T1.1 定义预约状态 <span class="block text-[10px] text-slate-400 font-normal">规划 Agent · 5m</span></div>
-            <div class="col-span-9 bg-slate-100 h-7 rounded relative overflow-hidden">
-              <div class="absolute top-1 left-[0%] w-[16.6%] h-2 bg-blue-200 rounded-xs"></div>
-              <div class="absolute bottom-1 left-[0%] w-[16.6%] h-2.5 bg-emerald-600 rounded-xs"></div>
-            </div>
+      `;
+      const scaleCtrl = el('div', undefined, 'flex items-center gap-1.5');
+      for (const sc of [5, 10]) {
+        const b = el('button', `${sc} 分钟刻度`, `px-2.5 py-1 rounded border text-[11px] font-semibold transition ${ganttScale === sc ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`);
+        b.type = 'button';
+        b.addEventListener('click', () => { ganttScale = sc; renderMonitorTab(); });
+        scaleCtrl.append(b);
+      }
+      header.append(scaleCtrl);
+      ganttCard.append(header);
+
+      // Axis ticks row
+      const axisRow = el('div', undefined, 'grid grid-cols-12 items-center gap-2 border-b border-slate-200 pb-1.5');
+      axisRow.append(el('div', '任务 / 执行角色', 'col-span-3 text-[11px] font-bold text-slate-500'));
+      const axisTrack = el('div', undefined, 'col-span-9 relative h-4');
+      for (let i = 0; i <= tickCount; i++) {
+        const v = i * ganttScale;
+        const tick = el('span', `${v}m`, 'mono text-[10px] text-slate-400 absolute top-0 -translate-x-1/2');
+        tick.style.left = `${(v / axisMax) * 100}%`;
+        axisTrack.append(tick);
+      }
+      axisRow.append(axisTrack);
+      ganttCard.append(axisRow);
+
+      const rowsWrap = el('div', undefined, 'space-y-2 pt-1');
+      for (const t of tasks) {
+        const ps = sched.planStart.get(t.id) ?? 0;
+        const pe = sched.planEnd.get(t.id) ?? t.estimateMin;
+        const dur = Math.max(1, pe - ps);
+        const isCrit = sched.criticalSet.has(t.id);
+        const row = el('div', undefined, `grid grid-cols-12 items-center gap-2 p-1.5 rounded-lg cursor-pointer hover:bg-slate-50 ${t.id === selectedTaskId ? 'bg-indigo-50/70' : ''}`);
+        row.addEventListener('click', () => { selectedTaskId = t.id; renderAll(); });
+        row.innerHTML = `
+          <div class="col-span-3 font-semibold text-slate-700 truncate" title="${escapeHtml(t.name)}">
+            ${escapeHtml(t.id)} ${escapeHtml(t.name)}${isCrit ? ' <span class="text-indigo-600">★</span>' : ''}
+            <span class="block text-[10px] text-slate-400 font-normal truncate">${escapeHtml(t.owner)} · ${dur}m</span>
           </div>
-          <div class="grid grid-cols-12 items-center gap-2">
-            <div class="col-span-3 font-semibold text-slate-700">T2.1 开发设备查询 <span class="block text-[10px] text-slate-400 font-normal">后端 Agent A · 5m</span></div>
-            <div class="col-span-9 bg-slate-100 h-7 rounded relative overflow-hidden">
-              <div class="absolute top-1 left-[16.6%] w-[16.6%] h-2 bg-blue-200 rounded-xs"></div>
-              <div class="absolute bottom-1 left-[16.6%] w-[16.6%] h-2.5 bg-emerald-600 rounded-xs"></div>
-            </div>
+          <div class="col-span-9 bg-slate-100 h-8 rounded relative overflow-hidden" style="background-image:linear-gradient(to right,#e2e8f0 1px,transparent 1px);background-size:${100 / tickCount}% 100%;">
+            <div class="absolute top-1 h-2.5 bg-blue-200 border border-blue-300 rounded-xs" style="left:${(ps / axisMax) * 100}%;width:${(dur / axisMax) * 100}%;" title="基线计划 ${ps}m-${pe}m"></div>
+            ${t.status === 'completed' ? `<div class="absolute bottom-1 h-2.5 bg-emerald-600 rounded-xs" style="left:${(ps / axisMax) * 100}%;width:${(dur / axisMax) * 100}%;" title="实际完成"></div>` : ''}
+            ${t.status === 'in_progress' ? `<div class="absolute bottom-1 h-2.5 bg-amber-500 rounded-xs" style="left:${(ps / axisMax) * 100}%;width:${(dur / axisMax) * 100}%;" title="进行中/Agent 审查中"></div>` : ''}
+            ${t.status === 'failed' ? `<div class="absolute bottom-1 h-2.5 bg-red-600 rounded-xs" style="left:${(ps / axisMax) * 100}%;width:${(Math.min(5, dur) / axisMax) * 100}%;" title="尝试 1 失败"></div>` : ''}
           </div>
-          <div class="grid grid-cols-12 items-center gap-2">
-            <div class="col-span-3 font-semibold text-slate-700">T2.2 开发预约服务 <span class="block text-[10px] text-slate-400 font-normal">后端 Agent B · 10m</span></div>
-            <div class="col-span-9 bg-slate-100 h-7 rounded relative overflow-hidden">
-              <div class="absolute top-1 left-[16.6%] w-[33.3%] h-2 bg-blue-200 rounded-xs"></div>
-              <div class="absolute bottom-1 left-[16.6%] w-[16.6%] h-2.5 bg-red-600 rounded-xs"></div>
-              <div class="absolute bottom-1 left-[33.3%] w-[33.3%] h-2.5 bg-emerald-600 rounded-xs"></div>
-            </div>
-          </div>
-          <div class="grid grid-cols-12 items-center gap-2">
-            <div class="col-span-3 font-semibold text-slate-700">T2.3 实现停用处置 <span class="block text-[10px] text-slate-400 font-normal">后端 Agent B · 5m</span></div>
-            <div class="col-span-9 bg-slate-100 h-7 rounded relative overflow-hidden">
-              <div class="absolute top-1 left-[50%] w-[16.6%] h-2 bg-blue-200 rounded-xs"></div>
-              <div class="absolute bottom-1 left-[66.6%] w-[16.6%] h-2.5 bg-emerald-600 rounded-xs"></div>
-            </div>
-          </div>
-          <div class="grid grid-cols-12 items-center gap-2">
-            <div class="col-span-3 font-semibold text-slate-700">T3.1 集成工作台 <span class="block text-[10px] text-slate-400 font-normal">集成 Agent · 5m</span></div>
-            <div class="col-span-9 bg-slate-100 h-7 rounded relative overflow-hidden">
-              <div class="absolute top-1 left-[66.6%] w-[16.6%] h-2 bg-blue-200 rounded-xs"></div>
-              <div class="absolute bottom-1 left-[83.3%] w-[16.6%] h-2.5 bg-emerald-600 rounded-xs"></div>
-            </div>
-          </div>
+        `;
+        rowsWrap.append(row);
+      }
+      ganttCard.append(rowsWrap);
+      ganttCard.innerHTML += `
+        <div class="flex flex-wrap gap-4 pt-2 border-t border-slate-100 text-[11px] text-slate-500">
+          <span><span class="inline-block w-2.5 h-2.5 rounded-xs bg-blue-200 border border-blue-300 mr-1 align-middle"></span>计划基线</span>
+          <span><span class="inline-block w-2.5 h-2.5 rounded-xs bg-emerald-600 mr-1 align-middle"></span>实际完成</span>
+          <span><span class="inline-block w-2.5 h-2.5 rounded-xs bg-amber-500 mr-1 align-middle"></span>待审/运行中</span>
+          <span><span class="inline-block w-2.5 h-2.5 rounded-xs bg-red-600 mr-1 align-middle"></span>失败尝试</span>
         </div>
       `;
       wrap.append(ganttCard);
@@ -2301,7 +3271,6 @@
     }
 
     function switchModule(modKey, titleText) {
-      if (activeModule !== modKey) q('#module-dedicated-view').scrollTop = 0;
       activeModule = modKey;
       if (titleText) q('#page-title').textContent = titleText;
 
@@ -2319,14 +3288,9 @@
       const dedicatedView = q('#module-dedicated-view');
       const workbenchView = q('#workbench-split-view');
 
-      if (plannerLink?.render(activeModule)) return;
-      if (!plannerLink) renderRightStewardSidebar();
+      renderRightStewardSidebar();
 
       if (activeModule === 'workbench') {
-        if (plannerLink) {
-          if (!plannerLink.isFullWorkspace) currentTab = 'graph';
-          if (!getAllTasks().some(task => task.id === selectedTaskId)) selectedTaskId = getAllTasks()[0].id;
-        }
         dedicatedView.classList.add('hidden');
         workbenchView.classList.remove('hidden');
 
@@ -2342,21 +3306,24 @@
         q('#panel-details').classList.toggle('hidden', currentTab !== 'details');
         q('#panel-monitor').classList.toggle('hidden', currentTab !== 'monitor');
         q('#panel-activity').classList.toggle('hidden', currentTab !== 'activity');
+        q('#panel-review').classList.toggle('hidden', currentTab !== 'review');
 
         renderPhaseList();
         if (currentTab === 'graph') renderTwinGraph();
-        else if (plannerLink?.renderTab(currentTab, selectedTaskId)) { /* Live panels rendered by the linked workspace. */ }
         else if (currentTab === 'details') renderDetailsTab();
         else if (currentTab === 'monitor') renderMonitorTab();
         else if (currentTab === 'activity') renderActivityTab();
+        else if (currentTab === 'review') renderAgentReviewCenter(q('#panel-review'));
       } else {
         workbenchView.classList.add('hidden');
         dedicatedView.classList.remove('hidden');
         dedicatedView.replaceChildren();
 
-        if (activeModule === 'intake-race') renderModuleIntakeRace(dedicatedView);
+        if (activeModule === 'steward') renderModuleSteward(dedicatedView);
+        else if (activeModule === 'intake-race') renderModuleIntakeRace(dedicatedView);
         else if (activeModule === 'review-synthesis') renderModuleReviewSynthesis(dedicatedView);
         else if (activeModule === 'task-planner') renderModuleTaskPlanner(dedicatedView);
+        else if (activeModule === 'code-review') renderAgentReviewCenter(dedicatedView);
         else renderModuleSystemPanel(dedicatedView);
       }
     }
@@ -2377,16 +3344,32 @@
     // 修复左侧侧边栏收起后无法再展开的问题：收起为窄图标栏并保持 ◧ 按钮居中可点击
     q('#btn-toggle-sidebar').addEventListener('click', () => {
       const sb = q('#left-sidebar');
-      sb.classList.toggle('collapsed');
+      const collapsed = sb.classList.toggle('collapsed');
+      q('#btn-toggle-sidebar').setAttribute('aria-expanded', String(!collapsed));
     });
 
-    // 右侧主理侧边栏显隐切换
+    // 右侧主理侧边栏显隐切换并同步按钮文案
     q('#btn-toggle-right-sidebar').addEventListener('click', () => {
-      q('#right-steward-sidebar').classList.toggle('hidden');
+      const rs = q('#right-steward-sidebar');
+      const hidden = rs.classList.toggle('hidden');
+      const btn = q('#btn-toggle-right-sidebar');
+      btn.textContent = hidden ? '展开主理栏 ◧' : '主理侧边栏 ◨';
+      btn.setAttribute('aria-expanded', String(!hidden));
     });
 
-    // 修复顶部「当前项目」下拉栏：切换后所有模块（含数字人档案与经验卡库）立即生效
+    q('#btn-focus-critical').addEventListener('click', () => {
+      focusCritical = !focusCritical;
+      const btn = q('#btn-focus-critical');
+      btn.className = focusCritical
+        ? 'px-2.5 py-1 rounded-md bg-indigo-600 text-white border border-indigo-600 text-[11px] font-semibold shadow-2xs transition'
+        : 'px-2.5 py-1 rounded-md bg-white/95 hover:bg-indigo-50 border border-slate-300 text-slate-700 text-[11px] font-semibold shadow-2xs transition';
+      renderTwinGraph();
+    });
+
+    // 修复顶部「当前演示案例」下拉栏：切换后所有模块（含数字人档案与经验卡库）立即生效
     function switchProjectCase(projKey) {
+      stopAutoLoop(true);
+      autoLoopState.activeRollbackEdge = null;
       currentProjectKey = projKey;
       q('#select-project').value = projKey;
       q('#select-engine').value = projKey === 'studyroom' ? 'case_v1' : 'plan_v1';
@@ -2420,22 +3403,51 @@
       renderPhaseList();
     });
 
+    q('#btn-auto-loop').addEventListener('click', toggleContinuousAutoLoop);
+
     q('#btn-step-sim').addEventListener('click', () => {
+      if (activeModule !== 'workbench' && activeModule !== 'code-review') {
+        switchModule('workbench', '开发流程工作台');
+      }
+      executeOneLoopTick();
+    });
+
+    const _legacyStepSimHandler = () => {
+      if (dispatchPaused) {
+        toast('当前已暂停派发，请先在右侧主理栏点击「继续派发」');
+        return;
+      }
       if (activeModule !== 'workbench') {
         switchModule('workbench', '开发流程工作台');
       }
       const tasks = getAllTasks();
-      const target = tasks.find((t) => t.status === 'failed' || t.status === 'in_progress' || t.status === 'pending');
-      const realTask = target ? findTask(target.id) : findTask(tasks[0].id);
-      if (realTask.status === 'failed') realTask.status = 'completed';
-      else if (realTask.status === 'in_progress') realTask.status = 'completed';
-      else if (realTask.status === 'pending') realTask.status = 'in_progress';
-      else realTask.status = 'in_progress';
+      const map = new Map(tasks.map((t) => [t.id, t]));
+      const readyPending = tasks.find((t) => t.status === 'pending' && t.deps.every((d) => map.get(d)?.status === 'completed'));
+      const inProg = tasks.find((t) => t.status === 'in_progress');
+      const failed = tasks.find((t) => t.status === 'failed');
+
+      let realTask = null;
+      if (failed) {
+        realTask = findTask(failed.id);
+        realTask.status = 'completed';
+        realTask.output = '预约服务提交 · 重试成功 v1';
+      } else if (inProg) {
+        realTask = findTask(inProg.id);
+        realTask.status = 'completed';
+        realTask.output = `${realTask.output.replace(/\s*·\s*待审阅.*$/, '')} · 已放行 v2`;
+      } else if (readyPending) {
+        realTask = findTask(readyPending.id);
+        realTask.status = 'in_progress';
+      } else {
+        toast('全部任务已完成或存在未满足的前置依赖');
+        return;
+      }
 
       selectedTaskId = realTask.id;
-      toast(`已推进任务 ${realTask.id} (${realTask.name}) → ${statusMeta(realTask.status).label}`);
+      addLog('DAG 调度器', `推进任务 ${realTask.id}（${realTask.name}）→ ${statusMeta(realTask.status).label}`);
+      toast(`已推进任务 ${realTask.id} → ${statusMeta(realTask.status).label}`);
       renderAll();
-    });
+    };
 
     q('#btn-zoom-in').addEventListener('click', () => {
       zoom = Math.min(1.5, +(zoom + 0.1).toFixed(2));
@@ -2446,28 +3458,44 @@
       applyTransform();
     });
     q('#btn-fit-graph').addEventListener('click', () => {
-      zoom = 1;
-      panX = 0;
-      panY = 0;
+      const vp = q('#graph-viewport');
+      const data = getActiveData();
+      if (!vp || !data.phases.length) return;
+      const minX = Math.min(...data.phases.map((p) => p.box.x));
+      const minY = Math.min(...data.phases.map((p) => p.box.y));
+      const maxX = Math.max(...data.phases.map((p) => p.box.x + p.box.w));
+      const maxY = Math.max(...data.phases.map((p) => p.box.y + p.box.h));
+      const bw = Math.max(200, maxX - minX);
+      const bh = Math.max(200, maxY - minY);
+      const rect = vp.getBoundingClientRect();
+      zoom = Math.max(0.55, Math.min(1.1, Number(Math.min((rect.width - 48) / bw, (rect.height - 96) / bh).toFixed(2))));
+      panX = Math.round((rect.width - bw * zoom) / 2 - minX * zoom);
+      panY = Math.round((rect.height - bh * zoom) / 2 - minY * zoom);
       applyTransform();
     });
 
     const viewport = q('#graph-viewport');
-    viewport.addEventListener('mousedown', (e) => {
+    viewport.addEventListener('pointerdown', (e) => {
       if (e.target.closest('.graph-node')) return;
       isPanning = true;
       panStartX = e.clientX - panX;
       panStartY = e.clientY - panY;
+      viewport.setPointerCapture?.(e.pointerId);
     });
-    window.addEventListener('mousemove', (e) => {
+    viewport.addEventListener('pointermove', (e) => {
       if (!isPanning) return;
       panX = e.clientX - panStartX;
       panY = e.clientY - panStartY;
       applyTransform();
     });
-    window.addEventListener('mouseup', () => {
-      isPanning = false;
-    });
+    const endPan = () => { isPanning = false; };
+    viewport.addEventListener('pointerup', endPan);
+    viewport.addEventListener('pointercancel', endPan);
+    viewport.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      zoom = Math.max(0.55, Math.min(1.6, +(zoom + (e.deltaY < 0 ? 0.08 : -0.08)).toFixed(2)));
+      applyTransform();
+    }, { passive: false });
 
     q('#btn-changelog').addEventListener('click', () => {
       q('#info-modal-title').textContent = '正式联调接口契约 v2';
@@ -2492,14 +3520,43 @@
       q('#info-modal').classList.add('hidden');
     });
 
-    if (window.createPlannerLink) {
-      plannerLink = window.createPlannerLink({ q, el, switchModule, toast, showTask: id => {
-        selectedTaskId = id;
-        currentTab = 'details';
-        switchModule('workbench', '开发流程工作台');
-      } });
-      plannerLink.open(window.createStewardLink ? 'steward' : 'intake-race');
-    } else renderAll();
+    window.setModelMode = (m) => { const elMode = q('#planner-model-mode'); if (elMode && m) elMode.textContent = String(m); };
+    window.openTaskPlanner = () => switchModule('task-planner', '任务分解与配置');
+    window.openRaceReview = () => switchModule('review-synthesis', '评审与方案整合');
+    window.returnToRace = () => switchModule('intake-race', '需求快照与赛马出案');
+
+    function bootLocalBridges() {
+      const proto = window.location.protocol;
+      const host = window.location.hostname;
+      if ((proto !== 'http:' && proto !== 'https:') || (host !== 'localhost' && host !== '127.0.0.1' && !host.startsWith('192.168.') && !host.startsWith('10.'))) {
+        return;
+      }
+      const scripts = ['/steward-link.js', '/workspace-link.js', '/planner-link.js'];
+      const loadNext = (idx) => {
+        if (idx >= scripts.length) {
+          try {
+            if (typeof window.createPlannerLink === 'function') {
+              const pl = window.createPlannerLink({ q, el, switchModule, toast, showTask: (id) => { selectedTaskId = id; renderAll(); } });
+              if (typeof window.createWorkspaceLink === 'function' && pl?.setExtension) {
+                pl.setExtension(window.createWorkspaceLink);
+              }
+              if (pl?.open) pl.open(window.createStewardLink ? 'steward' : 'intake-race');
+            }
+          } catch (_) {}
+          return;
+        }
+        const s = document.createElement('script');
+        s.src = scripts[idx];
+        s.async = false;
+        s.onload = () => loadNext(idx + 1);
+        s.onerror = () => loadNext(idx + 1);
+        document.body.appendChild(s);
+      };
+      loadNext(0);
+    }
+
+    renderAll();
+    bootLocalBridges();
   })();
   </script>
 </body>

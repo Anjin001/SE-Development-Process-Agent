@@ -3,6 +3,8 @@
 import re
 from copy import deepcopy
 
+from .limits import MAX_INPUT_BYTES, MODEL_TIMEOUT_SECONDS
+
 _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
 _ITEM = re.compile(r"^\s*(?:[-+*]|\d+[.)])\s+")
 _FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
@@ -26,6 +28,8 @@ def default_group_prompts():
 
 
 def intake(markdown):
+    if isinstance(markdown, str) and len(markdown.encode("utf-8")) > MAX_INPUT_BYTES:
+        raise ValueError("需求正文超过输入上限。")
     if not isinstance(markdown, str) or not markdown.strip():
         raise ValueError("请输入需求文档")
     text = markdown.strip()
@@ -41,6 +45,8 @@ def race(requirement):
 
 def extract_items(markdown):
     """Extract Markdown blocks and preserve 1-based, inclusive line ranges."""
+    if isinstance(markdown, str) and len(markdown.encode("utf-8")) > MAX_INPUT_BYTES:
+        raise ValueError("需求正文超过输入上限。")
     if not isinstance(markdown, str) or not markdown.strip():
         raise ValueError("请输入需求 Markdown")
     items, lines = [], []
@@ -178,18 +184,18 @@ def run_group(requirement, group_id, *, prompt=None, agent=_mock_agent, progress
     ideas = []
     for role in _ROLES.get(group_id, ("方案探索", "可行性复核")):
         if progress:
-            progress(f"{group_id} 组：{role}独立构思", 60 if agent != _mock_agent else 0)
+            progress(f"{group_id} 组：{role}独立构思", MODEL_TIMEOUT_SECONDS if agent != _mock_agent else 0)
         result = agent("idea", deepcopy({**context, "role": role}))
         if not isinstance(result, dict) or not all(isinstance(result.get(k), str) and result[k].strip() for k in ("proposal", "risk")):
             raise ValueError("独立想法缺少主张或风险")
         ideas.append({"role": role, "proposal": result["proposal"], "risk": result["risk"]})
     if progress:
-        progress(f"{group_id} 组：检查方案风险", 60 if agent != _mock_agent else 0)
+        progress(f"{group_id} 组：检查方案风险", MODEL_TIMEOUT_SECONDS if agent != _mock_agent else 0)
     challenge = agent("challenge", deepcopy({**context, "ideas": ideas}))
     if not isinstance(challenge, str) or not challenge.strip():
         raise ValueError("组内质疑不能为空")
     if progress:
-        progress(f"{group_id} 组：整理草案", 60 if agent != _mock_agent else 0)
+        progress(f"{group_id} 组：整理草案", MODEL_TIMEOUT_SECONDS if agent != _mock_agent else 0)
     proposal = agent("draft", deepcopy({**context, "ideas": ideas, "challenge": challenge}))
     if not isinstance(proposal, dict) or not all(isinstance(proposal.get(k), str) and proposal[k].strip() for k in ("title", "summary")):
         raise ValueError("草案缺少标题或摘要")

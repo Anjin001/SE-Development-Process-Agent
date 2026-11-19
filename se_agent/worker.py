@@ -7,6 +7,8 @@
 执行器改文件、提交，回报 Git SHA 与用量。执行器默认走提示词骨架，
 AutoGen 0.2 适配通过 executor="autogen" 打开。
 """
+from .limits import MODEL_TIMEOUT_SECONDS
+
 import ast
 import hashlib
 import json
@@ -203,7 +205,7 @@ class AutoGenExecutor(PromptExecutor):
             entry["api_key"] = provider.api_key
         assistant = autogen.AssistantAgent(
             name="worker",
-            llm_config={"config_list": [entry], "cache_seed": None, "timeout": 120})
+            llm_config={"config_list": [entry], "cache_seed": None, "timeout": MODEL_TIMEOUT_SECONDS})
         operator = autogen.UserProxyAgent(name="operator", human_input_mode="NEVER",
                                           code_execution_config=False)
         operator.initiate_chat(assistant, message=prompt, max_turns=self.max_turns)
@@ -416,7 +418,7 @@ class Worker:
             cap = step.get("max_output_tokens")
             limit = 32768 if path.endswith((".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".py")) else 8192
             if (type(cap) is int and 0 < cap < limit and isinstance(provider,OpenAICompatibleProvider)
-                    and provider.direct_deepseek(step["model"])):
+                    and provider.deepseek_family(step["model"])):
                 return dict(step, max_output_tokens=limit)
             return step
 

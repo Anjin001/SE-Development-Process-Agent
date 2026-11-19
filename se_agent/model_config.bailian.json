@@ -1,0 +1,42 @@
+{
+  "tiers": {
+    "low_cost": {
+      "provider": "openai_compatible",
+      "model": "deepseek-v4.1-flash",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "SE_AGENT_API_KEY",
+      "max_output_tokens": 2048
+    },
+    "high_capability": {
+      "provider": "openai_compatible",
+      "model": "deepseek-v4.1-flash",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "SE_AGENT_API_KEY",
+      "max_output_tokens": 4096
+    }
+  },
+  "routing": {
+    "default_tier": "low_cost",
+    "role_tiers": {
+      "develop": "low_cost",
+      "docs": "low_cost",
+      "integrate": "high_capability",
+      "plan": "high_capability",
+      "review": "high_capability"
+    },
+    "two_stage_roles": [
+      "integrate"
+    ],
+    "max_cost_usd_per_attempt": 1.0
+  },
+  "pricing": {
+    "deepseek-v4.1-flash": {
+      "input_usd_per_1k": 0.00028,
+      "output_usd_per_1k": 0.00111
+    },
+    "deepseek-v4.1-flash-1017": {
+      "input_usd_per_1k": 0.00028,
+      "output_usd_per_1k": 0.00111
+    }
+  }
+}

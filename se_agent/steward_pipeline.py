@@ -11,6 +11,7 @@ from time import sleep, time
 from uuid import uuid4
 
 from .agent_client import AgentError
+from .limits import MAX_INPUT_BYTES, MODEL_TIMEOUT_SECONDS
 from .contracts import DomainError, InvalidReference, InvalidState, NotFound
 from .intake import build_snapshot, default_group_prompts, run_group
 from .synthesis_preview import PreviewError
@@ -275,8 +276,8 @@ class StewardPipeline:
                     raise InvalidState("这份旧规格已确认且有待决项，请作为新一轮交给主理人。")
                 stage = "plan" if spec and spec["status"] == "confirmed" else "decisions" if spec else "merge" if review["evaluations"] else "evaluate"
         else:
-            if not isinstance(markdown, str) or not markdown.strip() or len(markdown) > 20000:
-                raise InvalidReference("请提供需求正文（最多 20000 字）。")
+            if not isinstance(markdown, str) or not markdown.strip() or len(markdown.encode("utf-8")) > MAX_INPUT_BYTES:
+                raise InvalidReference("请提供需求正文（最多 1 MB（UTF-8））。")
             markdown = markdown_for(markdown)
             stage = "groups"
         id_ = uuid4().hex
@@ -359,7 +360,7 @@ class StewardPipeline:
             pid = row["project_id"]
             cfg = row["settings"]
             agent = self.agent()
-            budget = 60 if agent else 0
+            budget = MODEL_TIMEOUT_SECONDS if agent else 0
             event = lambda title, sec=0: self._event(key, title, timeout=sec)
             forward = lambda following, **fields: self._update(key, stage=following, **fields)
             req = None
@@ -543,7 +544,7 @@ class StewardPipeline:
         requirements = review["requirement"]["items"]
         modules = fallback_modules(requirements)
         if agent:
-            self._event(key,"按功能划分工作包、对齐接口和文件所有权",timeout=60)
+            self._event(key,"按功能划分工作包、对齐接口和文件所有权",timeout=MODEL_TIMEOUT_SECONDS)
             context = dict(requirements=requirements, decisions=review["specification"]["decisions"],
                 guidance=cfg["guidance"], suggested=[dict(slug=m["slug"],scope=m["scope"]) for m in modules],
                 minimum_modules=min(len(modules),4))
@@ -644,7 +645,7 @@ class StewardPipeline:
         drafts = [a for a in task["artifacts"] if a["status"] == "draft"]
         if not drafts:
             return
-        self._event(key, f"主理人复核 {id_} 的产物", timeout=60 if agent else 0)
+        self._event(key, f"主理人复核 {id_} 的产物", timeout=MODEL_TIMEOUT_SECONDS if agent else 0)
         note = "离线模拟：产物已通过编排器的结构检查。"
         verdict = "approve"
         if agent:
@@ -696,8 +697,8 @@ class StewardPipeline:
 
 
     def chat(self, key, message, command=None, settings=None):
-        if not isinstance(message, str) or not message.strip() or len(message) > 5000:
-            raise InvalidReference("请输入给主理人的消息（最多 5000 字）。")
+        if not isinstance(message, str) or not message.strip() or len(message.encode("utf-8")) > MAX_INPUT_BYTES:
+            raise InvalidReference("请输入给主理人的消息（最多 1 MB（UTF-8））。")
         message = message.strip()
         with self.db._lock:
             row = self._read(key)
@@ -777,8 +778,8 @@ class StewardPipeline:
             return self.public(key)
         if intent in ("revise", "redo"):
             markdown = row["markdown"] + ("\n\n## 用户指定的本轮修改\n\n" + message if intent == "revise" else "")
-            if len(markdown)>20000:
-                raise InvalidReference("新需求超过 20000 字，请简化后重新提交。")
+            if len(markdown.encode("utf-8")) > MAX_INPUT_BYTES:
+                raise InvalidReference("新需求超过 1 MB（UTF-8），请简化后重新提交。")
             cfg = options(settings or {}, row["settings"])
             if (cfg["directory"] and row["target"] and row["target"].get("repo")
                     and Path(cfg["directory"]).resolve() == Path(row["target"]["repo"])):

@@ -1,4 +1,6 @@
 """Combined local intake, review, and task planner. Run python -m se_agent.workbench_preview."""
+from .limits import MAX_JSON_BODY_BYTES
+
 import argparse
 import json
 from http.server import ThreadingHTTPServer
@@ -38,7 +40,7 @@ class WorkbenchHandler(ReviewHandler):
     def plan_route(self, path):
         try:
             size = int(self.headers.get("Content-Length", 0))
-            if not 0 < size <= 1_000_000:
+            if not 0 < size <= MAX_JSON_BODY_BYTES:
                 raise ValueError("请求体须为 1 MB 以内的 JSON")
             payload = json.loads(self.rfile.read(size))
             if not isinstance(payload, dict):

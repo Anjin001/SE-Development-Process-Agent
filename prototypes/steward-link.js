@@ -1,5 +1,5 @@
 /* Primary workspace: one conversation, with inspectable execution milestones. */
-window.createStewardLink = function ({q,el,action,get,post,open,modelMode,existingProject,openProject,onJobChange,canContinue}) {
+window.createStewardLink = function ({q,el,action,get,post,open,modelMode,limits,existingProject,openProject,onJobChange,canContinue}) {
   const root = el('div',null,'max-w-5xl mx-auto px-5 py-4 space-y-4');
   const section = () => el('section',null,'bg-white border border-slate-200 rounded-xl p-4 space-y-3');
   const small = message => el('p',message,'text-xs text-slate-600 leading-relaxed');
@@ -57,7 +57,7 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,existi
   msgs.style.overflowAnchor='auto';
   conversation.append(msgs);
   const [inputWrap,input]=field('发给主理人','',true);
-  input.rows=3; input.maxLength=20000; input.placeholder='例如：做一个图文笔记应用，用户能发布、收藏和关注作者。';
+  input.rows=3; input.placeholder='例如：做一个图文笔记应用，用户能发布、收藏和关注作者。';
   const sendBtn=action('交给主理人',()=>send(input.value),true);
   input.onkeydown=event=>{if((event.ctrlKey || event.metaKey)&&event.key==='Enter')send(input.value);};
   const alert=el('p',null,'text-sm text-rose-700'); alert.setAttribute('role','alert'); alert.hidden=true;
@@ -126,8 +126,8 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,existi
     if(busy || !raw.trim()) return;
     if(selected && (command==='continue' || /^(?:继续|开始|同意|确认|通过|确认继续|继续推进)[。！!？? ]*$/.test(raw.trim()))
         && !canContinue()) return messageContent('请先回到对应栏目保存手动修改，再继续。');
-    if(!selected && !takeover && raw.trim().length>20000) return messageContent('需求最多 20000 字。');
-    if(selected && !takeover && raw.trim().length>5000) return messageContent('对话消息最多 5000 字。');
+    const maxBytes = limits()?.max_input_bytes;
+    if (maxBytes && new TextEncoder().encode(raw.trim()).length > maxBytes) return messageContent('输入超过 '+maxBytes.toLocaleString()+' 字节（UTF-8）。');
     const project=takeover?existingProject():null;
     busy=true; messageContent(''); render();
     try {
@@ -259,7 +259,6 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,existi
     newButton.disabled=busy; sendBtn.disabled=busy;
     adopt.hidden=!existingProject() || !!s;
     adopt.disabled=busy;
-    input.maxLength=s?5000:20000;
     input.placeholder=s?'例如：把关注流改成独立页面，其他需求不变。':'例如：做一个图文笔记应用，用户能发布、收藏和关注作者。';
     sendBtn.textContent=busy?'正在处理…':s?'发送给主理人':'交给主理人';
     gateInputs.forEach(({key,input})=>{input.checked=cfg.gates.includes(key);});

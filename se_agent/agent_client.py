@@ -7,6 +7,9 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 
+from .limits import MODEL_TIMEOUT_SECONDS
+
+
 class AgentError(RuntimeError):
     """A model call failed without exposing credentials or upstream payloads."""
 
@@ -72,7 +75,7 @@ class ChatAgent:
             request.add_unredirected_header("Authorization", "Bearer " + self.api_key)
         stage_name = _STAGE_NAMES[stage]
         try:
-            with urlopen(request, timeout=60) as response:
+            with urlopen(request, timeout=MODEL_TIMEOUT_SECONDS) as response:
                 result = json.loads(response.read())
         except HTTPError as error:
             status = error.code

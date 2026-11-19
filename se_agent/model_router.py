@@ -12,8 +12,14 @@ DEFAULT_CONFIG_PATH = Path(__file__).with_name("model_config.json")
 
 
 def load_config(path=None):
-    """读取档位配置。可用 SE_AGENT_MODEL_CONFIG 指向自定义文件。"""
+    """读取档位配置。可用 SE_AGENT_MODEL_CONFIG 指向自定义文件。
+
+    相对路径按项目根目录解析，这样 .env 里写 se_agent/model_config.bailian.json
+    在任意工作目录启动都能找到。
+    """
     target = Path(path or os.environ.get("SE_AGENT_MODEL_CONFIG") or DEFAULT_CONFIG_PATH)
+    if not target.is_absolute():
+        target = Path(__file__).resolve().parent.parent / target
     with target.open(encoding="utf-8") as handle:
         config = json.load(handle)
     for tier in ("low_cost", "high_capability"):

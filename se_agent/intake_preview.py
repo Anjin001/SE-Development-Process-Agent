@@ -1,4 +1,6 @@
 """Local preview server for intake and configurable race groups."""
+from .limits import MAX_JSON_BODY_BYTES, public_limits
+
 import argparse
 import json
 from http.server import ThreadingHTTPServer
@@ -25,14 +27,14 @@ class PreviewHandler(Handler):
             return
         if self.command == "GET" and self.path == "/preview/config":
             self.send_json(200, {"prompts": default_group_prompts(), "extra_prompt": EXTRA_GROUP_PROMPT,
-                                 "mode": "model" if self.server.agent else "mock"})
+                                 "mode": "model" if self.server.agent else "mock", "limits": public_limits()})
             return
         if self.command != "POST" or self.path not in ("/preview/snapshot", "/preview/group"):
             self.send_json(404, {"error": "接口不存在"})
             return
         try:
             size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= 256_000:
+            if not 0 < size <= MAX_JSON_BODY_BYTES:
                 raise ValueError("请求体长度无效")
             body = json.loads(self.rfile.read(size))
             if not isinstance(body, dict):

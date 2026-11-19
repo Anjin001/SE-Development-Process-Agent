@@ -1,4 +1,6 @@
 """Integrated QLM workbench. Run python -m se_agent.workbench --port 8008."""
+from .limits import MAX_JSON_BODY_BYTES, public_limits
+
 import argparse
 from copy import deepcopy
 import json
@@ -17,11 +19,22 @@ from .workbench_preview import WorkbenchHandler, PROTOTYPES, PAGES
 from .workspace import ProjectReviews, Workspace
 from .workspace_experience import Progress, help_answer
 from .steward_pipeline import DEFAULT_RACE_PARALLEL, StewardPipeline
-from .agent_client import AgentError, ChatAgent, configured_agent
+from .agent_client import MODEL_TIMEOUT_SECONDS, AgentError, ChatAgent, configured_agent
+from .env_file import load_env
 from .model_router import ModelRouter
 from .providers import OpenAICompatibleProvider
 from .worker import Worker
 from http.server import ThreadingHTTPServer
+import socket
+
+class LocalWorkbenchServer(ThreadingHTTPServer):
+    allow_reuse_address = False
+
+    def server_bind(self):
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
 
 PROJECT = re.compile(r"^/workspace/projects/([^/]+)(?:/(.*))?$")
 
@@ -89,7 +102,7 @@ class Handler(WorkbenchHandler):
         if self.command == "GET":
             return {}
         size = int(self.headers.get("Content-Length", 0))
-        if not 0 < size <= 1_000_000:
+        if not 0 < size <= MAX_JSON_BODY_BYTES:
             raise ValueError("请求体须为 1 MB 以内的 JSON")
         data = json.loads(self.rfile.read(size), parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
         if not isinstance(data, dict):
@@ -161,7 +174,7 @@ class Handler(WorkbenchHandler):
                 self.respond(200, {"markdown": (PROTOTYPES.parent / "docs" / filename).read_text(encoding="utf-8")})
                 return
             if path == "/workspace/config" and self.command == "GET":
-                self.respond(200, dict(self.model_details(), projects=workspace.projects()))
+                self.respond(200, dict(self.model_details(), projects=workspace.projects(), limits=public_limits()))
                 return
             match = PROJECT.fullmatch(path)
             if not match:
@@ -320,7 +333,11 @@ def make_server(port=8008, db="data/workbench.sqlite3", worker=None):
         Path(db).resolve().parent.mkdir(parents=True, exist_ok=True)
     repo = os.environ.get("SE_AGENT_REPO")
     database = Store(db, verifier=CommitVerifier(repo) if repo else None)
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    try:
+        server = LocalWorkbenchServer(("127.0.0.1", port), Handler)
+    except OSError:
+        database.close()
+        raise
     server.agent = configured_agent()
     server.store = ProjectReviews(database, server.agent)
     server.workspace = Workspace(database, server.store, worker)
@@ -338,12 +355,20 @@ def make_server(port=8008, db="data/workbench.sqlite3", worker=None):
 
 
 def main():
+    load_env()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8008)
     parser.add_argument("--db", default="data/workbench.sqlite3")
     args = parser.parse_args()
-    server = make_server(args.port, args.db)
+    try:
+        server = make_server(args.port, args.db)
+    except OSError as exc:
+        if exc.errno in (98, 10013, 10048):
+            parser.exit(1, f"无法独占端口 {args.port}。请关闭占用该端口的旧工作台后再启动。\n")
+        raise
     print(f"SE-Agent 工作台 http://127.0.0.1:{server.server_port}", flush=True)
+    print(f"项目目录：{Path(__file__).resolve().parent.parent}", flush=True)
+    print(f"赛马与评审单次模型请求超时：{MODEL_TIMEOUT_SECONDS} 秒", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -1,6 +1,8 @@
 """Integrated project workspace using the CLY, HSX, QLM, ZXQ and Hza modules."""
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from .limits import WORKER_LEASE_SECONDS
+
 import json
 import logging
 import threading
@@ -185,7 +187,7 @@ class Dispatch:
                 self.database.expire_leases(run_id)
                 if manual:
                     self.database.step(run_id)
-                handed = self.database.claim(run_id, "workspace-worker")
+                handed = self.database.claim(run_id, "workspace-worker", lease_seconds=WORKER_LEASE_SECONDS)
                 worker = self.worker
                 if handed and self.delivery and isinstance(worker, Worker):
                     project_id = self.database.db.execute("SELECT project_id FROM runs WHERE id=?", (run_id,)).fetchone()["project_id"]
@@ -208,7 +210,7 @@ class Dispatch:
         try:
             if type(worker) is Worker:
                 def milestone(label, seconds=0):
-                    self.database.renew(run_id, request["attempt_id"], "workspace-worker")
+                    self.database.renew(run_id, request["attempt_id"], "workspace-worker", lease_seconds=WORKER_LEASE_SECONDS)
                     self.progress.record(request["attempt_id"], label, seconds)
                 result = worker.execute(request, progress=milestone)
             else:

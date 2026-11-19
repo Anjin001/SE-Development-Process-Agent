@@ -4,6 +4,8 @@ Temporary transport until the FastAPI app lands: same paths, same bodies, so
 a later mount changes nothing above ``Router``. Run with
 ``python -m se_agent.api_v2_http --port 8001``.
 """
+from .limits import MAX_JSON_BODY_BYTES
+
 import argparse
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -12,7 +14,7 @@ from urllib.parse import parse_qsl, urlparse
 from .api_v2 import Router
 from .store import Store
 
-MAX_BODY = 256_000
+MAX_BODY = MAX_JSON_BODY_BYTES
 
 
 class Handler(BaseHTTPRequestHandler):

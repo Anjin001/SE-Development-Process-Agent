@@ -45,7 +45,7 @@ window.createWorkspaceLink = function (hooks) {
   const helpButton = action('使用答疑 AI', () => showHelp());
   q('#active-badge').before(targetButton, helpButton);
   const steward = window.createStewardLink?.({
-    q,el,action,get,post,open,modelMode:()=>state.config?.discussion_mode,
+    q,el,action,get,post,open,modelMode:()=>state.config?.discussion_mode,limits:()=>state.config?.limits,
     existingProject:()=>state.project,
     onJobChange:handleJobChange,
     canContinue:()=>!(state.dirty || isDirty()),

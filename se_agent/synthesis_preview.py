@@ -1,4 +1,6 @@
 """In-memory HSX preview. Run: python -m se_agent.synthesis_preview --port 8002."""
+from .limits import MAX_JSON_BODY_BYTES
+
 import argparse
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -9,7 +11,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from . import synthesis
-from .agent_client import AgentError, configured_agent
+from .agent_client import MODEL_TIMEOUT_SECONDS, AgentError, configured_agent
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -182,7 +184,7 @@ class PreviewStore:
             evaluations = []
             for draft in project["drafts"]:
                 if progress:
-                    progress(f"独立评价 {draft['id']} 组草案", 60 if self.agent else 0)
+                    progress(f"独立评价 {draft['id']} 组草案", MODEL_TIMEOUT_SECONDS if self.agent else 0)
                 evaluations.append(synthesis.evaluate_draft(project["requirement"], draft, **self.agent))
             project["evaluations"] = evaluations
             return self.snapshot(project)
@@ -219,7 +221,7 @@ class PreviewStore:
             return self.snapshot(project)
         if action == "propose":
             if progress:
-                progress("比较各组方案并生成综合草稿", 60 if self.agent else 0)
+                progress("比较各组方案并生成综合草稿", MODEL_TIMEOUT_SECONDS if self.agent else 0)
             content = synthesis.propose_spec(project["requirement"], project["drafts"], project["evaluations"], payload.get("selection"), **self.agent)
             content["notes_markdown"] = ""
             selection = payload["selection"]
@@ -275,7 +277,7 @@ class PreviewHandler(BaseHTTPRequestHandler):
             payload = {}
             if self.command == "POST":
                 size = int(self.headers.get("Content-Length", "0"))
-                if not 0 < size <= 1_000_000:
+                if not 0 < size <= MAX_JSON_BODY_BYTES:
                     raise PreviewError("INVALID_REQUEST", "请求体须为 1MB 以内的 JSON", 400)
                 def invalid_constant(value):
                     raise ValueError("不支持 JSON 常量 " + value)

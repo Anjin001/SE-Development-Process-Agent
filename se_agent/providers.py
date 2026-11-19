@@ -3,6 +3,8 @@
 凭证、模型名和本地路径留在执行端，不进入 WorkerResult。
 真实链路走 OpenAI 兼容接口；离线场景由 Worker 的模拟链路完成，不经过这里。
 """
+from .limits import MODEL_TIMEOUT_SECONDS
+
 import json
 import os
 import ssl
@@ -60,7 +62,7 @@ class OpenAICompatibleProvider(Provider):
 
     name = "openai_compatible"
 
-    def __init__(self, base_url=None, api_key_env="SE_AGENT_API_KEY", timeout=120, *, api_key=None):
+    def __init__(self, base_url=None, api_key_env="SE_AGENT_API_KEY", timeout=MODEL_TIMEOUT_SECONDS, *, api_key=None):
         self.base_url = (base_url or os.environ.get("SE_AGENT_BASE_URL")
                          or "https://api.openai.com/v1").rstrip("/")
         self.api_key_env = api_key_env
@@ -71,10 +73,20 @@ class OpenAICompatibleProvider(Provider):
     def api_key(self):
         return self._api_key if self._api_key is not None else os.environ.get(self.api_key_env, "")
 
-    def direct_deepseek(self, model):
+    # 官方 DeepSeek 接口与阿里云百炼的 DeepSeek 模型都能关闭思考、按流式长文生成，
+    # 只是两边的模型 ID 不同（deepseek-flash / deepseek-v4.1-flash）。模型名以
+    # deepseek 开头就按这套规则处理，避免每接一个平台都要改一处判定。
+    _DEEPSEEK_HOSTS = ("api.deepseek.com", "dashscope.aliyuncs.com")
+
+    def deepseek_family(self, model):
+        """True 表示这次调用可以关闭思考、并为文件正文预留更大的输出预算。"""
         endpoint = urlsplit(self.base_url)
-        return (endpoint.scheme == "https" and endpoint.hostname == "api.deepseek.com"
-                and model in ("deepseek-flash","deepseek-v4-pro"))
+        if endpoint.scheme != "https":
+            return False
+        host = (endpoint.hostname or "").lower()
+        if host not in self._DEEPSEEK_HOSTS and not host.endswith(".maas.aliyuncs.com"):
+            return False
+        return (model or "").strip().lower().startswith("deepseek")
 
     @staticmethod
     def _read_stream(response):
@@ -105,10 +117,13 @@ class OpenAICompatibleProvider(Provider):
         messages = ([{"role": "system", "content": system}] if system else []) + [
             {"role": "user", "content": prompt}]
         body = {"model": model, "messages": messages}
-        stream = file_output and self.direct_deepseek(model) and (max_output_tokens or 0) > 8192
+        long_file = file_output and self.deepseek_family(model)
+        stream = long_file and (max_output_tokens or 0) > 8192
         if stream:
             body["stream"] = True
-        if file_output and self.direct_deepseek(model):
+            # 流式默认不回用量；报销预算和截断诊断都要靠它。
+            body["stream_options"] = {"include_usage": True}
+        if long_file:
             # Use the file's completion budget for content, not reasoning.
             body["thinking"] = {"type":"disabled"}
         if max_output_tokens:

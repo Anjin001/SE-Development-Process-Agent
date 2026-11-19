@@ -251,6 +251,10 @@
         .then(config => {
           if (config && config.mode) {
             q('model-status').textContent = config.mode;
+            if (config.limits) {
+              const { max_input_bytes, model_timeout_seconds } = config.limits;
+              q('model-status').textContent += ` · 输入上限 ${(max_input_bytes / 1000000).toLocaleString()} MB · 模型超时 ${model_timeout_seconds} 秒`;
+            }
             window.parent?.setModelMode?.(config.mode);
           }
         })

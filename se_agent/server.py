@@ -1,4 +1,6 @@
 """Local HTTP composition root. Run with python -m se_agent.server."""
+from .limits import MAX_JSON_BODY_BYTES
+
 import argparse
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -83,7 +85,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.command == "POST":
                 size = int(self.headers.get("Content-Length", "0"))
-                if not 0 < size <= 256_000:
+                if not 0 < size <= MAX_JSON_BODY_BYTES:
                     raise ValueError("请求体长度无效")
                 payload = json.loads(self.rfile.read(size))
                 if not isinstance(payload, dict):

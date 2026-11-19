@@ -662,7 +662,19 @@ class StewardPipeline:
                     inspected.add(commit)
                 content = (item.get("content") or "")[:12000]
                 if verifier and item.get("commit_sha") and item["changed_paths"]:
-                    content = verifier._git("show", "--format=", "--unified=2", item["commit_sha"], "--", *item["changed_paths"])[:16000]
+                    paths = item["changed_paths"]
+                    budget = max(400, 15500 // len(paths))
+                    files = []
+                    for path in paths:
+                        source = verifier._git("show", "--format=", "--unified=2", commit, "--", path)
+                        excerpt = source
+                        if len(source) > budget:
+                            head = budget * 2 // 3
+                            excerpt = (source[:head] + "\n[中间正文省略]\n" + source[-(budget-head):])
+                        files.append(dict(path=path, characters=len(source), excerpt=excerpt,
+                                          excerpt_is_partial=len(source)>budget))
+                    summaries.append(dict(kind=item["kind"], paths=paths, files=files))
+                    continue
                 summaries.append(dict(kind=item["kind"], paths=item["changed_paths"], content=content))
             result = agent("steward_review", dict(task=definition, artifacts=summaries))
             if (not isinstance(result, dict) or type(result.get("approved")) is not bool

@@ -425,7 +425,7 @@ class Store:
 
     # ---------- dispatch ----------
 
-    def step(self, run_id):
+    def step(self, run_id, *, single=False):
         """Manual mode: fix this batch as the queue that claim() consumes."""
         with self.tx() as db:
             run, rows = self._task_map(db, run_id)
@@ -442,6 +442,8 @@ class Store:
                 run["project_id"], run["plan_id"], run["plan_version"])}
             batch = self._admit(db, run, rows, tasks,
                                 sorted(t for t, row in rows.items() if row["state"] == READY))
+            if single:
+                batch = batch[:1]
             if not batch:
                 raise InvalidState("没有可派发的任务", run_id=run_id)
             for position, task_id in enumerate(batch):
@@ -878,6 +880,47 @@ class Store:
                 " approved_versions, note, actor_id, created_at) VALUES (?,?,?,?,?,?,?,?)",
                 (run_id, task_id, decision, _dump(expected_versions or {}),
                  _dump(revisions), note, actor_id, _stamp(self.now())))
+            self._recompute(db, run_id)
+            self._bump(db, run_id)
+            return self.snapshot(run_id)
+
+    def return_from_verification(self, run_id, verification_id, target_id, note, actor_id):
+        if not isinstance(note, str) or not note.strip() or len(note) > 2000:
+            raise InvalidReference("请填写验收证据和返工要求（最多 2000 字）")
+        with self.tx() as db:
+            run, rows = self._task_map(db, run_id)
+            tasks = {task["id"]: task for task in
+                     self.plan_tasks(run["project_id"], run["plan_id"], run["plan_version"])}
+            if (run["state"] != "active" or verification_id not in tasks
+                    or tasks[verification_id]["phase"] != "verification"
+                    or rows[verification_id]["state"] not in (REVIEW, FAILED)):
+                raise InvalidState("请在验收待审或失败时提交返工")
+            if not isinstance(target_id, str) or target_id not in rows or rows[target_id]["state"] != DONE:
+                raise InvalidReference("返工目标必须是已完成的上游任务")
+            downstream = self._descendants(tasks, target_id)
+            if verification_id not in downstream:
+                raise InvalidReference("返工目标必须是本次验收任务的上游")
+            affected = [target_id, *downstream]
+            if any(rows[key]["state"] == RUNNING for key in affected):
+                raise InvalidState("请等受影响的执行结束后再退回")
+            versions = {item["output_id"]: item["version"] for item in db.execute(
+                "SELECT output_id, version FROM artifacts WHERE run_id=? AND task_id=?"
+                " AND status='approved' ORDER BY version", (run_id, target_id))}
+            for key in affected:
+                db.execute("UPDATE artifacts SET status=? WHERE run_id=? AND task_id=?"
+                           " AND status IN ('approved','draft')",
+                           ("rejected" if key == target_id else "superseded", run_id, key))
+                db.execute("UPDATE run_tasks SET state=?, blockers='[]' WHERE run_id=? AND task_id=?",
+                           (WAITING, run_id, key))
+            db.execute("DELETE FROM dispatch_queue WHERE run_id=?", (run_id,))
+            db.execute("UPDATE runs SET mode='manual' WHERE id=?", (run_id,))
+            feedback = f"{verification_id} 验收退回：{note.strip()}"
+            db.execute("INSERT INTO review_records(run_id, task_id, decision, expected_versions,"
+                       " approved_versions, note, actor_id, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                       (run_id, target_id, "reject", _dump(versions), "{}", feedback, actor_id, _stamp(self.now())))
+            self._emit(db, run_id, "artifact.rejected", task_id=target_id,
+                       payload={"note": feedback, "verification_task_id": verification_id,
+                                "affected_task_ids": downstream, "versions": versions})
             self._recompute(db, run_id)
             self._bump(db, run_id)
             return self.snapshot(run_id)

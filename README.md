@@ -62,3 +62,7 @@ python -m se_agent.synthesis_preview --port 8002
 Windows 可双击 start-local.cmd，然后在浏览器打开 http://127.0.0.1:8008。关闭启动窗口可停止服务。
 
 Windows 双击 start-local.cmd 后打开 http://127.0.0.1:8008。右上角按钮可选择「本地模拟」或「真实使用 / 配置 API」。本地模拟使用新版 HTML 的内置案例，模式切换会重新加载页面。真实使用连接本机工作台及 SQLite 项目数据；请在配置表单测试并保存模型设置。实际 Git 执行还需要按整合运行说明配置目标仓库。内置案例的自动审查与回退是模拟数据。
+
+### 运行生成项目的模块测试
+
+设置 `SE_AGENT_TEST_IMAGE` 为本地 Docker 镜像名。镜像需提供 Python 和 Node.js，以及生成应用的测试依赖。工作台会在无网络、只读挂载的容器中运行当前任务的 `unittest` 或 `node:test`，失败时退回任务，等待修复后再提交。未设置时，运行记录会将生成的测试标为待实跑。

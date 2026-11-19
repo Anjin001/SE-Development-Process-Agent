@@ -3758,7 +3758,13 @@
       renderPhaseList();
     });
 
-    q('#btn-auto-loop').addEventListener('click', toggleContinuousAutoLoop);
+    q('#btn-auto-loop').addEventListener('click', () => {
+      if (plannerLink?.isFullWorkspace) {
+        plannerLink.open('steward');
+        return;
+      }
+      toggleContinuousAutoLoop();
+    });
 
     q('#btn-step-sim').addEventListener('click', () => {
       if (activeModule !== 'workbench' && activeModule !== 'code-review') {

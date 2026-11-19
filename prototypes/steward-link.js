@@ -16,7 +16,7 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,limits
   ];
   const statuses = {running:'运行中',pausing:'正在收尾',paused:'已暂停',gate:'等你选定的确认点',
                     failed:'执行遇到问题',completed:'已交付',cancelled:'已停止'};
-  const gateLabels = {spec:'发布需求规格前',plan:'开始开发前',delivery:'交付前'};
+  const gateLabels = {spec:'发布需求规格前',plan:'开始开发前',verification:'集成验收时',delivery:'交付前'};
   const safeRead = key=>{try {return sessionStorage.getItem(key);}catch{return null;}};
   const safeSave = (key,value)=>{try {sessionStorage.setItem(key,value);}catch{}};
   let selected=null, busy=false, syncing=false, visible=false, refreshFailed=false, history=[], shown=null;
@@ -114,7 +114,8 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,limits
   const generated=el('div',null,'space-y-2');
   more.append(line(groupWrap,raceWrap,parallelWrap,type),prefWrap,pathWrap,prompts,generated,
     small('真实开发默认使用工作台附近的 SE-Agent-Projects 独立目录。已有项目不会被覆盖。'),
-    line(action('以这些设置重跑本轮需求',()=>restart()),action('打开任务分解',()=>open('task-planner'))));
+    line(action('从已确认方案编排并单步',()=>send('从任务编排开始，单步调试','replan_manual')),
+      action('从需求重新出案',()=>restart()),action('打开任务分解',()=>open('task-planner'))));
   advanced.append(reviewPanel,more);
   root.append(header,progress,conversation,summaryBox,log,advanced);
 

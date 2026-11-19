@@ -11,11 +11,16 @@ import ssl
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from http.client import HTTPException
 from urllib.parse import urlsplit
 
 
 class ProviderError(RuntimeError):
     """供应商调用失败。Worker 转成 EXECUTION_FAILED。"""
+
+
+class ProviderConnectionError(ProviderError):
+    """连接中断，可在当前文件调用内重试。"""
 
 
 class ProviderOutputError(ProviderError):
@@ -78,6 +83,11 @@ class OpenAICompatibleProvider(Provider):
     # deepseek 开头就按这套规则处理，避免每接一个平台都要改一处判定。
     _DEEPSEEK_HOSTS = ("api.deepseek.com", "dashscope.aliyuncs.com")
 
+    def direct_deepseek(self, model):
+        endpoint = urlsplit(self.base_url)
+        return (endpoint.scheme == "https" and endpoint.hostname == "api.deepseek.com"
+                and model in ("deepseek-flash", "deepseek-v4-pro"))
+
     def deepseek_family(self, model):
         """True 表示这次调用可以关闭思考、并为文件正文预留更大的输出预算。"""
         endpoint = urlsplit(self.base_url)
@@ -109,7 +119,7 @@ class OpenAICompatibleProvider(Provider):
                         parts.append(content)
         except (ValueError, TypeError, AttributeError) as exc:
             raise ProviderError("模型流式响应格式不完整") from exc
-        raise ProviderError("模型流式响应在完成前中断")
+        raise ProviderConnectionError("模型流式响应在完成前中断")
 
     def complete(self, model, prompt, system=None, max_output_tokens=None, *, file_output=False):
         if self._api_key is None and not self.api_key:
@@ -118,7 +128,8 @@ class OpenAICompatibleProvider(Provider):
             {"role": "user", "content": prompt}]
         body = {"model": model, "messages": messages}
         long_file = file_output and self.deepseek_family(model)
-        stream = long_file and (max_output_tokens or 0) > 8192
+        stream = file_output and (self.direct_deepseek(model) or
+                                  long_file and (max_output_tokens or 0) > 8192)
         if stream:
             body["stream"] = True
             # 流式默认不回用量；报销预算和截断诊断都要靠它。
@@ -136,7 +147,7 @@ class OpenAICompatibleProvider(Provider):
             request.add_unredirected_header("Authorization", f"Bearer {self.api_key}")
         try:
             timeout = self.timeout
-            if stream:
+            if stream and (max_output_tokens or 0) > 8192:
                 timeout = max(timeout, 240)
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 payload = self._read_stream(response) if stream else json.loads(response.read().decode("utf-8"))
@@ -149,9 +160,11 @@ class OpenAICompatibleProvider(Provider):
         except urllib.error.URLError as exc:
             if isinstance(exc.reason, TimeoutError):
                 raise ProviderTimeout(f"{model} 调用超时") from exc
+            if isinstance(exc.reason, (ConnectionError, ssl.SSLError, HTTPException)):
+                raise ProviderConnectionError(f"{model} 接收响应时连接中断") from exc
             raise ProviderError(f"{model} 调用失败：{exc.reason}") from exc
-        except ssl.SSLError as exc:
-            raise ProviderError(f"{model} 接收响应时 TLS 连接中断") from exc
+        except (ssl.SSLError, ConnectionError, HTTPException) as exc:
+            raise ProviderConnectionError(f"{model} 接收响应时连接中断") from exc
         try:
             choice = payload["choices"][0]
             message = choice["message"]

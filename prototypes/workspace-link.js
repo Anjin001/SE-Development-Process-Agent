@@ -17,7 +17,7 @@ window.createWorkspaceLink = function (hooks) {
   primaryNav.dataset.module='steward';
   primaryNav.dataset.title='项目主理人';
   primaryNav.classList.add('nav-item','w-full');
-  if(window.createStewardLink)nav.prepend(primaryNav);
+  if (window.createStewardLink && !nav.querySelector('[data-module=steward]')) nav.prepend(primaryNav);
   const sidebarBody = q('#steward-sidebar-body');
   const cardClass = 'bg-white border border-slate-200 rounded-xl p-5 space-y-3 shadow-2xs';
   const inputClass = 'w-full border border-slate-300 rounded-lg px-3 py-2 bg-white text-xs text-slate-800';
@@ -174,7 +174,11 @@ window.createWorkspaceLink = function (hooks) {
       (job.status==='gate' && job.gate==='spec' || job.status==='paused' && job.stage==='confirm');
     if(module==='task-planner') return !!getPlan() &&
       (job.status==='gate' && job.gate==='plan' || job.status==='paused' || job.status==='completed');
-    if(module==='workbench') return job.status==='paused' && state.run?.dispatch==='paused';
+    if(module==='workbench') return state.run?.mode==='manual' ||
+      (job.status==='gate' && job.gate==='verification') ||
+      state.runPlan?.plan.tasks.some(task=>task.phase==='verification' &&
+        ['review','failed'].includes(state.run?.tasks[task.id]?.state)) ||
+      (job.status==='paused' && state.run?.dispatch==='paused');
     return false;
   }
   function stageActions(module) {
@@ -662,6 +666,31 @@ window.createWorkspaceLink = function (hooks) {
     select.value=task.id; select.onchange=()=>inspect(select.value); box.append(select); container.append(box);
     if (!taskRun) { box.append(text('尚未启动开发。')); return; }
     box.append(text('任务状态：' + (taskLabels[taskRun.state] || taskRun.state)));
+    for (const blocker of taskRun.blockers || []) {
+      box.append(text('暂未放行 · ' + blocker.ref_id + ' · ' + blocker.message, 'text-xs text-amber-800'));
+    }
+    if (taskRun.artifacts.some(artifact=>artifact.status==='rejected')) {
+      const history=el('div',null,'p-3 rounded-lg bg-red-50 text-red-800 space-y-2');
+      history.append(el('strong','评审退回记录','text-sm')); box.append(history);
+      const finding=state.run.findings?.find(item=>item.code==='TASK_FAILED' && item.ref_id===task.id);
+      const affected=finding?.affected_task_ids?.filter(id=>id!==task.id) || [];
+      if(affected.length) history.append(text('等待返工的下游：'+affected.join('、')));
+      const endpoint='/api/v2/projects/'+state.project.id+'/runs/'+state.run.id+'/events';
+      const loadReviews=async () => {
+        let after=0;
+        do {
+          const data=await get(endpoint+'?limit=100&after='+after);
+          if(!history.isConnected)return;
+          for(const event of data.items || []) {
+            if(event.task_id===task.id && event.type==='artifact.rejected')
+              history.append(text('#'+event.seq+' · '+(event.payload?.note || '已退回修改')));
+          }
+          if(!data.has_more || data.next_after<=after)break;
+          after=data.next_after;
+        } while(history.isConnected);
+      };
+      loadReviews().catch(error=>{if(history.isConnected)history.append(text(error.message));});
+    }
     if (taskRun.activity?.length) box.append(text(taskRun.activity.at(-1).label));
     if (taskRun.missing_input_ids.length) {
       const item = state.runQuestions.find(item => item.tasks.includes(task.id));
@@ -712,6 +741,39 @@ window.createWorkspaceLink = function (hooks) {
         action('退回修改',()=>operate(()=>runAction('review',{task_id:task.id,decision:'reject',expected_versions:expected,note})))
       ));
     }
+    if(task.phase==='verification' && state.run.state==='active' && canEdit &&
+       ['review','failed'].includes(taskRun.state)) {
+      const ancestors=new Set();
+      const byId=new Map(plan.tasks.map(item=>[item.id,item]));
+      const visit=id=>{
+        for(const before of byId.get(id)?.depends_on || []){
+          if(ancestors.has(before))continue;
+          ancestors.add(before); visit(before);
+        }
+      };
+      visit(task.id);
+      const targets=plan.tasks.filter(item=>ancestors.has(item.id) && state.run.tasks[item.id]?.state==='done');
+      if (targets.length) {
+        const rework=el('div',null,'p-3 border border-rose-200 rounded-lg space-y-2');
+        rework.append(el('strong','按验收问题退回责任任务','text-sm'));
+        const target=el('select',null,inputClass);
+        target.setAttribute('aria-label','返工目标');
+        for(const item of targets){
+          const option=el('option',item.id+' · '+item.title); option.value=item.id; target.append(option);
+        }
+        rework.append(target);
+        let evidence='';
+        field(rework,'失败步骤、实际结果与修改要求','',value=>{evidence=value;},true);
+        rework.append(action('退回到选中的任务',()=>{
+          if(!evidence.trim()){toast('请填写验收证据和修改要求。');return;}
+          operate(async()=>{
+            await runAction('verification-return',{task_id:task.id,target_task_id:target.value,note:evidence});
+            inspect(target.value);
+          });
+        }));
+        box.append(rework);
+      }
+    }
     for(const attempt of taskRun.attempts) box.append(text('尝试 '+attempt.id+' · '+(attempt.provider || '待执行')+
       (attempt.model?' / '+attempt.model:'')+' · '+attempt.state));
   }
@@ -724,7 +786,7 @@ window.createWorkspaceLink = function (hooks) {
     if(tab==='details')renderDetails(wrap);
     else if(tab==='monitor') {
       const snapshot=state.runPlan || getPlan();
-      if(snapshot?.schedule)wrap.append(renderGantt(snapshot.plan,snapshot.schedule));
+      if(snapshot?.schedule)wrap.append(renderGantt(snapshot.plan,snapshot.schedule,state.run,inspect));
       const summary=card('开发运行');
       summary.append(text(runStatus().title));
       if(state.run)for(const task of Object.values(state.run.tasks)) summary.append(action(task.task_id+' · '+(taskLabels[task.state] || task.state),()=>inspect(task.task_id)));
@@ -750,6 +812,13 @@ window.createWorkspaceLink = function (hooks) {
       sidebarBody.append(...stageActions(module));
       if(module==='workbench' && state.run){
         sidebarBody.append(text(runStatus().title));
+        if(state.run.mode==='manual' && state.run.state==='active'){
+          const paused=state.run.dispatch==='paused';
+          const step=action('单步派发',()=>operate(()=>runAction('advance',{single:true})),true);
+          step.disabled=!!state.pending || paused || !Object.values(state.run.tasks).some(task=>task.state==='ready');
+          sidebarBody.append(line(step,action(paused?'恢复单步派发':'暂停派发',
+            ()=>operate(()=>runAction(paused?'resume':'pause')))));
+        }
         const review=Object.values(state.run.tasks).find(task=>task.state==='review');
         if(review)sidebarBody.append(action('查看待审核产物 '+review.task_id,()=>inspect(review.task_id)));
       }
@@ -1243,6 +1312,14 @@ window.createWorkspaceLink = function (hooks) {
     else if(module==='review-synthesis')renderReview(wrap);
     else if(module==='exp-memory')renderMemory(wrap);
     else if(module==='model-router')renderModelSettings(wrap);
+    else if(module==='code-review') {
+      const review = Object.values(state.run?.tasks || {}).find(task => task.state === 'review');
+      const box = card('Agent 代码审查');
+      if (review) box.append(action('查看待审产物 ' + review.task_id, () => inspect(review.task_id), true));
+      else box.append(text(state.run ? '当前没有待审任务。' : '启动开发后可查看待审产物。'));
+      if (state.run) box.append(action('查看运行与审查记录', () => open('workbench')));
+      wrap.append(box);
+    }
     else {
       const box=card(module==='sqlite-store'?'SQLite 项目存储':'项目记录与数字人上下文');
       box.append(text('需求、评审版本、任务计划、执行产物与领域经验共用当前项目数据库。'));
@@ -1288,6 +1365,7 @@ window.createWorkspaceLink = function (hooks) {
   },1500);
   return {render,sidebar:renderSidebar,renderTab,planActions,inspect,
     executionSnapshot:()=>state.module === 'workbench' ? state.runPlan : null,
+    reworkEdges:()=>state.run?.rework_edges || [],
     taskStatus:id=>({done:'completed',review:'in_progress',failed:'failed',running:'running'})[state.run?.tasks[id]?.state] ||
       (state.run?'pending':'planned')};
 };

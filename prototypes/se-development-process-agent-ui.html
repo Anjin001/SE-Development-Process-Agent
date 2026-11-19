@@ -254,7 +254,7 @@
         <button id="btn-toggle-right-sidebar" type="button" class="px-2.5 py-1 rounded-md border border-indigo-200 bg-indigo-50/70 text-indigo-700 font-semibold hover:bg-indigo-100 transition">
           主理侧边栏 ◨
         </button>
-        <button type="button" id="planner-model-mode" title="配置 API" class="mono text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">配置 API</button>
+        <button type="button" id="planner-model-mode" title="切换使用模式" class="mono text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">本地模拟 / 真实使用</button>
         <span id="worker-online-indicator" class="w-2 h-2 rounded-full bg-emerald-500" title="独立 Worker 在线"></span>
       </div>
     </header>
@@ -443,12 +443,12 @@
 
   <!-- Info Modal -->
   <dialog id="info-modal" aria-labelledby="info-modal-title">
-    <div class="info-modal-panel bg-white p-5 text-xs">
-      <div class="flex items-center justify-between border-b pb-2">
-        <strong id="info-modal-title">文档说明</strong>
-        <button id="btn-close-modal" type="button" class="rounded border px-2 py-1">关闭</button>
+    <div class="bg-white border border-slate-200 rounded-xl info-modal-panel w-full p-5 shadow-xl text-xs">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-2.5">
+        <strong id="info-modal-title" class="text-sm text-slate-900">文档说明</strong>
+        <button id="btn-close-modal" type="button" class="px-2 py-0.5 rounded border border-slate-200 text-slate-500 hover:text-slate-800">关闭</button>
       </div>
-      <div id="info-modal-body" tabindex="0" class="text-slate-600 leading-relaxed"></div>
+      <div id="info-modal-body" tabindex="0" class="text-slate-600 space-y-2 leading-relaxed"></div>
     </div>
   </dialog>
 
@@ -482,6 +482,132 @@
     let planLocked = false;
     let dispatchPaused = false;
     let sqliteAfterSeq = 0;
+    let ganttBaselineMap = {};
+    let memoryFilterStatus = 'all';
+    let memoryBaselineVer = 1;
+
+    // Multi-record Experience Card store aligned with main branch Store.memory (/memory, /memory/records, /memory/baseline, /memory/publish)
+    const expCardsByProject = {
+      lab: [
+        {
+          id: 'EXP-012', version: 1, domain: '实验室设备与可预约资源管理',
+          phenomenon: '综合方案允许管理员停用座位/设备，却漏写该资源已有预约时怎样处理',
+          trigger: '操作会让可预约资源转为不可用，并且可能影响已有有效预约',
+          action: '检查是否阻止新预约、如何处理受影响的已有预约、如何告知预约人。用一个已有预约的场景走查',
+          aliases: '停用、暂停开放、下架、设备检修、场地封闭、周五送修',
+          counterExample: '仅修改设备名称，或停用时段与所有已有预约均不重叠',
+          pubStatus: '已发布', evidStatus: '方案走查', inBaseline: true
+        },
+        {
+          id: 'EXP-015', version: 1, domain: '并行开发与共享路由表冲突',
+          phenomenon: '设备查询与预约服务并行开发时同时修改主路由表，导致 Git Worktree 合并冲突',
+          trigger: '两个无直接依赖的并行任务同时声明写入 src/router.py',
+          action: '将路由注册统一收口至 Phase 4 集成任务 T3.1，并行分支只修改各自独立模块文件',
+          aliases: '路由冲突、合并冲突、共享文件、router.py、并行写冲突',
+          counterExample: '任务串行执行或仅只读引用路由配置',
+          pubStatus: '已发布', evidStatus: '真实代码执行', inBaseline: true
+        },
+        {
+          id: 'EXP-018', version: 1, domain: 'Worker 中断与 SQLite 幂等回报',
+          phenomenon: '开发 Agent 已写入代码但在回报阶段中断，重试时重复提交变更',
+          trigger: 'Worker 心跳超时或同一尝试编号发生重复/迟到回报',
+          action: '恢复前先对账工作区与提交号，单次成功回报在同一 SQLite 事务内原子写入状态、产物引用与事件序号',
+          aliases: '中断、重复回报、迟到回报、幂等、事务、SQLite',
+          counterExample: '全新尝试且工作区干净无未提交变更',
+          pubStatus: '草稿', evidStatus: '单测验证', inBaseline: false
+        }
+      ],
+      studyroom: [
+        {
+          id: 'EXP-012', version: 1, domain: '自习室座位预约系统',
+          phenomenon: '综合方案合并了「学生预约座位」和「管理员停用座位」，但未回答周三14点已约座位被停用后的状态',
+          trigger: '管理员停用座位，且停用时段存在已确认的学生预约',
+          action: '停用后禁止新增预约，取消停用期间受影响的已有预约，在「我的预约」显示取消状态和原因',
+          aliases: '停用座位、自习室封闭、暂停开放、桌面维修',
+          counterExample: '仅修改自习室编号，或停用时段无任何已确认预约',
+          pubStatus: '已发布', evidStatus: '方案走查', inBaseline: true
+        }
+      ]
+    };
+    function getExpCards() { return expCardsByProject[currentProjectKey]; }
+
+    // Universal Human Node Edit & Custom Requirement Modal (works for EVERY node in EVERY phase!)
+    function openNodeEditModal(taskId) {
+      const t = findTask(taskId || selectedTaskId);
+      if (!t) return;
+      q('#info-modal-title').textContent = `修改节点与输入人工要求 · ${t.id} ${t.name}`;
+      const body = q('#info-modal-body');
+      body.replaceChildren();
+
+      const grid = el('div', undefined, 'grid grid-cols-1 sm:grid-cols-2 gap-3');
+      const mk = (lbl, val, type = 'text') => {
+        const w = el('label', undefined, 'block space-y-1');
+        w.append(el('span', lbl, 'text-[11px] font-semibold text-slate-600 block'));
+        const inp = el('input', undefined, 'w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs bg-white text-slate-800');
+        inp.type = type;
+        inp.value = val ?? '';
+        w.append(inp);
+        return { w, inp };
+      };
+
+      const fName = mk('节点名称', t.name);
+      const fOwner = mk('执行 Agent / 角色', t.owner);
+      const fEst = mk('估时（分钟）', String(t.estimateMin), 'number');
+      const fSpec = mk('规格来源 / 约束编号', t.spec);
+      const fOut = mk('预期交付物', t.output);
+      const fWt = mk('工作区 / Worktree 路径', t.worktree);
+      grid.append(fName.w, fOwner.w, fEst.w, fSpec.w, fOut.w, fWt.w);
+
+      const reqWrap = el('label', undefined, 'block space-y-1 pt-1');
+      reqWrap.append(el('span', '人工补充要求 / 给执行 Agent 的额外指令（Prompt Constraint）', 'text-[11px] font-semibold text-indigo-700 block'));
+      const reqTa = el('textarea', undefined, 'w-full h-24 border border-indigo-300 rounded-lg p-2.5 text-xs bg-indigo-50/20 text-slate-800 focus:border-indigo-500 focus:outline-none');
+      reqTa.placeholder = '例如：要求额外返回停用时间字段 disabled_at，并在异常时记录审计日志；保存后将自动注入该节点的 Agent 上下文...';
+      reqTa.value = t.customRequirement || '';
+      reqWrap.append(reqTa);
+
+      const btnRow = el('div', undefined, 'flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-slate-100');
+      const saveOnlyBtn = el('button', '保存修改与要求', 'px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold');
+      saveOnlyBtn.type = 'button';
+      const applyChanges = (triggerRerun) => {
+        t.name = fName.inp.value.trim() || t.name;
+        t.owner = fOwner.inp.value.trim() || t.owner;
+        t.estimateMin = Math.max(1, Number(fEst.inp.value) || t.estimateMin);
+        t.spec = fSpec.inp.value.trim() || t.spec;
+        t.output = fOut.inp.value.trim() || t.output;
+        t.worktree = fWt.inp.value.trim() || t.worktree;
+        t.customRequirement = reqTa.value.trim();
+
+        if (triggerRerun) {
+          t.status = 'in_progress';
+          const linkedRev = getAllTasks().find((x) => x.isReviewNode && (x.id === t.id || x.targetTaskId === t.id));
+          if (linkedRev) {
+            const realRev = findTask(linkedRev.id);
+            const rv = getAgentReview(realRev);
+            rv.phaseStep = 'redevelop';
+            rv.checks[0].status = 'failed';
+            rv.checks[0].detail = `收到人工补充要求，等待 ${t.owner} 按新要求重新开发并由代码审查 Agent 自动复审`;
+            realRev.status = 'in_progress';
+          }
+          addLog('人工需求注入', `更新节点 ${t.id} 并注入人工要求「${t.customRequirement || '字段调整'}」，已触发新一轮 Agent 开发与自动审查`);
+          toast(`已保存 ${t.id} 人工要求并触发新一轮自动开发-审查`);
+        } else {
+          addLog('人工修改节点', `更新节点 ${t.id}（${t.name}，${t.estimateMin}m）${t.customRequirement ? '，补充要求：' + t.customRequirement : ''}`);
+          toast(`已保存节点 ${t.id} 的修改与人工要求`);
+        }
+        q('#info-modal').close();
+        renderAll();
+      };
+      saveOnlyBtn.addEventListener('click', () => applyChanges(false));
+
+      const saveAndRerunBtn = el('button', '保存并触发新一轮 Agent 自动执行与审查', 'px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold');
+      saveAndRerunBtn.type = 'button';
+      saveAndRerunBtn.addEventListener('click', () => applyChanges(true));
+
+      btnRow.append(saveOnlyBtn, saveAndRerunBtn);
+      body.append(grid, reqWrap, btnRow);
+      q('#info-modal-body').scrollTop = 0;
+      q('#info-modal').showModal();
+    }
 
     // 1.5 Agent 自动化代码审查状态（嵌入 Phase 3 流程，由代码审查 Agent 全自动执行，无人工审查）
     const agentReviewStore = {};
@@ -1411,6 +1537,11 @@
           body.append(btnRetry);
         }
 
+        const editNodeSideBtn = el('button', `✎ 修改 ${sel.id} / 输入人工要求`, 'w-full py-1.5 px-3 rounded-lg border border-indigo-300 bg-white hover:bg-indigo-50 text-indigo-700 font-semibold transition');
+        editNodeSideBtn.type = 'button';
+        editNodeSideBtn.addEventListener('click', () => openNodeEditModal(sel.id));
+        body.append(editNodeSideBtn);
+
         const ctrlRow = el('div', undefined, 'grid grid-cols-2 gap-2');
         const pauseBtn = el('button', dispatchPaused ? '▶ 继续派发' : '⏸ 暂停派发', `py-1.5 px-2 rounded-lg border text-[11px] font-semibold transition ${dispatchPaused ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'}`);
         pauseBtn.type = 'button';
@@ -2108,51 +2239,163 @@
         wrap.append(card);
 
       } else if (activeModule === 'exp-memory') {
-        const exp = memState.experience;
-        const card = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-2xs');
-        card.innerHTML = `
-          <div class="flex items-center justify-between border-b border-slate-100 pb-3">
-            <strong class="text-sm text-slate-900">${caseTitle} · 经验卡检索与同义词扩充 (${exp.id} / ${exp.version})</strong>
-            <span class="px-2.5 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 font-semibold">${exp.pubStatus} · ${exp.evidStatus}</span>
+        const cards = getExpCards();
+        const publishedCount = cards.filter((c) => c.pubStatus === '已发布').length;
+        const draftCount = cards.length - publishedCount;
+
+        // Top Bar aligned with main branch Store.memory (memory / baseline / publish)
+        const topCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-3');
+        const headRow = el('div', undefined, 'flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3');
+        headRow.innerHTML = `
+          <div>
+            <span class="text-[11px] font-bold uppercase tracking-wider text-indigo-600">DOMAIN MEMORY · SQLite 统一领域记忆库</span>
+            <h2 class="text-base font-bold text-slate-900 mt-0.5">${caseTitle} · 领域经验卡管理、基线与发布</h2>
           </div>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-slate-600">
-            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200/70"><strong>踩坑现象：</strong>${exp.phenomenon}</div>
-            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200/70"><strong>触发条件：</strong>${exp.trigger}</div>
-            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200/70"><strong>纠正动作：</strong>${exp.action}</div>
-            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200/70"><strong>适用边界与反例：</strong>${exp.counterExample}</div>
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="mono px-2.5 py-1 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-semibold">基线 Baseline B${memoryBaselineVer}</span>
+            <span class="mono px-2.5 py-1 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold">已发布 ${publishedCount} / 草稿 ${draftCount}</span>
           </div>
         `;
+        topCard.append(headRow);
 
-        const aliasRow = el('div', undefined, 'space-y-1.5');
-        aliasRow.append(el('span', '自由编辑 EXP-012 同义词映射词表：', 'font-semibold text-slate-700 block'));
-        const aliasInp = el('input', undefined, 'w-full border border-slate-300 rounded-lg px-3 py-2 bg-white mono');
-        aliasInp.value = exp.aliases;
-        aliasInp.addEventListener('input', () => { exp.aliases = aliasInp.value; });
-        aliasRow.append(aliasInp);
-        card.append(aliasRow);
-
-        const simRow = el('div', undefined, 'space-y-2 pt-2');
-        simRow.append(el('span', '输入项目讨论问题测试召回与边界判定：', 'font-semibold text-slate-700 block'));
-        const qInp = el('input', undefined, 'w-full border border-indigo-300 rounded-lg px-3 py-2 bg-indigo-50/30 font-medium');
-        qInp.value = memSimQuery;
-        qInp.addEventListener('input', () => {
-          memSimQuery = qInp.value;
+        const toolRow = el('div', undefined, 'flex flex-wrap items-center justify-between gap-2');
+        const filterGrp = el('div', undefined, 'flex items-center gap-1.5');
+        for (const [fk, fl] of [['all', `全部 (${cards.length})`], ['已发布', `已发布 (${publishedCount})`], ['草稿', `草稿 (${draftCount})`]]) {
+          const fb = el('button', fl, `px-2.5 py-1 rounded-md border text-xs font-semibold ${memoryFilterStatus === fk ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`);
+          fb.type = 'button';
+          fb.addEventListener('click', () => { memoryFilterStatus = fk; renderAll(); });
+          filterGrp.append(fb);
+        }
+        const opGrp = el('div', undefined, 'flex flex-wrap items-center gap-2');
+        const addExpBtn = el('button', '+ 新建经验卡', 'px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold');
+        addExpBtn.type = 'button';
+        addExpBtn.addEventListener('click', () => {
+          const nextNum = 19 + cards.length;
+          cards.unshift({
+            id: `EXP-0${nextNum}`, version: 1, domain: caseTitle,
+            phenomenon: '新录入：请填写踩坑现象描述',
+            trigger: '请填写触发条件',
+            action: '请填写纠正动作与检查步骤',
+            aliases: '关键词1、关键词2',
+            counterExample: '仅修改显示文案或不涉及状态变更',
+            pubStatus: '草稿', evidStatus: '方案走查', inBaseline: false
+          });
+          addLog('领域记忆', `新建经验卡草稿 EXP-0${nextNum}`);
+          toast(`已新建经验卡草稿 EXP-0${nextNum}`);
           renderAll();
         });
+        const baseBtn = el('button', '保存记忆基线', 'px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-semibold');
+        baseBtn.type = 'button';
+        baseBtn.addEventListener('click', () => {
+          memoryBaselineVer += 1;
+          cards.forEach((c) => { if (c.pubStatus === '已发布') c.inBaseline = true; });
+          addLog('领域记忆', `已保存 SQLite 记忆基线 Baseline B${memoryBaselineVer}`);
+          toast(`已保存记忆基线 Baseline B${memoryBaselineVer}`);
+          renderAll();
+        });
+        const pubAllBtn = el('button', '发布全部草稿', 'px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold');
+        pubAllBtn.type = 'button';
+        pubAllBtn.addEventListener('click', () => {
+          cards.forEach((c) => { if (c.pubStatus !== '已发布') { c.pubStatus = '已发布'; c.version += 1; } });
+          addLog('领域记忆', '已将全部草稿经验卡发布至正式记忆库');
+          toast('全部草稿经验卡已发布');
+          renderAll();
+        });
+        opGrp.append(addExpBtn, baseBtn, pubAllBtn);
+        toolRow.append(filterGrp, opGrp);
+        topCard.append(toolRow);
+        wrap.append(topCard);
 
-        const aliasList = exp.aliases.split(/[、,，\s]+/).filter(Boolean);
-        const isCounter = /改名|名称|不重叠|编号/.test(memSimQuery);
-        const matchedAlias = aliasList.find((w) => memSimQuery.includes(w));
-        const resBox = el('div', undefined, `p-4 rounded-xl border ${isCounter ? 'bg-slate-100 border-slate-300 text-slate-700' : (matchedAlias ? 'bg-emerald-50 border-emerald-300 text-emerald-900' : 'bg-amber-50 border-amber-200 text-amber-900')}`);
-        resBox.innerHTML = isCounter
-          ? `<strong>判定结果：命中适用边界/反例 → 本次不触发已有预约处置检查项</strong><p class="mt-1">原因：输入场景属于「${escapeHtml(exp.counterExample)}」，记忆服务已记录本次无需触发退订检查。</p>`
-          : matchedAlias
-            ? `<strong>判定结果：命中 ${escapeHtml(exp.id)}（关键词「${escapeHtml(matchedAlias)}」）· 证据层级：${escapeHtml(exp.evidStatus)}</strong><p class="mt-1">自动注入纠正动作：${escapeHtml(exp.action)}</p>`
-            : `<strong>判定结果：未命中现有同义词库</strong><p class="mt-1">当前词表 [${escapeHtml(exp.aliases)}] 未覆盖该表述，可在上方词表补充新别名以立即生效。</p>`;
+        // Live Multi-Card Recall & Counter-Example Tester
+        const simCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-3');
+        simCard.append(el('strong', '实时多卡召回与反例边界测试（自动匹配全部已发布与草稿经验卡）', 'block text-sm text-slate-900'));
+        const qInp = el('input', undefined, 'w-full border border-indigo-300 rounded-lg px-3 py-2 bg-indigo-50/20 font-medium');
+        qInp.value = memSimQuery;
+        qInp.placeholder = '输入讨论问题测试召回，如：仪器周五送修已约怎么办 / 并行修改 router.py 冲突 / Worker 重试重复回报...';
+        qInp.addEventListener('input', () => { memSimQuery = qInp.value; renderAll(); });
 
-        simRow.append(qInp, resBox);
-        card.append(simRow);
-        wrap.append(card);
+        const isCounter = /改名|名称|不重叠|编号|只读/.test(memSimQuery);
+        const hits = [];
+        for (const c of cards) {
+          const aliasList = c.aliases.split(/[、,，\s]+/).filter(Boolean);
+          const kw = aliasList.find((w) => memSimQuery.includes(w));
+          if (kw) hits.push({ card: c, kw });
+        }
+        const resBox = el('div', undefined, `p-3.5 rounded-xl border space-y-1.5 ${isCounter ? 'bg-slate-100 border-slate-300 text-slate-700' : (hits.length ? 'bg-emerald-50 border-emerald-300 text-emerald-900' : 'bg-amber-50 border-amber-200 text-amber-900')}`);
+        if (isCounter) {
+          resBox.innerHTML = `<strong>判定结果：命中反例边界 → 不触发经验卡阻断检查</strong><p>输入属于只读或非状态冲突场景，记忆服务已记录豁免。</p>`;
+        } else if (hits.length) {
+          resBox.innerHTML = `<strong>判定结果：共命中 ${hits.length} 张领域经验卡</strong>` + hits.map((h) => `<div class="p-2 rounded bg-white/80 border border-emerald-200 mt-1"><span class="mono font-bold text-indigo-700">${escapeHtml(h.card.id)} V${h.card.version}</span>（关键词「${escapeHtml(h.kw)}」· ${escapeHtml(h.card.evidStatus)}）→ ${escapeHtml(h.card.action)}</div>`).join('');
+        } else {
+          resBox.innerHTML = `<strong>判定结果：未命中现有同义词表</strong><p>可在下方任意经验卡的同义词映射中补充别名，保存后即时生效。</p>`;
+        }
+        simCard.append(qInp, resBox);
+        wrap.append(simCard);
+
+        // Multi-Card Editable Experience List
+        const visibleCards = memoryFilterStatus === 'all' ? cards : cards.filter((c) => c.pubStatus === memoryFilterStatus);
+        for (const c of visibleCards) {
+          const cBox = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-3');
+          const cTop = el('div', undefined, 'flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5');
+          cTop.innerHTML = `
+            <div class="flex items-center gap-2">
+              <span class="mono font-bold text-indigo-600 text-sm">${escapeHtml(c.id)}</span>
+              <span class="mono text-[11px] px-2 py-0.5 rounded bg-slate-100 text-slate-600">V${c.version}</span>
+              <span class="font-semibold text-slate-800">${escapeHtml(c.domain)}</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              ${c.inBaseline ? '<span class="mono text-[10px] px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">已入基线</span>' : ''}
+              <span class="text-[10px] px-2 py-0.5 rounded border font-semibold ${c.pubStatus === '已发布' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-800 border-amber-200'}">${escapeHtml(c.pubStatus)} · ${escapeHtml(c.evidStatus)}</span>
+            </div>
+          `;
+          cBox.append(cTop);
+
+          const editG = el('div', undefined, 'grid grid-cols-1 md:grid-cols-2 gap-3');
+          const mkArea = (lbl, val, onChg) => {
+            const w = el('label', undefined, 'block space-y-1');
+            w.append(el('span', lbl, 'text-[11px] font-semibold text-slate-500 block'));
+            const ta = el('textarea', undefined, 'w-full h-14 border border-slate-300 rounded-lg p-2 text-xs bg-slate-50/50 focus:bg-white');
+            ta.value = val;
+            ta.addEventListener('input', () => onChg(ta.value));
+            w.append(ta);
+            return w;
+          };
+          editG.append(
+            mkArea('踩坑现象', c.phenomenon, (v) => { c.phenomenon = v; }),
+            mkArea('触发条件', c.trigger, (v) => { c.trigger = v; }),
+            mkArea('纠正动作', c.action, (v) => { c.action = v; }),
+            mkArea('适用边界与反例', c.counterExample, (v) => { c.counterExample = v; })
+          );
+          cBox.append(editG);
+
+          const footRow = el('div', undefined, 'flex flex-wrap items-center gap-2 pt-1');
+          const alInp = el('input', undefined, 'flex-1 min-w-[200px] border border-slate-300 rounded-lg px-2.5 py-1.5 mono text-xs bg-white');
+          alInp.value = c.aliases;
+          alInp.placeholder = '同义词映射（顿号或逗号分隔）';
+          alInp.addEventListener('input', () => { c.aliases = alInp.value; });
+
+          const evSel = el('select', undefined, 'border border-slate-300 rounded-lg px-2 py-1.5 text-xs bg-white');
+          for (const evOpt of ['方案走查', '单测验证', '真实代码执行']) {
+            const o = el('option', evOpt);
+            o.value = evOpt;
+            evSel.append(o);
+          }
+          evSel.value = c.evidStatus;
+          evSel.addEventListener('change', () => { c.evidStatus = evSel.value; });
+
+          const pubBtn = el('button', c.pubStatus === '已发布' ? `升级至 V${c.version + 1}` : '发布此经验卡', 'px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-semibold');
+          pubBtn.type = 'button';
+          pubBtn.addEventListener('click', () => {
+            c.pubStatus = '已发布';
+            c.version += 1;
+            addLog('领域记忆', `发布经验卡 ${c.id} V${c.version}（证据层级：${c.evidStatus}）`);
+            toast(`已发布 ${c.id} V${c.version}`);
+            renderAll();
+          });
+          footRow.append(alInp, evSel, pubBtn);
+          cBox.append(footRow);
+          wrap.append(cBox);
+        }
 
       } else if (activeModule === 'model-router') {
         const card = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-2xs');
@@ -2417,7 +2660,7 @@
                 <div class="text-xs font-semibold text-slate-800 truncate">${t.code}: ${t.name}</div>
                 <div class="mono text-[11px] text-slate-400 mt-0.5 flex items-center justify-between">
                   <span>${t.id}</span>
-                  <span>${t.estimateMin}m${t.critical ? ' · 关键路径' : ''}</span>
+                  <span>${t.estimateMin}m${t.critical ? ' · 关键' : ''}${t.customRequirement ? ' · ✎' : ''}</span>
                 </div>
               </div>
             `;
@@ -2573,7 +2816,7 @@
             <span class="text-[9px] font-semibold px-1.5 py-0.2 rounded border ${meta.badgeCls}">${meta.label}</span>
           </div>
           <div class="text-[11px] font-semibold text-slate-800 truncate mt-1" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</div>
-          <div class="text-[10px] text-slate-400 truncate mt-0.5">${escapeHtml(t.output)}</div>
+          <div class="text-[10px] text-slate-400 truncate mt-0.5">${escapeHtml(t.output)}</div>${t.customRequirement ? `<div class="mt-1 inline-block px-1.5 py-0.2 rounded bg-indigo-50 border border-indigo-200 text-indigo-700 text-[9px] font-semibold">✎ 含人工要求</div>` : ""}
         `;
         node.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -2626,6 +2869,11 @@
         });
         actionRow.append(retryBtn);
       }
+
+      const editNodeBtn = el('button', '✎ 修改节点 / 输入要求', 'px-2.5 py-1 rounded bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-300 font-semibold text-[11px] transition');
+      editNodeBtn.type = 'button';
+      editNodeBtn.addEventListener('click', () => openNodeEditModal(sel.id));
+      actionRow.append(editNodeBtn);
 
       const cycleBtn = el('button', '切换状态', 'px-2.5 py-1 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold text-[11px] transition');
       cycleBtn.type = 'button';
@@ -3102,6 +3350,43 @@
       );
       card.append(editGrid);
 
+      // Human Custom Requirement / Prompt Input Box for ANY node
+      const customReqBox = el('div', undefined, 'p-3.5 rounded-xl bg-indigo-50/40 border border-indigo-200/80 space-y-2');
+      customReqBox.append(el('strong', '人工补充要求 / 给执行 Agent 的指令（支持所有节点随时输入，保存后自动保留全部 AI 审查闭环）', 'block text-indigo-900'));
+      const customTa = el('textarea', undefined, 'w-full h-20 p-2.5 rounded-lg border border-indigo-300 bg-white text-xs text-slate-800 focus:border-indigo-500 focus:outline-none');
+      customTa.placeholder = '输入对该节点的人工修改要求、额外业务规则或验收约束...';
+      customTa.value = sel.customRequirement || '';
+      const customBtns = el('div', undefined, 'flex flex-wrap items-center gap-2');
+      const saveReqBtn = el('button', '保存人工要求', 'px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold');
+      saveReqBtn.type = 'button';
+      saveReqBtn.addEventListener('click', () => {
+        sel.customRequirement = customTa.value.trim();
+        addLog('人工需求注入', `为节点 ${sel.id} 保存人工要求：${sel.customRequirement || '（已清空）'}`);
+        toast(`已保存 ${sel.id} 的人工要求`);
+        renderAll();
+      });
+      const saveRerunReqBtn = el('button', '保存并触发 Agent 重新执行与自动审查', 'px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold');
+      saveRerunReqBtn.type = 'button';
+      saveRerunReqBtn.addEventListener('click', () => {
+        sel.customRequirement = customTa.value.trim();
+        sel.status = 'in_progress';
+        const linked = getAllTasks().find((x) => x.isReviewNode && (x.id === sel.id || x.targetTaskId === sel.id));
+        if (linked) {
+          const rReal = findTask(linked.id);
+          const rv = getAgentReview(rReal);
+          rv.phaseStep = 'redevelop';
+          rv.checks[0].status = 'failed';
+          rv.checks[0].detail = `已注入人工要求，等待 ${sel.owner} 重开并由代码审查 Agent 自动复审`;
+          rReal.status = 'in_progress';
+        }
+        addLog('人工需求注入', `为 ${sel.id} 注入人工要求并触发新一轮自动开发-审查闭环`);
+        toast(`已为 ${sel.id} 注入要求并启动新一轮自动闭环`);
+        renderAll();
+      });
+      customBtns.append(saveReqBtn, saveRerunReqBtn);
+      customReqBox.append(customTa, customBtns);
+      card.append(customReqBox);
+
       // Direct dependencies checklist with real-time DAG cycle check
       const depSec = el('div', undefined, 'space-y-1.5');
       depSec.append(el('span', '直接前置任务（勾选时自动执行 DAG 循环依赖检测）', 'text-slate-500 font-medium block'));
@@ -3155,77 +3440,138 @@
     function renderMonitorTab() {
       const panel = q('#panel-monitor');
       panel.replaceChildren();
-      const wrap = el('div', undefined, 'max-w-4xl space-y-4 text-xs');
+      const wrap = el('div', undefined, 'max-w-5xl space-y-4 text-xs');
       const tasks = getAllTasks();
       const sched = computeSchedule(tasks, modelRouterConfig.maxParallel);
+      if (!ganttBaselineMap[currentProjectKey]) {
+        ganttBaselineMap[currentProjectKey] = {
+          planStart: new Map(sched.planStart),
+          planEnd: new Map(sched.planEnd),
+          plannedTotal: sched.plannedTotal
+        };
+      }
+      const base = ganttBaselineMap[currentProjectKey];
       const extraDelay = tasks.some((t) => t.status === 'failed') ? 5 : 0;
       const totalActual = sched.plannedTotal + extraDelay;
-      const axisMax = Math.ceil((Math.max(totalActual, 25) + ganttScale) / ganttScale) * ganttScale;
+      const diffFromBase = totalActual - base.plannedTotal;
+      const axisMax = Math.ceil((Math.max(totalActual, base.plannedTotal, 25) + ganttScale) / ganttScale) * ganttScale;
       const tickCount = Math.max(1, Math.round(axisMax / ganttScale));
+      const doneCount = tasks.filter((t) => t.status === 'completed').length;
 
-      const ganttCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-3');
+      const ganttCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-3');
       const header = el('div', undefined, 'flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3');
       header.innerHTML = `
         <div>
-          <strong class="text-sm text-slate-900">动态甘特排期与并发监控 · 并发上限 = ${modelRouterConfig.maxParallel}</strong>
-          <p class="text-slate-500 mt-0.5">理论关键路径 ${sched.cpmTotal} 分钟 · 计入并发与角色排期 ${sched.plannedTotal} 分钟${extraDelay ? `（含失败重试顺延 +${extraDelay} 分钟）` : ''}。</p>
+          <strong class="text-sm text-slate-900">甘特图与进度对照 · ${doneCount} / ${tasks.length} 已交付 · 并发上限 ${modelRouterConfig.maxParallel}</strong>
+          <p class="text-slate-500 mt-0.5">首版基线 ${base.plannedTotal} 分钟 · 当前排期 ${sched.plannedTotal} 分钟 · 预计实际 ${totalActual} 分钟${diffFromBase !== 0 ? `（较基线 ${diffFromBase > 0 ? '+' : ''}${diffFromBase} 分钟）` : '（与基线一致）'}</p>
         </div>
       `;
-      const scaleCtrl = el('div', undefined, 'flex items-center gap-1.5');
+      const ctrlWrap = el('div', undefined, 'flex flex-wrap items-center gap-1.5');
       for (const sc of [5, 10]) {
         const b = el('button', `${sc} 分钟刻度`, `px-2.5 py-1 rounded border text-[11px] font-semibold transition ${ganttScale === sc ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`);
         b.type = 'button';
         b.addEventListener('click', () => { ganttScale = sc; renderMonitorTab(); });
-        scaleCtrl.append(b);
+        ctrlWrap.append(b);
       }
-      header.append(scaleCtrl);
+      const saveBaseBtn = el('button', '重置基线', 'px-2.5 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 text-[11px] font-semibold');
+      saveBaseBtn.type = 'button';
+      saveBaseBtn.addEventListener('click', () => {
+        ganttBaselineMap[currentProjectKey] = {
+          planStart: new Map(sched.planStart),
+          planEnd: new Map(sched.planEnd),
+          plannedTotal: sched.plannedTotal
+        };
+        toast(`已将当前排期（${sched.plannedTotal} 分钟）保存为新甘特基线`);
+        renderMonitorTab();
+      });
+      ctrlWrap.append(saveBaseBtn);
+      header.append(ctrlWrap);
       ganttCard.append(header);
 
       // Axis ticks row
       const axisRow = el('div', undefined, 'grid grid-cols-12 items-center gap-2 border-b border-slate-200 pb-1.5');
-      axisRow.append(el('div', '任务 / 执行角色', 'col-span-3 text-[11px] font-bold text-slate-500'));
+      axisRow.append(el('div', '任务 / 执行者 · 分钟', 'col-span-3 text-[11px] font-bold text-slate-500'));
       const axisTrack = el('div', undefined, 'col-span-9 relative h-4');
       for (let i = 0; i <= tickCount; i++) {
         const v = i * ganttScale;
-        const tick = el('span', `${v}m`, 'mono text-[10px] text-slate-400 absolute top-0 -translate-x-1/2');
+        const tick = el('span', String(v), 'mono text-[10px] text-slate-400 absolute top-0 -translate-x-1/2');
         tick.style.left = `${(v / axisMax) * 100}%`;
         axisTrack.append(tick);
       }
       axisRow.append(axisTrack);
       ganttCard.append(axisRow);
 
-      const rowsWrap = el('div', undefined, 'space-y-2 pt-1');
+      // Task timeline rows
+      const rowsWrap = el('div', undefined, 'space-y-1.5 pt-1');
       for (const t of tasks) {
+        const bs = base.planStart.get(t.id) ?? sched.planStart.get(t.id) ?? 0;
+        const be = base.planEnd.get(t.id) ?? sched.planEnd.get(t.id) ?? t.estimateMin;
+        const bDur = Math.max(1, be - bs);
         const ps = sched.planStart.get(t.id) ?? 0;
         const pe = sched.planEnd.get(t.id) ?? t.estimateMin;
-        const dur = Math.max(1, pe - ps);
+        const pDur = Math.max(1, pe - ps);
         const isCrit = sched.criticalSet.has(t.id);
-        const row = el('div', undefined, `grid grid-cols-12 items-center gap-2 p-1.5 rounded-lg cursor-pointer hover:bg-slate-50 ${t.id === selectedTaskId ? 'bg-indigo-50/70' : ''}`);
+
+        const row = el('div', undefined, `grid grid-cols-12 items-center gap-2 p-1.5 rounded-lg cursor-pointer transition hover:bg-slate-50 ${t.id === selectedTaskId ? 'bg-indigo-50/80 ring-1 ring-indigo-200' : ''}`);
         row.addEventListener('click', () => { selectedTaskId = t.id; renderAll(); });
         row.innerHTML = `
           <div class="col-span-3 font-semibold text-slate-700 truncate" title="${escapeHtml(t.name)}">
-            ${escapeHtml(t.id)} ${escapeHtml(t.name)}${isCrit ? ' <span class="text-indigo-600">★</span>' : ''}
-            <span class="block text-[10px] text-slate-400 font-normal truncate">${escapeHtml(t.owner)} · ${dur}m</span>
+            ${escapeHtml(t.id)} ${escapeHtml(t.name)}${isCrit ? ' <span class="text-indigo-600">★</span>' : ''}${t.isReviewNode ? ' <span class="text-[10px] text-indigo-500">🤖</span>' : ''}
+            <span class="block text-[10px] text-slate-400 font-normal truncate">${escapeHtml(t.owner)} · ${pDur}m${t.customRequirement ? ' · ✎人工要求' : ''}</span>
           </div>
-          <div class="col-span-9 bg-slate-100 h-8 rounded relative overflow-hidden" style="background-image:linear-gradient(to right,#e2e8f0 1px,transparent 1px);background-size:${100 / tickCount}% 100%;">
-            <div class="absolute top-1 h-2.5 bg-blue-200 border border-blue-300 rounded-xs" style="left:${(ps / axisMax) * 100}%;width:${(dur / axisMax) * 100}%;" title="基线计划 ${ps}m-${pe}m"></div>
-            ${t.status === 'completed' ? `<div class="absolute bottom-1 h-2.5 bg-emerald-600 rounded-xs" style="left:${(ps / axisMax) * 100}%;width:${(dur / axisMax) * 100}%;" title="实际完成"></div>` : ''}
-            ${t.status === 'in_progress' ? `<div class="absolute bottom-1 h-2.5 bg-amber-500 rounded-xs" style="left:${(ps / axisMax) * 100}%;width:${(dur / axisMax) * 100}%;" title="进行中/Agent 审查中"></div>` : ''}
-            ${t.status === 'failed' ? `<div class="absolute bottom-1 h-2.5 bg-red-600 rounded-xs" style="left:${(ps / axisMax) * 100}%;width:${(Math.min(5, dur) / axisMax) * 100}%;" title="尝试 1 失败"></div>` : ''}
+          <div class="col-span-9 bg-slate-50 h-9 rounded border border-slate-200/70 relative overflow-hidden" style="background-image:linear-gradient(to right,#e2e8f0 1px,transparent 1px);background-size:${100 / tickCount}% 100%;">
+            <div class="absolute top-1 h-3 bg-blue-100 border border-blue-300 text-blue-800 text-[9px] font-bold flex items-center justify-center rounded-xs overflow-hidden" style="left:${(bs / axisMax) * 100}%;width:${(bDur / axisMax) * 100}%;" title="首版基线 ${bs}m-${be}m">${bDur}m</div>
+            ${t.status === 'completed' ? `<div class="absolute bottom-1 h-3 bg-emerald-600 text-white text-[9px] font-bold flex items-center justify-center rounded-xs overflow-hidden" style="left:${(ps / axisMax) * 100}%;width:${(pDur / axisMax) * 100}%;" title="实际完成 ${ps}m-${pe}m">${pDur}m</div>` : ''}
+            ${t.status === 'in_progress' ? `<div class="absolute bottom-1 h-3 bg-amber-500 text-white text-[9px] font-bold flex items-center justify-center rounded-xs overflow-hidden" style="left:${(ps / axisMax) * 100}%;width:${(pDur / axisMax) * 100}%;" title="执行/审查中">${pDur}m</div>` : ''}
+            ${t.status === 'failed' ? `<div class="absolute bottom-1 h-3 bg-red-600 text-white text-[9px] font-bold flex items-center justify-center rounded-xs overflow-hidden" style="left:${(ps / axisMax) * 100}%;width:${(Math.min(5, pDur) / axisMax) * 100}%;" title="尝试失败 5m">5m</div>` : ''}
           </div>
         `;
         rowsWrap.append(row);
       }
       ganttCard.append(rowsWrap);
-      ganttCard.innerHTML += `
-        <div class="flex flex-wrap gap-4 pt-2 border-t border-slate-100 text-[11px] text-slate-500">
-          <span><span class="inline-block w-2.5 h-2.5 rounded-xs bg-blue-200 border border-blue-300 mr-1 align-middle"></span>计划基线</span>
-          <span><span class="inline-block w-2.5 h-2.5 rounded-xs bg-emerald-600 mr-1 align-middle"></span>实际完成</span>
-          <span><span class="inline-block w-2.5 h-2.5 rounded-xs bg-amber-500 mr-1 align-middle"></span>待审/运行中</span>
-          <span><span class="inline-block w-2.5 h-2.5 rounded-xs bg-red-600 mr-1 align-middle"></span>失败尝试</span>
-        </div>
+      ganttCard.append(el('div', undefined, 'flex flex-wrap gap-4 pt-2 border-t border-slate-100 text-[11px] text-slate-500'));
+      ganttCard.lastElementChild.innerHTML = `
+        <span><span class="inline-block w-2.5 h-2.5 rounded-xs bg-blue-100 border border-blue-300 mr-1 align-middle"></span>计划基线</span>
+        <span><span class="inline-block w-2.5 h-2.5 rounded-xs bg-emerald-600 mr-1 align-middle"></span>实际完成</span>
+        <span><span class="inline-block w-2.5 h-2.5 rounded-xs bg-amber-500 mr-1 align-middle"></span>执行/审查中</span>
+        <span><span class="inline-block w-2.5 h-2.5 rounded-xs bg-red-600 mr-1 align-middle"></span>失败尝试</span>
       `;
       wrap.append(ganttCard);
+
+      // Selected Task Detail & Attempts Card below Gantt (aligned with Dev Doc Fig 5)
+      const sel = findTask(selectedTaskId);
+      const selMeta = statusMeta(sel.status);
+      const revInfo = getAgentReview(sel);
+      const detailCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-3');
+      const dTop = el('div', undefined, 'flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2');
+      dTop.append(el('strong', `${sel.id} · ${sel.name}`, 'text-sm text-slate-900'));
+      const dActs = el('div', undefined, 'flex items-center gap-2');
+      dActs.append(el('span', selMeta.label, `px-2 py-0.5 rounded border text-[11px] font-semibold ${selMeta.badgeCls}`));
+      const gEditBtn = el('button', '✎ 修改此节点 / 输入要求', 'px-2.5 py-1 rounded border border-indigo-300 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-700 font-semibold text-[11px]');
+      gEditBtn.type = 'button';
+      gEditBtn.addEventListener('click', () => openNodeEditModal(sel.id));
+      dActs.append(gEditBtn);
+      dTop.append(dActs);
+      detailCard.append(dTop);
+
+      const kv = el('div', undefined, 'grid grid-cols-2 sm:grid-cols-5 gap-3');
+      kv.innerHTML = `
+        <div><div class="text-[11px] text-slate-400">规格来源</div><div class="mono font-semibold text-slate-800 mt-0.5">${escapeHtml(sel.spec)}</div></div>
+        <div><div class="text-[11px] text-slate-400">执行角色</div><div class="font-semibold text-slate-800 mt-0.5">${escapeHtml(sel.owner)}</div></div>
+        <div><div class="text-[11px] text-slate-400">前置任务</div><div class="mono font-semibold text-slate-800 mt-0.5">${sel.deps.length ? escapeHtml(sel.deps.join(', ')) : '无'}</div></div>
+        <div><div class="text-[11px] text-slate-400">交付物</div><div class="font-semibold text-slate-800 mt-0.5">${escapeHtml(sel.output)}</div></div>
+        <div><div class="text-[11px] text-slate-400">估时</div><div class="font-semibold text-slate-800 mt-0.5">${sel.estimateMin} 分钟${sched.criticalSet.has(sel.id) ? ' · 关键路径' : ''}</div></div>
+      `;
+      detailCard.append(kv);
+      if (sel.customRequirement) {
+        detailCard.append(el('div', `✎ 人工补充要求：${sel.customRequirement}`, 'p-2.5 rounded-lg bg-indigo-50/60 border border-indigo-200 text-indigo-900 text-[11px]'));
+      }
+      const attNote = revInfo.history.length
+        ? revInfo.history.map((h) => `第 ${h.round} 轮 · ${h.action} (${h.commit})`).join(' ｜ ')
+        : `当前第 ${revInfo.round} 轮 · 提交 ${revInfo.commitSha}`;
+      detailCard.append(el('div', `尝试与审查轮次：${attNote}`, 'mono text-[11px] text-slate-500 pt-1 border-t border-slate-100'));
+      wrap.append(detailCard);
+
       panel.append(wrap);
     }
 
@@ -3318,7 +3664,7 @@
 
         renderPhaseList();
         if (currentTab === 'graph') renderTwinGraph();
-        else if (plannerLink?.renderTab(currentTab, selectedTaskId)) { /* Linked workspace rendered the tab. */ }
+        else if (plannerLink?.renderTab(currentTab, selectedTaskId)) return;
         else if (currentTab === 'details') renderDetailsTab();
         else if (currentTab === 'monitor') renderMonitorTab();
         else if (currentTab === 'activity') renderActivityTab();
@@ -3531,19 +3877,47 @@
       q('#info-modal').close();
     });
 
-    q('#info-modal').addEventListener('click', (event) => {
-      if (event.target === event.currentTarget) event.currentTarget.close();
-    });
-    q('#planner-model-mode').addEventListener('click', () => {
-      q('.nav-item[data-module="model-router"]').click();
-    });
-
     window.setModelMode = (m) => { const elMode = q('#planner-model-mode'); if (elMode && m) elMode.textContent = String(m); };
     window.openTaskPlanner = () => switchModule('task-planner', '任务分解与配置');
     window.openRaceReview = () => switchModule('review-synthesis', '评审与方案整合');
     window.returnToRace = () => switchModule('intake-race', '需求快照与赛马出案');
 
+    const localSimulation = new URLSearchParams(location.search).get('mode') === 'mock';
+    q('#info-modal').addEventListener('click', event => {
+      if (event.target === event.currentTarget) event.currentTarget.close();
+    });
+    q('#planner-model-mode').addEventListener('click', () => {
+      q('#info-modal-title').textContent = '切换使用模式';
+      const body = q('#info-modal-body');
+      body.replaceChildren();
+      function modeButton(label, mode, configure = false) {
+        const button = el('button', label, 'mr-2 mb-2 rounded border px-3 py-2');
+        button.type = 'button';
+        button.onclick = () => {
+          if (configure && plannerLink) {
+            q('#info-modal').close();
+            plannerLink.open('model-router');
+            return;
+          }
+          if (location.protocol === 'file:') {
+            location.href = 'http://127.0.0.1:8008/?mode=' + mode + (configure ? '&configure=1' : '');
+            return;
+          }
+          const url = new URL(location.href);
+          url.searchParams.set('mode', mode);
+          if (configure) url.searchParams.set('configure','1');
+          else url.searchParams.delete('configure');
+          location.href = url.href;
+        };
+        return button;
+      }
+      body.append(modeButton('本地模拟', 'mock'), modeButton('真实使用 / 配置 API', 'real', true),
+        el('p', '本地模拟使用页面内置数据，刷新后重置。真实使用连接本机工作台，模型调用需要有效 API 配置。'));
+      q('#info-modal').showModal();
+    });
+
     function bootLocalBridges() {
+      if (localSimulation) return;
       const proto = window.location.protocol;
       const host = window.location.hostname;
       if ((proto !== 'http:' && proto !== 'https:') || (host !== 'localhost' && host !== '127.0.0.1' && !host.startsWith('192.168.') && !host.startsWith('10.'))) {
@@ -3554,12 +3928,13 @@
         if (idx >= scripts.length) {
           try {
             if (typeof window.createPlannerLink === 'function') {
-              plannerLink = window.createPlannerLink({ q, el, switchModule, toast, showTask: id => {
-                selectedTaskId = id;
-                currentTab = 'details';
-                switchModule('workbench', '开发流程工作台');
-              } });
-              plannerLink.open(window.createStewardLink ? 'steward' : 'intake-race');
+              plannerLink = window.createPlannerLink({ q, el, switchModule, toast,
+                showTask: id => {
+                  selectedTaskId = id;
+                  currentTab = 'details';
+                  switchModule('workbench', '开发流程工作台');
+                } });
+              plannerLink.open(new URLSearchParams(location.search).has('configure') ? 'model-router' : 'steward');
             }
           } catch (_) {}
           return;

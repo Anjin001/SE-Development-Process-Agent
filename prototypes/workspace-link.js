@@ -288,7 +288,7 @@ window.createWorkspaceLink = function (hooks) {
   }
   function showModelMode() {
     const badge = q('#planner-model-mode');
-    badge.textContent = state.config?.discussion_mode === 'model' ? '模型 API 已配置' : '本地模拟 · 配置 API';
+    badge.textContent = state.config?.discussion_mode === 'model' ? '真实使用 · 模型已配置' : '工作台 · 配置 API';
   }
   picker.onchange = () => {
     const id = picker.value;

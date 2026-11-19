@@ -9,6 +9,12 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
+    #info-modal { margin: auto; width: min(52rem, 94vw); padding: 0; border-radius: .75rem; }
+    #info-modal::backdrop { background: rgba(15, 23, 42, .45); }
+    .info-modal-panel { display: flex; flex-direction: column; gap: .75rem; max-height: 82vh; }
+    .info-modal-panel > :first-child { flex-shrink: 0; }
+    #info-modal-body { min-height: 0; overflow: auto; overflow-wrap: anywhere; overscroll-behavior: contain; }
+
     * { box-sizing: border-box; }
     body {
       margin: 0;
@@ -248,7 +254,7 @@
         <button id="btn-toggle-right-sidebar" type="button" class="px-2.5 py-1 rounded-md border border-indigo-200 bg-indigo-50/70 text-indigo-700 font-semibold hover:bg-indigo-100 transition">
           主理侧边栏 ◨
         </button>
-        <span id="planner-model-mode" class="mono text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">模拟演示</span>
+        <button type="button" id="planner-model-mode" title="配置 API" class="mono text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">配置 API</button>
         <span id="worker-online-indicator" class="w-2 h-2 rounded-full bg-emerald-500" title="独立 Worker 在线"></span>
       </div>
     </header>
@@ -436,15 +442,15 @@
   </div>
 
   <!-- Info Modal -->
-  <div id="info-modal" class="fixed inset-0 z-50 hidden bg-slate-900/40 flex items-center justify-center p-4">
-    <div class="bg-white border border-slate-200 rounded-xl max-w-lg w-full p-5 shadow-xl space-y-3 text-xs">
-      <div class="flex items-center justify-between border-b border-slate-100 pb-2.5">
-        <strong id="info-modal-title" class="text-sm text-slate-900">文档说明</strong>
-        <button id="btn-close-modal" type="button" class="px-2 py-0.5 rounded border border-slate-200 text-slate-500 hover:text-slate-800">关闭</button>
+  <dialog id="info-modal" aria-labelledby="info-modal-title">
+    <div class="info-modal-panel bg-white p-5 text-xs">
+      <div class="flex items-center justify-between border-b pb-2">
+        <strong id="info-modal-title">文档说明</strong>
+        <button id="btn-close-modal" type="button" class="rounded border px-2 py-1">关闭</button>
       </div>
-      <div id="info-modal-body" class="text-slate-600 space-y-2 leading-relaxed"></div>
+      <div id="info-modal-body" tabindex="0" class="text-slate-600 leading-relaxed"></div>
     </div>
-  </div>
+  </dialog>
 
   <!-- Toast 提示 -->
   <div id="toast-banner" class="fixed bottom-4 right-4 z-50 hidden bg-slate-900 text-white text-xs px-4 py-2.5 rounded-lg shadow-lg border border-slate-700 flex items-center gap-2">
@@ -458,6 +464,7 @@
     // 1. 全局状态：主体结构完全保持上一版 (S0.1~T3.1 & C1.1~C2.2)，同时支持双案例全局联动
     // =========================================================================
     let activeModule = 'workbench';
+    let plannerLink = null;
     let currentProjectKey = 'lab';
     let currentTab = 'graph';
     let selectedTaskId = 'R2.1';
@@ -1197,7 +1204,7 @@
       window.__seToast = setTimeout(() => box.classList.add('hidden'), 2600);
     }
 
-    function getActiveData() { return datasets[currentProjectKey]; }
+    function getActiveData() { return plannerLink?.graphData() || datasets[currentProjectKey]; }
     function getIntakeState() { return intakeByProject[currentProjectKey]; }
     function getSynthesisState() { return synthesisByProject[currentProjectKey]; }
     function getMemoryState() { return memoryByProject[currentProjectKey]; }
@@ -3288,7 +3295,8 @@
       const dedicatedView = q('#module-dedicated-view');
       const workbenchView = q('#workbench-split-view');
 
-      renderRightStewardSidebar();
+      if (plannerLink?.render(activeModule)) return;
+      if (!plannerLink) renderRightStewardSidebar();
 
       if (activeModule === 'workbench') {
         dedicatedView.classList.add('hidden');
@@ -3310,6 +3318,7 @@
 
         renderPhaseList();
         if (currentTab === 'graph') renderTwinGraph();
+        else if (plannerLink?.renderTab(currentTab, selectedTaskId)) { /* Linked workspace rendered the tab. */ }
         else if (currentTab === 'details') renderDetailsTab();
         else if (currentTab === 'monitor') renderMonitorTab();
         else if (currentTab === 'activity') renderActivityTab();
@@ -3505,7 +3514,8 @@
         <div>• <strong>POST /runs &amp; POST /runs/{id}/actions</strong>：启动计划版本，支持暂停、继续、单步、失败重试与人工审核放行。</div>
         <div>• <strong>GET /runs/{id}/events?after=序号</strong>：按事件序号增量轮询运行状态与产物变更。</div>
       `;
-      q('#info-modal').classList.remove('hidden');
+      q('#info-modal-body').scrollTop = 0;
+      q('#info-modal').showModal();
     });
     q('#btn-doc').addEventListener('click', () => {
       q('#info-modal-title').textContent = '全流程模块功能说明';
@@ -3514,10 +3524,18 @@
         <div>2. <strong>独立盲评与方案整合</strong>：展示三维度独立评分，支持编辑待决项答复写入 DEC-01 与保存方案新版本。</div>
         <div>3. <strong>任务分解与 DAG 编排</strong>：按交付物拆解任务，分配独立 Git Worktree 沙箱与高低配模型路由。</div>
       `;
-      q('#info-modal').classList.remove('hidden');
+      q('#info-modal-body').scrollTop = 0;
+      q('#info-modal').showModal();
     });
     q('#btn-close-modal').addEventListener('click', () => {
-      q('#info-modal').classList.add('hidden');
+      q('#info-modal').close();
+    });
+
+    q('#info-modal').addEventListener('click', (event) => {
+      if (event.target === event.currentTarget) event.currentTarget.close();
+    });
+    q('#planner-model-mode').addEventListener('click', () => {
+      q('.nav-item[data-module="model-router"]').click();
     });
 
     window.setModelMode = (m) => { const elMode = q('#planner-model-mode'); if (elMode && m) elMode.textContent = String(m); };
@@ -3536,11 +3554,12 @@
         if (idx >= scripts.length) {
           try {
             if (typeof window.createPlannerLink === 'function') {
-              const pl = window.createPlannerLink({ q, el, switchModule, toast, showTask: (id) => { selectedTaskId = id; renderAll(); } });
-              if (typeof window.createWorkspaceLink === 'function' && pl?.setExtension) {
-                pl.setExtension(window.createWorkspaceLink);
-              }
-              if (pl?.open) pl.open(window.createStewardLink ? 'steward' : 'intake-race');
+              plannerLink = window.createPlannerLink({ q, el, switchModule, toast, showTask: id => {
+                selectedTaskId = id;
+                currentTab = 'details';
+                switchModule('workbench', '开发流程工作台');
+              } });
+              plannerLink.open(window.createStewardLink ? 'steward' : 'intake-race');
             }
           } catch (_) {}
           return;

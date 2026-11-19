@@ -96,6 +96,7 @@ window.createWorkspaceLink = function (hooks) {
   function write(path, body) {
     return post(path, body, { 'Idempotency-Key': crypto.randomUUID() });
   }
+  let documentRequest = 0;
   for (const [id, title, path] of [
     ['btn-doc', '整合运行说明', '/workspace/docs/runtime'],
     ['btn-changelog', '接口契约 v2', '/workspace/docs/contract'],
@@ -105,11 +106,15 @@ window.createWorkspaceLink = function (hooks) {
     previous.replaceWith(button);
     button.onclick = async () => {
       try {
+        const request = ++documentRequest;
         const data = await get(path);
+        if (request !== documentRequest) return;
         q('#info-modal-title').textContent = title;
         const body = q('#info-modal-body');
         body.replaceChildren(el('pre', data.markdown, 'whitespace-pre-wrap mono text-xs'));
-        q('#info-modal').classList.remove('hidden');
+        body.scrollTop = 0;
+        const modal = q('#info-modal');
+        if (!modal.open) modal.showModal();
       } catch (error) {
         toast(error.message);
       }

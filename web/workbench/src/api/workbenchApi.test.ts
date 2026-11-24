@@ -42,9 +42,9 @@ it('合并并发的相同写操作，409 后相同请求使用新 key', async ()
 it('写操作成功但刷新失败时保留幂等键', async () => {
   const project = { ...fixture.project_snapshot, stage: 'intake', latest_plan_ref: null }
   const request = vi.fn<typeof fetch>()
-    .mockResolvedValueOnce(Response.json({}))
+    .mockResolvedValueOnce(Response.json(fixture.project_snapshot.specification))
     .mockResolvedValueOnce(new Response(null, { status: 404 }))
-    .mockResolvedValueOnce(Response.json({}))
+    .mockResolvedValueOnce(Response.json(fixture.project_snapshot.specification))
     .mockResolvedValueOnce(Response.json(project))
   const actions = createHttpWorkbenchApi(project.id, request).projectActions!
   const ref = { id: 'SPEC-01', version: 1 }
@@ -83,7 +83,7 @@ it('读取活动运行所绑定的计划版本，并复用工作台映射', asyn
     [projectPath, { ...project_snapshot, latest_plan_ref: { id: 'PLAN-01', version: 2 } }],
     [runPath, review_response],
     [`${projectPath}/plans/PLAN-01/versions/1`, plan_response],
-    [`${runPath}/events?after=0&limit=100`, { items: [approval_event], next_after: 10, has_more: false }],
+    [`${runPath}/events?after=0&limit=100`, { items: [{ ...approval_event, seq: 1 }], next_after: 1, has_more: false }],
     [`${projectPath}/plans/PLAN-01/versions/2`, { ...plan_response, plan: { ...plan_response.plan, version: 2 } }],
   ])
   const request = vi.fn<typeof fetch>(async (path) => {
@@ -139,20 +139,20 @@ it('使用 v2 契约提交需求、启动赛马、保存并确认规格', async 
     ...source.specification!, status: 'draft' as const, version: 2,
     requirement_ref: { id: requirement.id, version: 2 }, confirmed_by: null, confirmed_at: null,
   }
-  let project = { ...source, requirement, stage: 'intake' as typeof source.stage, latest_plan_ref: null, runs: [] }
+  let project = { ...source, requirement, stage: 'intake' as typeof source.stage, latest_plan_ref: null, runs: [], race: null as typeof source.race }
   const path = '/api/v2/projects/PROJECT-01'
   const request = vi.fn<typeof fetch>(async (url, init) => {
     if (init?.method !== 'POST') return Response.json(project)
     if (url === `${path}/requirements`) return Response.json(project, { status: 201 })
     if (url === `${path}/race`) {
-      project = { ...project, stage: 'race' }
+      project = { ...project, stage: 'race', race: { ...source.race!, requirement_ref: draft.requirement_ref } }
       return Response.json(project, { status: 202 })
     }
     if (url === `${path}/specifications`) {
       project = { ...project, stage: 'specification', specification: draft }
       return Response.json(draft, { status: 201 })
     }
-    const confirmed = { ...draft, status: 'confirmed' as const }
+    const confirmed = { ...draft, status: 'confirmed' as const, confirmed_by: 'reviewer', confirmed_at: '2026-11-17T10:00:00Z' }
     project = { ...project, stage: 'planning', specification: confirmed }
     return Response.json(confirmed)
   })
@@ -225,4 +225,21 @@ it('运行启动按契约提交计划和模式，运行操作发送修订号并�
   expect(keys[0]).toBeTruthy()
   expect(keys[1]).toBeTruthy()
   expect(keys[2]).toBe(keys[1])
+})
+
+it('服务端已提交但响应丢失时显式重试，以相同键重放而不重复写入', async () => {
+  const project = { ...fixture.project_snapshot, stage: 'intake', latest_plan_ref: null }
+  const committed = new Map<string, typeof project>()
+  const request = vi.fn<typeof fetch>(async (_url, init) => {
+    const key = new Headers(init?.headers).get('Idempotency-Key')!
+    if (committed.has(key)) return Response.json(committed.get(key), { status: 201 })
+    committed.set(key, project)
+    throw new TypeError('response lost after commit')
+  })
+  const actions = createHttpWorkbenchApi(project.id, request).projectActions!
+  await expect(actions.createProject('# 测试')).rejects.toMatchObject({ code: 'NETWORK_ERROR' })
+  expect(request).toHaveBeenCalledOnce()
+  await expect(actions.createProject('# 测试')).resolves.toMatchObject({ projectData: { id: project.id } })
+  expect(request).toHaveBeenCalledTimes(2)
+  expect(committed.size).toBe(1)
 })

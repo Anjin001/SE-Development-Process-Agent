@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useProjectDraft } from './projectDrafts'
 import { pendingArtifacts, validCommit } from '../api/reviewArtifacts'
 import type { Run, RunCommand } from '../types/v2'
 import { formatVersion } from './presentation'
@@ -10,7 +10,7 @@ export function DeliveryReview({ run, selectedId, onSelect, submit, busy }: {
   submit?: (command: RunCommand) => Promise<boolean>
   busy: boolean
 }) {
-  const [drafts, setDrafts] = useState(new Map<string, { base: string; note: string; edits: ReadonlyMap<string, string> }>())
+  const [drafts, setDrafts] = useProjectDraft('review', new Map<string, { base: string; note: string; edits: ReadonlyMap<string, string> }>())
   const queue = run?.tasks.filter(({ state }) => state === 'review') ?? []
   const task = queue.find(({ task_id }) => task_id === selectedId)
   const pending = pendingArtifacts(task?.artifacts ?? [])

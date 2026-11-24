@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useProjectDraft } from './projectDrafts'
 import { completedGroup, currentRace, currentSpecification, groupIds, raceIsComplete } from '../api/projectVersions'
 import type { ProjectActions } from '../api/workbenchApi'
 import type { ProjectSnapshot, Race, Specification, SpecificationSelection, VersionRef } from '../types/v2'
@@ -8,14 +8,15 @@ import { formatVersion } from './presentation'
 interface ProjectStageProps {
   project: ProjectSnapshot
   actions?: ProjectActions
+  allowCreate?: boolean
   exampleMarkdown?: string
   busy: boolean
-  perform: (request: () => Promise<WorkbenchSnapshot>) => Promise<boolean>
+  perform: (request: () => Promise<WorkbenchSnapshot>, opensProject?: boolean) => Promise<boolean>
   navigate: (stage: StageId) => void
 }
 
-function useVersionedMarkdown(source: string, ref: VersionRef | null) {
-  const [edit, setEdit] = useState<{ markdown: string; base: string | null }>()
+function useVersionedMarkdown(name: string, source: string, ref: VersionRef | null) {
+  const [edit, setEdit] = useProjectDraft<{ markdown: string; base: string | null } | undefined>(name, undefined)
   const current = ref ? formatVersion(ref) : null
   const markdown = edit?.markdown ?? source
   return {
@@ -28,9 +29,9 @@ function useVersionedMarkdown(source: string, ref: VersionRef | null) {
   }
 }
 
-function Requirements({ project, exampleMarkdown, actions, busy, perform, navigate }: ProjectStageProps) {
+function Requirements({ project, exampleMarkdown, actions, busy, perform, navigate, allowCreate = true }: ProjectStageProps) {
   const requirement = project.requirement
-  const editor = useVersionedMarkdown(requirement.markdown, requirement)
+  const editor = useVersionedMarkdown('requirement', requirement.markdown, requirement)
   const canSubmit = actions && !busy && editor.markdown.trim() !== ''
   const sourceLines = requirement.markdown.split(/\r?\n/)
 
@@ -38,7 +39,7 @@ function Requirements({ project, exampleMarkdown, actions, busy, perform, naviga
     if (!actions || !canSubmit || (!create && editor.stale)) return
     const saved = await perform(() => create
       ? actions.createProject(editor.markdown)
-      : actions.saveRequirement(project.id, { expected_version: requirement.version, markdown: editor.markdown }))
+      : actions.saveRequirement(project.id, { expected_version: requirement.version, markdown: editor.markdown }), create)
     if (saved) editor.reset()
   }
 
@@ -59,7 +60,7 @@ function Requirements({ project, exampleMarkdown, actions, busy, perform, naviga
         {exampleMarkdown !== undefined && <p className="flow-muted">模拟模式仅为团队样例提供需求条目和出案结果。</p>}
         <div className="flow-actions">
           <button className="flow-primary" type="submit" disabled={!canSubmit || editor.stale}>提交需求版本</button>
-          <button type="button" disabled={!canSubmit} onClick={() => void submit(true)}>用此需求新建项目</button>
+          {allowCreate && <button type="button" disabled={!canSubmit} onClick={() => void submit(true)}>用此需求新建项目</button>}
           {exampleMarkdown !== undefined && <button type="button" disabled={busy} onClick={() => editor.change(exampleMarkdown)}>载入团队样例</button>}
           <button type="button" disabled={busy || editor.dirty || editor.stale} onClick={() => navigate('race')}>查看方案赛马</button>
         </div>
@@ -202,8 +203,8 @@ function SpecDetails({ spec }: { spec: Specification }) {
 
 function SpecificationEditor({ project, actions, busy, perform, navigate }: ProjectStageProps) {
   const spec = currentSpecification(project)
-  const editor = useVersionedMarkdown(spec?.markdown ?? '', spec)
-  const [choice, setChoice] = useState<SpecificationSelection>()
+  const editor = useVersionedMarkdown('specification', spec?.markdown ?? '', spec)
+  const [choice, setChoice] = useProjectDraft<SpecificationSelection | undefined>('specification-choice', undefined)
   const selection = choice ?? spec?.selection ?? 'merge'
   const confirmed = spec?.status === 'confirmed'
 

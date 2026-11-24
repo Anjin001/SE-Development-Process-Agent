@@ -128,14 +128,21 @@ export function mapWorkbenchSnapshot(
   }
 }
 
+export function isRunCurrent(current: Run, incoming: Run) {
+  return current.id === incoming.id && sameVersion(current.plan_ref, incoming.plan_ref)
+    && incoming.revision >= current.revision && incoming.latest_event_seq >= current.latest_event_seq
+    && (incoming.revision !== current.revision || incoming.latest_event_seq === current.latest_event_seq)
+    && (current.state === 'active' || incoming.state === current.state)
+}
+
 export function applyRunUpdate(snapshot: WorkbenchSnapshot, incoming: Run, events: readonly RunEvent[]) {
   if (snapshot.run?.id !== incoming.id || !sameVersion(snapshot.run.plan_ref, incoming.plan_ref)) return snapshot
-  const run = incoming.revision >= snapshot.run.revision ? incoming : snapshot.run
+  const run = incoming.revision > snapshot.run.revision && isRunCurrent(snapshot.run, incoming) ? incoming : snapshot.run
   const { id, plan_ref, state, started_at, ended_at } = run
   const project = {
     ...snapshot.projectData,
     stage: snapshot.projectData.stage === 'execution' && state === 'completed' ? 'completed' as const : snapshot.projectData.stage,
     runs: snapshot.projectData.runs.map((item) => item.id === id ? { id, plan_ref, state, started_at, ended_at } : item),
   }
-  return mapWorkbenchSnapshot(project, snapshot.plan?.source ?? null, run, [...snapshot.runEvents, ...events], snapshot.latestPlan?.source ?? null)
+  return mapWorkbenchSnapshot(project, snapshot.plan?.source ?? null, run, [...events, ...snapshot.runEvents], snapshot.latestPlan?.source ?? null)
 }

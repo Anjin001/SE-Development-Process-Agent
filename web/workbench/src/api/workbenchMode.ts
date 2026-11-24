@@ -1,4 +1,4 @@
-import { mockWorkbenchApi } from './mockWorkbenchApi'
+import { createMockWorkbenchApi } from './mockWorkbenchApi'
 import { createPartialV2Api, createPartialWorkbench } from './partialV2Api'
 import { WorkbenchApiError } from './workbenchApi'
 
@@ -11,7 +11,7 @@ export interface WorkbenchEnvironment {
 
 export async function resolveWorkbench(env: WorkbenchEnvironment, fetcher: typeof fetch = fetch) {
   const mode = env.VITE_WORKBENCH_MODE?.trim() || 'mock'
-  if (mode === 'mock') return { api: mockWorkbenchApi, message: '' }
+  if (mode === 'mock') return { api: createMockWorkbenchApi(), message: 'Mock 模式 · 当前使用本地演示数据。' }
   if (mode !== 'v2') throw new Error('VITE_WORKBENCH_MODE 须为 mock 或 v2。')
   const projectId = env.VITE_WORKBENCH_PROJECT_ID?.trim()
   if (!projectId) throw new Error('v2 模式需要配置已有的测试项目 ID。')
@@ -27,8 +27,10 @@ export async function resolveWorkbench(env: WorkbenchEnvironment, fetcher: typeo
     await client.getProject()
   } catch (error) {
     if (error instanceof WorkbenchApiError && error.status === 404) {
-      return { api: mockWorkbenchApi,
-        message: `标准项目入口 /api/v2/projects/${encodeURIComponent(projectId)} 返回 404。当前使用独立 Mock 演示，未连接真实项目。` }
+      throw new WorkbenchApiError(
+        '标准 v2 项目入口返回 404。请核对项目 ID 或服务版本。需要离线演示时，请显式将 VITE_WORKBENCH_MODE 设为 mock。',
+        error.code, error.status, error.details,
+      )
     }
     throw error
   }

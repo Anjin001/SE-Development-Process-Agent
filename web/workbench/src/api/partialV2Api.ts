@@ -1,6 +1,6 @@
-import type { PlanResponse, UpdatePlanRequest, VersionRef } from '../types/v2'
+import type { PlanResponse, UpdatePlanRequest } from '../types/v2'
 import { mapWorkbenchSnapshot } from './mapWorkbenchSnapshot'
-import { mapV2Events, mapV2Plan, mapV2Project } from './v2Mapping'
+import { mapV2UpdatedPlan, validateV2Bindings } from './v2Mapping'
 import { createV2ReadApi, createV2Writer, WorkbenchApiError } from './workbenchApi'
 import type { WorkbenchApi } from './workbenchApi'
 
@@ -9,16 +9,11 @@ export function createPartialV2Api(projectId: string, request: typeof fetch = fe
   const path = (id: string) => `/api/v2/projects/${encodeURIComponent(projectId)}/plans/${encodeURIComponent(id)}`
   const write = createV2Writer<PlanResponse>(request)
   return {
-    getProject: async () => mapV2Project(await reads.getProject(), projectId),
-    getPlan: async (ref: VersionRef) => mapV2Plan(await reads.getPlan(ref), ref.id, ref.version),
-    getEvents: async (runId: string, after = 0, limit = 100) => mapV2Events(await reads.getEvents(runId, after, limit), runId, after),
-    patchPlan: (planId: string, body: UpdatePlanRequest) => write(path(planId), body, async (response) => {
-      const result = mapV2Plan(await response.json() as PlanResponse, planId)
-      if (result.plan.version <= body.expected_version) {
-        throw new WorkbenchApiError('服务未返回更新后的计划版本。', 'INVALID_RESPONSE', 0)
-      }
-      return result
-    }, 'PATCH'),
+    getProject: reads.getProject,
+    getPlan: reads.getPlan,
+    getEvents: reads.getEvents,
+    patchPlan: (planId: string, body: UpdatePlanRequest) => write(path(planId), body, async (response) =>
+      mapV2UpdatedPlan(await response.json(), planId, body.expected_version), 'PATCH'),
   }
 }
 
@@ -26,9 +21,13 @@ export function createPartialV2Api(projectId: string, request: typeof fetch = fe
 // shared HTTP contract matches the workbench's snapshot and review payloads.
 export function createPartialWorkbench(projectId: string, api: ReturnType<typeof createPartialV2Api>, writablePlanId?: string): WorkbenchApi {
   return {
-    async getSnapshot() {
+    async getSnapshot(id = projectId) {
+      if (id !== projectId) {
+        throw new WorkbenchApiError('此连接未绑定请求的项目。', 'FORBIDDEN', 403)
+      }
       const project = await api.getProject()
       const plan = project.latest_plan_ref ? await api.getPlan(project.latest_plan_ref) : null
+      validateV2Bindings(project, plan, plan, null)
       return mapWorkbenchSnapshot(project, plan, null, [])
     },
     savePlan: writablePlanId ? async (id, planId, body) => {
@@ -40,7 +39,9 @@ export function createPartialWorkbench(projectId: string, api: ReturnType<typeof
         throw new WorkbenchApiError('计划版本已更新。', 'VERSION_CONFLICT', 409)
       }
       const response = await api.patchPlan(planId, body)
-      return mapWorkbenchSnapshot({ ...project, latest_plan_ref: { id: response.plan.id, version: response.plan.version } }, response, null, [])
+      const updated = { ...project, latest_plan_ref: { id: response.plan.id, version: response.plan.version } }
+      validateV2Bindings(updated, response, response, null)
+      return mapWorkbenchSnapshot(updated, response, null, [])
     } : undefined,
   }
 }

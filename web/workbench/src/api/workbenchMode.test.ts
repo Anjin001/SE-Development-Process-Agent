@@ -7,13 +7,11 @@ const { project_snapshot: project, plan_response: plan, approval_event: event } 
 const root = `http://127.0.0.1:8008/api/v2/projects/${project.id}`
 const env = { VITE_WORKBENCH_MODE: 'v2', VITE_WORKBENCH_API_BASE: 'http://127.0.0.1:8008/', VITE_WORKBENCH_PROJECT_ID: project.id }
 
-it('默认 Mock 不请求网络，标准项目 404 才回退并保留原因', async () => {
+it('默认 Mock 不请求网络，真实项目 404 明确失败并提示显式切换 Mock', async () => {
   const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 404 }))
   expect((await resolveWorkbench({}, request)).api.loadRunDemo).toBeDefined()
   expect(request).not.toHaveBeenCalled()
-  const result = await resolveWorkbench(env, request)
-  expect(result.api.loadRunDemo).toBeDefined()
-  expect(result.message).toContain('404')
+  await expect(resolveWorkbench(env, request)).rejects.toMatchObject({ status: 404, message: expect.stringContaining('mock') })
   expect(request.mock.calls[0][0]).toBe(root)
   request.mockResolvedValue(new Response(null, { status: 503 }))
   await expect(resolveWorkbench(env, request)).rejects.toMatchObject({ status: 503 })

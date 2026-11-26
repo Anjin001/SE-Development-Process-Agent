@@ -182,14 +182,26 @@ class Handler(WorkbenchHandler):
             project_id, suffix = match.groups()
             workspace.reviews.get(project_id)
             if self.command == "GET":
+                patch = re.fullmatch(r"runs/([^/]+)/tasks/([^/]+)/patch", suffix or "")
+                if patch:
+                    self.respond(200, workspace.review_patch(
+                        project_id, *patch.groups(), output_id=query.get("output", [None])[0],
+                        against=query.get("against", ["checkout"])[0]))
+                    return
+                inputs = re.fullmatch(r"runs/([^/]+)/tasks/([^/]+)/worktree-inputs", suffix or "")
+                if inputs:
+                    self.respond(200, workspace.worktree_inputs(project_id, *inputs.groups()))
+                    return
                 with workspace.database._lock:
                     if suffix is None:
                         result = workspace.project(project_id)
+                    elif suffix == "profiles":
+                        result = dict(items=workspace.profiles(project_id))
                     elif suffix == "memory":
                         terms = query.get("terms", [""])[0].replace("，", ",").split(",")
                         result = dict(items=workspace.experiences(
                             project_id, [term.strip() for term in terms if term.strip()],
-                            query.get("domain", [""])[0]))
+                            query.get("domain", [""])[0]), baseline=workspace.experience_baseline(project_id))
                     elif suffix == "memory/records":
                         result = dict(items=workspace.database.memory.list_records(
                             project_id, workspace.actor, "retrospective"))
@@ -234,10 +246,19 @@ class Handler(WorkbenchHandler):
                 if suffix and re.fullmatch(r"runs/[^/]+/actions/[a-z-]+", suffix):
                     _, run_id, _, action = suffix.split("/")
                     return 200, workspace.action(project_id, run_id, action, body)
+                if suffix == "model-budget":
+                    self.require_local_json()
+                    return 200, workspace.save_model_budget(project_id, body.get("model_budget"))
+                if suffix == "profiles":
+                    self.require_local_json()
+                    return 200, workspace.save_profile(project_id, body)
                 if suffix == "memory":
                     return 201, workspace.record_experience(project_id, body)
                 if suffix == "memory/baseline":
                     return 200, workspace.refresh_baseline(project_id)
+                if suffix == "memory/publish-cards":
+                    self.require_local_json()
+                    return 200, dict(items=workspace.publish_cards(project_id, body.get("cards")))
                 if suffix == "memory/publish":
                     ref = workspace.publish_experience(
                         project_id, body["ref"], body["expected_version"], body.get("note", ""))

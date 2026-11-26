@@ -9,6 +9,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
+    #graph-node-inspector .node-summary-value { display: inline-block; max-width: 100%; vertical-align: bottom; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #graph-node-inspector .node-summary-row { min-width: 0; max-width: 100%; }
     #info-modal { margin: auto; width: min(52rem, 94vw); padding: 0; border-radius: .75rem; }
     #info-modal::backdrop { background: rgba(15, 23, 42, .45); }
     .info-modal-panel { display: flex; flex-direction: column; gap: .75rem; max-height: 82vh; }
@@ -70,7 +72,7 @@
       box-shadow: 0 0 0 2px #4f46e5, 0 4px 12px rgba(79, 70, 229, 0.18);
     }
     .graph-node[data-status="completed"] { border: 1.5px solid #86efac; }
-    .graph-node[data-status="in_progress"] { border: 1.5px solid #fbbf24; background: #fffbeb; }
+    .graph-node[data-status="running"], .graph-node[data-status="in_progress"] { border: 1.5px solid #fbbf24; background: #fffbeb; }
     .graph-node[data-status="failed"] { border: 1.5px solid #fca5a5; background: #fef2f2; }
     .graph-node[data-status="pending"] { border: 1.5px solid #cbd5e1; background: #f8fafc; }
 
@@ -384,9 +386,9 @@
                 </div>
               </div>
 
-              <div id="graph-node-inspector" class="absolute bottom-3 left-4 z-20 bg-white/95 backdrop-blur-xs border border-slate-200 rounded-xl p-3 shadow-md max-w-md text-xs space-y-1.5"></div>
+              <div id="graph-node-inspector" class="absolute bottom-3 left-4 z-30 bg-white/95 backdrop-blur-xs border border-slate-200 rounded-xl p-3 shadow-md max-w-md text-xs space-y-1.5"></div>
 
-              <div id="graph-demo-legend" class="absolute bottom-3 right-4 z-20 bg-white/95 backdrop-blur-xs border border-slate-200 rounded-lg px-3 py-1.5 shadow-2xs flex items-center gap-3 text-[11px] text-slate-600">
+              <div id="graph-demo-legend" class="pointer-events-none absolute bottom-3 right-4 z-20 bg-white/95 backdrop-blur-xs border border-slate-200 rounded-lg px-3 py-1.5 shadow-2xs flex items-center gap-3 text-[11px] text-slate-600">
                 <span class="flex items-center gap-1.5">
                   <span class="w-2.5 h-2.5 rounded-xs border border-indigo-400 bg-indigo-50 inline-block"></span>
                   <span>Phase 阶段容器</span>
@@ -532,8 +534,12 @@
     function getExpCards() { return expCardsByProject[currentProjectKey]; }
 
     // Universal Human Node Edit & Custom Requirement Modal (works for EVERY node in EVERY phase!)
-    function openNodeEditModal(taskId) {
-      const t = findTask(taskId || selectedTaskId);
+    function openNodeEditModal(taskId, liveModel = null) {
+      if (!liveModel && plannerLink?.isFullWorkspace) {
+        plannerLink.editTask(taskId || selectedTaskId);
+        return;
+      }
+      const t = liveModel ? {id: taskId, ...liveModel} : findTask(taskId || selectedTaskId);
       if (!t) return;
       q('#info-modal-title').textContent = `修改节点与输入人工要求 · ${t.id} ${t.name}`;
       const body = q('#info-modal-body');
@@ -568,7 +574,44 @@
       const btnRow = el('div', undefined, 'flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-slate-100');
       const saveOnlyBtn = el('button', '保存修改与要求', 'px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold');
       saveOnlyBtn.type = 'button';
-      const applyChanges = (triggerRerun) => {
+      const status = el('p', '', 'text-xs text-slate-600');
+      status.setAttribute('role', 'status');
+      if (liveModel) {
+        fWt.inp.readOnly = true;
+        for (const field of [fName, fOwner, fEst, fSpec, fOut]) field.inp.readOnly = !t.editable;
+        reqTa.readOnly = !t.editable;
+        saveOnlyBtn.disabled = !t.editable;
+        status.textContent = t.editable
+          ? (t.runVersion != null
+            ? `正在运行的任务继续使用 Plan v${t.runVersion}，保存后可在顶部「最新计划」中查看修改。`
+            : '保存会生成新版计划，工作区路径由运行时分配。')
+          : '请暂停主理人或进入开工确认点，并先保存任务分解页的未提交修改。';
+      }
+      const applyChanges = async (triggerRerun) => {
+        if (liveModel) {
+          const estimateSeconds = Math.round(Number(fEst.inp.value) * 60);
+          if (!Number.isSafeInteger(estimateSeconds) || estimateSeconds <= 0) {
+            status.textContent = '请输入大于零的估时。';
+            return;
+          }
+          saveOnlyBtn.disabled = saveAndRerunBtn.disabled = true;
+          try {
+            const warning = await plannerLink.saveNodeEdit(t.id, liveModel, {
+              name: fName.inp.value.trim(), owner: fOwner.inp.value.trim(),
+              estimateSeconds, requirement: reqTa.value.trim(),
+              spec: fSpec.inp.value, output: fOut.inp.value, rerun: triggerRerun,
+            });
+            q('#info-modal').close();
+            toast(warning || (triggerRerun ? '已保存新版计划并启动新一轮执行' : '已保存节点 ' + t.id + ' 到新版计划'));
+            renderAll();
+          } catch (error) {
+            status.textContent = error.message;
+          } finally {
+            saveOnlyBtn.disabled = !t.editable;
+            saveAndRerunBtn.disabled = !t.editable || !!t.rerunBlocked;
+          }
+          return;
+        }
         t.name = fName.inp.value.trim() || t.name;
         t.owner = fOwner.inp.value.trim() || t.owner;
         t.estimateMin = Math.max(1, Number(fEst.inp.value) || t.estimateMin);
@@ -603,8 +646,11 @@
       saveAndRerunBtn.type = 'button';
       saveAndRerunBtn.addEventListener('click', () => applyChanges(true));
 
-      btnRow.append(saveOnlyBtn, saveAndRerunBtn);
-      body.append(grid, reqWrap, btnRow);
+      btnRow.append(saveOnlyBtn);
+      saveAndRerunBtn.disabled = !!liveModel && (!t.editable || !!t.rerunBlocked);
+      if (liveModel && t.rerunBlocked) saveAndRerunBtn.title = t.rerunBlocked;
+      btnRow.append(saveAndRerunBtn);
+      body.append(grid, reqWrap, status, btnRow);
       q('#info-modal-body').scrollTop = 0;
       q('#info-modal').showModal();
     }
@@ -1330,7 +1376,7 @@
       window.__seToast = setTimeout(() => box.classList.add('hidden'), 2600);
     }
 
-    function getActiveData() { return plannerLink?.graphData() || datasets[currentProjectKey]; }
+    function getActiveData() { return plannerLink?.graphData(datasets.lab) || datasets[currentProjectKey]; }
     function getIntakeState() { return intakeByProject[currentProjectKey]; }
     function getSynthesisState() { return synthesisByProject[currentProjectKey]; }
     function getMemoryState() { return memoryByProject[currentProjectKey]; }
@@ -1355,6 +1401,16 @@
           return { label: '已完成', dot: 'bg-emerald-500', icon: '✓', iconCls: 'text-emerald-600 bg-emerald-50 border-emerald-200', badgeCls: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
         case 'in_progress':
           return { label: 'Agent 审查中', dot: 'bg-amber-500', icon: '◔', iconCls: 'text-amber-600 bg-amber-50 border-amber-200', badgeCls: 'bg-amber-50 text-amber-700 border-amber-200' };
+        case 'running':
+          return { label: 'Agent 执行中', dot: 'bg-amber-500', icon: '◔', iconCls: 'text-amber-600 bg-amber-50 border-amber-200', badgeCls: 'bg-amber-50 text-amber-700 border-amber-200' };
+        case 'ready':
+          return { label: '待派发', dot: 'bg-blue-500', icon: '○', iconCls: 'text-blue-600 bg-blue-50 border-blue-200', badgeCls: 'bg-blue-50 text-blue-700 border-blue-200' };
+        case 'blocked':
+          return { label: '被上游阻塞', dot: 'bg-slate-400', icon: '○', iconCls: 'text-slate-400 bg-slate-100 border-slate-200', badgeCls: 'bg-slate-100 text-slate-600 border-slate-200' };
+        case 'input_required':
+          return { label: '等待人工确认', dot: 'bg-amber-500', icon: '○', iconCls: 'text-amber-600 bg-amber-50 border-amber-200', badgeCls: 'bg-amber-50 text-amber-700 border-amber-200' };
+        case 'planned':
+          return { label: '未启动', dot: 'bg-slate-400', icon: '○', iconCls: 'text-slate-400 bg-slate-100 border-slate-200', badgeCls: 'bg-slate-100 text-slate-600 border-slate-200' };
         case 'failed':
           return { label: '执行失败', dot: 'bg-red-500', icon: '!', iconCls: 'text-red-600 bg-red-50 border-red-200', badgeCls: 'bg-red-50 text-red-700 border-red-200' };
         default:
@@ -1365,13 +1421,22 @@
     // =========================================================================
     // 2. 新增右侧常驻主理侧边栏渲染器 (STAGE STEWARD)
     // =========================================================================
-    function renderRightStewardSidebar() {
+    function appendRuntimeSidebar(controls) {
+      if (!controls?.length) return;
+      const details = el('details', undefined, 'space-y-3');
+      details.append(el('summary', '运行详情与产物', 'cursor-pointer text-slate-700 font-semibold'), ...controls);
+      q('#steward-sidebar-body').append(details);
+    }
+
+    function renderRightStewardSidebar(live) {
       const body = q('#steward-sidebar-body');
+      const controls = live ? [...body.children].slice(1) : [];
+      if (live) live.controls = controls;
       body.replaceChildren();
 
       const caseName = currentProjectKey === 'lab' ? '实验室设备预约' : '自习室座位预约';
-      q('#steward-case-label').textContent = caseName;
-      q('#steward-parallel-label').textContent = `max_parallel = ${modelRouterConfig.maxParallel}`;
+      q('#steward-case-label').textContent = live?.title || caseName;
+      q('#steward-parallel-label').textContent = `max_parallel = ${live?.parallel ?? modelRouterConfig.maxParallel}`;
 
       const head = el('div', undefined, 'flex items-center justify-between');
       head.innerHTML = `
@@ -1381,7 +1446,7 @@
       body.append(head);
 
       if (activeModule === 'intake-race') {
-        const intakeState = getIntakeState();
+        const intakeState = live?.intake || getIntakeState();
         body.append(
           el('h3', '赛马出案主理 AI', 'text-sm font-bold text-slate-900'),
           el('p', '监控需求条目覆盖率与各组提示词差异，支持暂停赛马派发或向指定小组追加补充指令。', 'text-slate-600 leading-relaxed')
@@ -1391,7 +1456,7 @@
         checkBox.innerHTML = `
           <div class="font-semibold text-slate-800">赛马前检查</div>
           <div class="text-[11px] text-emerald-700">✓ 已提取需求：${intakeState.items.length} 条</div>
-          <div class="text-[11px] text-emerald-700">✓ 当前讨论组：${intakeState.groups.map((g) => g.id).join(' / ')} 组</div>
+          <div class="text-[11px] text-emerald-700">✓ 当前讨论组：${escapeHtml(intakeState.groups.map((g) => g.id).join(' / '))} 组</div>
         `;
         body.append(checkBox);
 
@@ -1401,7 +1466,9 @@
           `w-full py-2 px-3 rounded-lg font-semibold border transition ${intakeState.dispatchPaused ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'}`
         );
         pauseBtn.type = 'button';
+        pauseBtn.disabled = !!live && !live.canPauseRace;
         pauseBtn.addEventListener('click', () => {
+          if (live) return live.toggleRace();
           intakeState.dispatchPaused = !intakeState.dispatchPaused;
           toast(intakeState.dispatchPaused ? '已暂停赛马派发' : '已恢复赛马派发');
           renderAll();
@@ -1417,12 +1484,20 @@
           gSel.append(opt);
         }
         const noteTa = el('textarea', undefined, 'w-full h-16 border border-slate-300 rounded p-2 text-xs');
+        if (live) {
+          if (intakeState.groups.some(group => group.id === live.group)) gSel.value = live.group;
+          gSel.onchange = () => live.setGroup(gSel.value);
+          noteTa.value = live.feedback;
+          noteTa.oninput = () => live.setFeedback(noteTa.value);
+        }
         noteTa.placeholder = '输入负责人补充指令...';
         const sendInstBtn = el('button', '追加指令并重跑该组', 'w-full py-1.5 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold');
         sendInstBtn.type = 'button';
+        sendInstBtn.disabled = !!live && (intakeState.managed || intakeState.busy || !intakeState.locked || intakeState.dispatchPaused || !intakeState.groups.length);
         sendInstBtn.addEventListener('click', () => {
           const txt = noteTa.value.trim();
           if (!txt) { toast('请先输入补充指令'); return; }
+          if (live) return live.rerunGroup(gSel.value, txt);
           const target = intakeState.groups.find((x) => x.id === gSel.value);
           if (target) {
             target.prompt += `\n负责人补充指令：${txt}`;
@@ -1445,20 +1520,22 @@
         const routeCard = el('div', undefined, 'p-3 rounded-xl bg-white border border-slate-200 space-y-2');
         routeCard.append(el('strong', '选择方案整合起点', 'block text-slate-800'));
         const rSel = el('select', undefined, 'w-full border border-slate-300 rounded px-2 py-1.5 bg-white');
-        for (const [k, lbl] of [
+        for (const [k, lbl] of (live ? [['merge', '融合两组方案'], ...live.drafts.map(draft => [draft.id, `以 ${draft.id} 组草案为起点`])] : [
           ['merge', '融合两组方案'],
           ['A', '以 A 组草案为起点'],
           ['B', '以 B 组草案为起点']
-        ]) {
+        ])) {
           const opt = el('option', lbl);
           opt.value = k;
           rSel.append(opt);
         }
-        rSel.value = syn.baseRoute;
-        rSel.onchange = () => { syn.baseRoute = rSel.value; };
+        rSel.value = live?.selection || syn.baseRoute;
+        rSel.onchange = () => { if (live) live.selectRoute(rSel.value); else syn.baseRoute = rSel.value; };
         const genBtn = el('button', '重新生成一版草稿', 'w-full py-1.5 px-3 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold');
         genBtn.type = 'button';
+        genBtn.disabled = !!live && !live.canGenerate;
         genBtn.addEventListener('click', () => {
+          if (live) return live.generate();
           syn.currentVersion += 1;
           toast(`已按 ${syn.baseRoute} 起点生成 v${syn.currentVersion} 草稿`);
           renderAll();
@@ -1474,6 +1551,7 @@
         rwBtn.type = 'button';
         rwBtn.addEventListener('click', () => {
           const note = rwInp.value.trim() || '补充停用期间已有预约通知规则';
+          if (live) return live.rework(note);
           const g = getIntakeState().groups[1] || getIntakeState().groups[0];
           g.prompt += `\n评审退回补充：${note}`;
           toast(`已退回 ${g.id} 组补充`);
@@ -1496,10 +1574,10 @@
             <span class="mono font-bold text-indigo-600">${escapeHtml(sel.id)}</span>
             <span class="px-2 py-0.5 rounded border text-[10px] font-semibold ${meta.badgeCls}">${meta.label}</span>
           </div>
-          <div class="font-bold text-slate-800">${sel.name}</div>
-          <div class="text-[11px] text-slate-500">执行角色：${sel.owner}</div>
-          <div class="text-[11px] text-slate-500">规格来源：<span class="mono">${sel.spec}</span></div>
-          <div class="text-[11px] text-slate-500">当前交付：<span class="mono">${sel.output}</span></div>
+          <div class="font-bold text-slate-800">${escapeHtml(sel.name)}</div>
+          <div class="text-[11px] text-slate-500">执行角色：${escapeHtml(sel.owner)}</div>
+          <div class="text-[11px] text-slate-500">规格来源：<span class="mono">${escapeHtml(sel.spec)}</span></div>
+          <div class="text-[11px] text-slate-500">当前交付：<span class="mono">${escapeHtml(sel.output)}</span></div>
         `;
         body.append(selBox);
 
@@ -1522,7 +1600,9 @@
         if (failedTask) {
           const btnRetry = el('button', `🔄 重试失败任务 ${failedTask.id}`, 'w-full py-2 px-3 rounded-lg bg-red-600 hover:bg-red-500 text-white font-semibold transition');
           btnRetry.type = 'button';
+          btnRetry.disabled = !!live && !plannerLink.storageState().canRetrySession(failedTask.id);
           btnRetry.addEventListener('click', () => {
+            if (live) return plannerLink.retrySession(failedTask.id);
             const real = findTask(failedTask.id);
             real.status = 'completed';
             real.output = '预约服务提交 v1';
@@ -1543,17 +1623,21 @@
         body.append(editNodeSideBtn);
 
         const ctrlRow = el('div', undefined, 'grid grid-cols-2 gap-2');
-        const pauseBtn = el('button', dispatchPaused ? '▶ 继续派发' : '⏸ 暂停派发', `py-1.5 px-2 rounded-lg border text-[11px] font-semibold transition ${dispatchPaused ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'}`);
+        const paused = live?.paused ?? dispatchPaused;
+        const pauseBtn = el('button', paused ? '▶ 继续派发' : '⏸ 暂停派发', `py-1.5 px-2 rounded-lg border text-[11px] font-semibold transition ${paused ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'}`);
         pauseBtn.type = 'button';
+        pauseBtn.disabled = !!live && !live.canPause;
         pauseBtn.addEventListener('click', () => {
+          if (live) return live.togglePause();
           dispatchPaused = !dispatchPaused;
           addLog('执行控制', dispatchPaused ? '人工暂停派发新任务（已运行任务可回报）' : '人工恢复任务派发');
           toast(dispatchPaused ? '已暂停派发' : '已恢复派发');
           renderAll();
         });
-        const lockBtn = el('button', planLocked ? `🔓 升级 Plan v${planVersion + 1}` : `🔒 锁定 Plan v${planVersion}`, 'py-1.5 px-2 rounded-lg border border-indigo-200 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-700 text-[11px] font-semibold transition');
+        const lockBtn = el('button', live ? `🔒 查看 Plan v${live.version}` : planLocked ? `🔓 升级 Plan v${planVersion + 1}` : `🔒 锁定 Plan v${planVersion}`, 'py-1.5 px-2 rounded-lg border border-indigo-200 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-700 text-[11px] font-semibold transition');
         lockBtn.type = 'button';
         lockBtn.addEventListener('click', () => {
+          if (live) return live.configure();
           if (planLocked) {
             planVersion += 1;
             planLocked = false;
@@ -1571,6 +1655,10 @@
         ctrlRow.append(pauseBtn, lockBtn);
         body.append(ctrlRow);
 
+        if (live) {
+          appendRuntimeSidebar(controls);
+          return;
+        }
         const expMemCard = el('div', undefined, 'p-3 rounded-xl bg-amber-50/80 border border-amber-200 space-y-1');
         const exp = getMemoryState().experience;
         expMemCard.innerHTML = `
@@ -1586,60 +1674,108 @@
     // =========================================================================
 
     // 模块 0：项目主理人 (main 分支最新入口)
-    function renderModuleSteward(container) {
-      const wrap = el('div', undefined, 'max-w-5xl mx-auto space-y-4 text-xs');
-      const tasks = getAllTasks();
-      const done = tasks.filter((t) => t.status === 'completed').length;
+    function renderStewardOverview({title, version, done, total, stage, complete}) {
       const stages = ['需求快照', '并发赛马', '五维评审', '决策拍板', '任务分解', 'DAG 编排', '并行开发', '交付审阅', '集成交付'];
-      const curIdx = done === tasks.length ? 8 : (planLocked ? 6 : 5);
-
       const topCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-3');
       topCard.innerHTML = `
         <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
           <div>
             <span class="text-[11px] font-bold uppercase tracking-wider text-indigo-600">PROJECT STEWARD · 单对话驱动全流程</span>
-            <h2 class="text-base font-bold text-slate-900 mt-0.5">${currentProjectKey === 'lab' ? '实验室设备预约系统' : '自习室座位预约系统'} · Plan v${planVersion}</h2>
+            <h2 class="text-base font-bold text-slate-900 mt-0.5">${escapeHtml(title)} · Plan v${version ?? '—'}</h2>
           </div>
-          <span class="mono px-2.5 py-1 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-semibold">${done} / ${tasks.length} 项任务已完成</span>
+          <span class="mono px-2.5 py-1 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-semibold">${done} / ${total} 项任务已完成</span>
         </div>
       `;
       const pipeGrid = el('div', undefined, 'grid grid-cols-3 sm:grid-cols-9 gap-1.5');
+      pipeGrid.setAttribute('aria-label', '自动流水线');
       stages.forEach((st, idx) => {
         pipeGrid.append(el('div', st, `px-2 py-1.5 rounded-lg border text-center text-[11px] font-semibold ${
-          idx < curIdx ? 'bg-emerald-50 border-emerald-200 text-emerald-700' :
-          idx === curIdx ? 'bg-indigo-600 border-indigo-600 text-white' :
+          complete || idx < stage ? 'bg-emerald-50 border-emerald-200 text-emerald-700' :
+          idx === stage ? 'bg-indigo-600 border-indigo-600 text-white' :
           'bg-slate-50 border-slate-200 text-slate-400'
         }`));
       });
       topCard.append(pipeGrid);
 
-      const gateBar = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-4 shadow-2xs flex flex-wrap items-center justify-between gap-3');
-      gateBar.append(el('strong', 'Agent 自动化门禁策略（由代码审查 Agent 与验证器自动执行）', 'text-slate-800'));
-      const gatesWrap = el('div', undefined, 'flex flex-wrap items-center gap-4');
-      for (const [gk, glbl] of [['review', '代码审查 Agent 门禁'], ['plan', 'DAG 无环与契约门禁'], ['delivery', '自动修复与回归门禁']]) {
-        const lbl = el('label', undefined, 'inline-flex items-center gap-1.5 cursor-pointer font-medium text-slate-700');
-        const cb = el('input');
-        cb.type = 'checkbox';
-        cb.checked = !!stewardState.gates[gk];
-        cb.addEventListener('change', () => {
-          stewardState.gates[gk] = cb.checked;
-          toast(`${glbl}已${cb.checked ? '开启' : '关闭'}`);
-        });
-        lbl.append(cb, el('span', glbl));
-        gatesWrap.append(lbl);
-      }
-      gateBar.append(gatesWrap);
+      return topCard;
+    }
+
+    function renderStewardMessage(message) {
+      const user = message.role === 'user';
+      return el('div', `${user ? '负责人：' : '项目主理人：'}${message.text}`,
+        `p-3 rounded-lg leading-relaxed whitespace-pre-wrap ${user ? 'bg-indigo-50 border border-indigo-200 text-indigo-900 ml-8' : 'bg-slate-50 border border-slate-200 text-slate-700 mr-8'}`);
+    }
+
+    function renderStewardComposer(send) {
+      const row = el('div', undefined, 'flex gap-2');
+      const input = el('textarea', undefined, 'flex-1 min-w-0 resize-none border border-slate-300 rounded-lg px-3 py-2 text-xs');
+      input.rows = 1;
+      input.placeholder = '输入主理指令（例如：推进一轮 / 重试失败任务 / 打开甘特图 / 进入工作台）';
+      input.setAttribute('aria-label', '输入主理指令');
+      const button = el('button', '发送指令', 'px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold');
+      button.type = 'button';
+      button.addEventListener('click', () => send(input.value));
+      input.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && !event.isComposing && !event.shiftKey) {
+          event.preventDefault();
+          if (!button.disabled) send(input.value);
+        }
+      });
+      row.append(input, button);
+      return {row, input, button};
+    }
+
+    function renderStewardGates({title, options, selected, change}) {
+      const bar = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-4 shadow-2xs flex flex-wrap items-center justify-between gap-3');
+      bar.append(el('strong', title, 'text-slate-800'));
+      const group = el('div', undefined, 'flex flex-wrap items-center gap-4');
+      const inputs = options.map(([key, label]) => {
+        const item = el('label', undefined, 'inline-flex items-center gap-1.5 cursor-pointer font-medium text-slate-700');
+        const input = el('input');
+        input.type = 'checkbox';
+        input.checked = selected.includes(key);
+        input.addEventListener('change', () => change(key, input.checked, label));
+        item.append(input, el('span', label));
+        group.append(item);
+        return {key, input};
+      });
+      bar.append(group);
+      return {bar, inputs};
+    }
+
+    function renderStewardLayout(overview, gates, conversation, ...details) {
+      const wrap = el('div', undefined, 'max-w-5xl mx-auto space-y-4 text-xs');
+      wrap.append(overview, gates, conversation, ...details);
+      return wrap;
+    }
+
+    function renderModuleSteward(container) {
+      const tasks = getAllTasks();
+      const done = tasks.filter((t) => t.status === 'completed').length;
+      const curIdx = done === tasks.length ? 8 : (planLocked ? 6 : 5);
+
+      const topCard = renderStewardOverview({
+        title: currentProjectKey === 'lab' ? '实验室设备预约系统' : '自习室座位预约系统',
+        version: planVersion, done, total: tasks.length, stage: curIdx,
+      });
+
+      const {bar:gateBar} = renderStewardGates({
+        title:'Agent 自动化门禁策略（由代码审查 Agent 与验证器自动执行）',
+        options:[['review', '代码审查 Agent 门禁'], ['plan', 'DAG 无环与契约门禁'], ['delivery', '自动修复与回归门禁']],
+        selected:Object.keys(stewardState.gates).filter(key => stewardState.gates[key]),
+        change(key, checked, label) {
+          stewardState.gates[key] = checked;
+          toast(`${label}已${checked ? '开启' : '关闭'}`);
+        },
+      });
 
       const chatCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-3');
       const msgBox = el('div', undefined, 'space-y-2 max-h-64 overflow-y-auto');
       for (const m of stewardState.chat) {
-        msgBox.append(el('div', `${m.role === 'user' ? '负责人：' : '项目主理人：'}${m.text}`, `p-3 rounded-lg leading-relaxed ${m.role === 'user' ? 'bg-indigo-50 border border-indigo-200 text-indigo-900 ml-8' : 'bg-slate-50 border border-slate-200 text-slate-700 mr-8'}`));
+        msgBox.append(renderStewardMessage(m));
       }
-      const inputRow = el('div', undefined, 'flex gap-2');
-      const chatInp = el('input', undefined, 'flex-1 border border-slate-300 rounded-lg px-3 py-2 text-xs');
-      chatInp.placeholder = '输入主理指令（例如：推进一轮 / 重试失败任务 / 打开甘特图 / 进入工作台）';
-      const sendMsg = () => {
-        const val = chatInp.value.trim();
+      const {row: inputRow} = renderStewardComposer(value => {
+        const val = value.trim();
         if (!val) return;
         stewardState.chat.push({ role: 'user', text: val });
         if (val.includes('甘特')) {
@@ -1660,21 +1796,16 @@
           addLog('项目主理人', `记录指令：${val}`);
         }
         renderAll();
-      };
-      chatInp.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendMsg(); });
-      const sendBtn = el('button', '发送指令', 'px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold');
-      sendBtn.type = 'button';
-      sendBtn.addEventListener('click', sendMsg);
-      inputRow.append(chatInp, sendBtn);
+      });
       chatCard.append(msgBox, inputRow);
 
-      wrap.append(topCard, gateBar, chatCard);
-      container.append(wrap);
+      container.append(renderStewardLayout(topCard, gateBar, chatCard));
     }
 
     // 模块 1：需求快照与赛马出案
     function renderModuleIntakeRace(container) {
-      const intakeState = getIntakeState();
+      const live = plannerLink?.intakePage();
+      const intakeState = live || getIntakeState();
       const wrap = el('div', undefined, 'max-w-5xl mx-auto space-y-5 text-xs');
 
       const sec1 = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-3');
@@ -1697,14 +1828,15 @@
       const leftCol = el('div', undefined, 'lg:col-span-7 space-y-2.5');
       const ta = el('textarea', undefined, `w-full h-44 p-3 rounded-lg border mono text-xs leading-relaxed ${intakeState.locked ? 'bg-slate-100 border-slate-200 text-slate-600' : 'bg-white border-slate-300 text-slate-800 focus:border-indigo-600 focus:outline-none'}`);
       ta.value = intakeState.markdown;
-      ta.readOnly = intakeState.locked;
-      ta.addEventListener('input', () => { intakeState.markdown = ta.value; });
+      ta.readOnly = intakeState.locked || !!live?.busy;
+      ta.addEventListener('input', () => { if (live) live.input(ta.value); else intakeState.markdown = ta.value; });
 
       const btnRow = el('div', undefined, 'flex flex-wrap items-center gap-2');
       const freezeBtn = el('button', '确认需求快照', 'px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-semibold transition');
       freezeBtn.type = 'button';
-      freezeBtn.disabled = intakeState.locked;
+      freezeBtn.disabled = intakeState.locked || !!live?.busy;
       freezeBtn.addEventListener('click', () => {
+        if (live) return live.freeze();
         parseMarkdownItems(currentProjectKey);
         intakeState.locked = true;
         q('#sidebar-req-ver').textContent = `REQ-01@v${intakeState.version}`;
@@ -1714,8 +1846,9 @@
 
       const editNewVerBtn = el('button', '编辑并创建新版本', 'px-3.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 disabled:opacity-40 text-slate-700 border border-slate-300 font-semibold transition');
       editNewVerBtn.type = 'button';
-      editNewVerBtn.disabled = !intakeState.locked;
+      editNewVerBtn.disabled = !intakeState.locked || !!live?.busy;
       editNewVerBtn.addEventListener('click', () => {
+        if (live) return live.unlock();
         intakeState.locked = false;
         intakeState.version += 1;
         toast(`已解锁编辑器，下次确认将生成新版本 v${intakeState.version}`);
@@ -1730,13 +1863,14 @@
       const itemList = el('div', undefined, 'space-y-1.5 max-h-40 overflow-y-auto');
       for (const it of intakeState.items) {
         const row = el('div', undefined, 'p-2 bg-white rounded border border-slate-200/80 flex items-start justify-between gap-2');
-        row.innerHTML = `<div><span class="mono font-bold text-indigo-600 mr-1.5">${it.id}</span><span>${it.text}</span></div><span class="mono text-[10px] text-slate-400 shrink-0">L${it.line}</span>`;
+        row.innerHTML = `<div><span class="mono font-bold text-indigo-600 mr-1.5">${it.id}</span><span>${escapeHtml(it.text)}</span></div><span class="mono text-[10px] text-slate-400 shrink-0">L${it.line}</span>`;
         itemList.append(row);
       }
       rightCol.append(itemList);
       grid1.append(leftCol, rightCol);
       sec1.append(grid1);
       wrap.append(sec1);
+      if (live?.managed) live.appendControls(wrap);
 
       // 阶段2：赛马讨论组与提示词自由配置
       const sec2 = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-4');
@@ -1750,7 +1884,9 @@
       const sec2Btns = el('div', undefined, 'flex flex-wrap items-center gap-2');
       const addGroupBtn = el('button', '+ 添加讨论组', 'px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-semibold transition');
       addGroupBtn.type = 'button';
+      addGroupBtn.disabled = !!live?.busy;
       addGroupBtn.addEventListener('click', () => {
+        if (live) return live.add();
         const usedIds = new Set(intakeState.groups.map((g) => g.id));
         const alphabet = 'CDEFGHIJKLMN';
         let nextId = 'C';
@@ -1772,7 +1908,9 @@
 
       const runRaceBtn = el('button', '🚀 启动赛马生成草案', 'px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition');
       runRaceBtn.type = 'button';
+      runRaceBtn.disabled = !!live && (!live.locked || live.busy || live.dispatchPaused);
       runRaceBtn.addEventListener('click', () => {
+        if (live) return live.race();
         if (intakeState.dispatchPaused) {
           toast('当前已暂停派发，请先在右侧主理栏恢复派发');
           return;
@@ -1808,7 +1946,8 @@
       const failChk = el('input');
       failChk.type = 'checkbox';
       failChk.checked = intakeState.simulateBFailure;
-      failChk.addEventListener('change', () => { intakeState.simulateBFailure = failChk.checked; });
+      failChk.disabled = !!live?.managed;
+      failChk.addEventListener('change', () => { if (live) live.fail(failChk.checked); else intakeState.simulateBFailure = failChk.checked; });
       failToggle.append(failChk, el('span', '模拟 B 组首次中断'));
       sec2.append(failToggle);
 
@@ -1823,7 +1962,9 @@
             : (() => {
                 const rmBtn = el('button', `移除 ${g.id} 组`, 'text-[11px] text-red-600 hover:underline font-semibold');
                 rmBtn.type = 'button';
+                rmBtn.disabled = !!live?.busy;
                 rmBtn.addEventListener('click', () => {
+                  if (live) return live.remove(g.id);
                   intakeState.groups = intakeState.groups.filter((x) => x.id !== g.id);
                   toast(`已移除 ${g.id} 组`);
                   renderAll();
@@ -1833,7 +1974,13 @@
         );
         const pInput = el('textarea', undefined, 'w-full h-20 p-2 rounded border border-slate-300 bg-white text-xs leading-relaxed');
         pInput.value = g.prompt;
-        pInput.addEventListener('input', () => { g.prompt = pInput.value; });
+        pInput.disabled = !!live?.busy;
+        pInput.addEventListener('input', () => {
+          if (live) {
+            live.prompt(g.id, pInput.value);
+            q('#shared-race-handoff')?.setAttribute('disabled', '');
+          } else g.prompt = pInput.value;
+        });
         gCard.append(gTop, pInput);
         groupList.append(gCard);
       }
@@ -1848,7 +1995,10 @@
         (() => {
           const goReviewBtn = el('button', '交接至「评审与方案整合」 →', 'px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition');
           goReviewBtn.type = 'button';
+          goReviewBtn.id = 'shared-race-handoff';
+          goReviewBtn.disabled = !!live && (!live.complete || live.busy);
           goReviewBtn.addEventListener('click', () => {
+            if (live) return live.handoff();
             switchModule('review-synthesis', '评审与方案整合');
           });
           return goReviewBtn;
@@ -1861,17 +2011,19 @@
         const dCard = el('div', undefined, `p-4 rounded-xl border space-y-2 ${g.status === 'failed' ? 'bg-red-50/70 border-red-300' : 'bg-slate-50/70 border-slate-200'}`);
         dCard.innerHTML = `
           <div class="flex items-center justify-between">
-            <strong class="text-slate-900">${g.draftTitle}</strong>
+            <strong class="text-slate-900">${escapeHtml(g.draftTitle)}</strong>
             <span class="px-2 py-0.5 rounded text-[10px] font-semibold ${g.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}">
-              ${g.status === 'failed' ? '执行中断' : `已生成 · REQ-01@v${intakeState.version}`}
+              ${g.status === 'failed' ? '执行中断' : live && !live.complete ? (g.status === 'running' ? '正在出案' : g.status === 'done' ? '已提交' : '等待出案') : `已生成 · REQ-01@v${intakeState.version}`}
             </span>
           </div>
-          <p class="text-slate-600 leading-relaxed">${g.summary || '点击上方「启动赛马」生成本组草案。'}</p>
+          <p class="text-slate-600 leading-relaxed">${escapeHtml(g.summary || '点击上方「启动赛马」生成本组草案。')}</p>
         `;
         if (g.status === 'failed') {
           const retryBtn = el('button', `重试 ${g.id} 组出案`, 'px-3 py-1 rounded bg-red-600 text-white font-semibold text-xs');
           retryBtn.type = 'button';
+          retryBtn.disabled = !!live && (live.busy || live.dispatchPaused);
           retryBtn.addEventListener('click', () => {
+            if (live) return live.retry(g.id);
             g.status = 'done';
             g.summary = `重试成功：已按 ${g.id} 组提示词完成草案生成，补充停用设备自动取消预约与通知规则。`;
             toast(`${g.id} 组重试成功`);
@@ -1889,7 +2041,8 @@
 
     // 模块 2：评审与方案整合 (移除人为评分输入框，改为只读展示评分与理由)
     function renderModuleReviewSynthesis(container) {
-      const synthesisState = getSynthesisState();
+      const live = plannerLink?.reviewPage();
+      const synthesisState = live || getSynthesisState();
       const intakeState = getIntakeState();
       const wrap = el('div', undefined, 'max-w-5xl mx-auto space-y-5 text-xs');
 
@@ -1904,6 +2057,7 @@
         const b = el('button', lbl, `px-3 py-1.5 rounded-lg font-semibold transition ${synthesisState.subStep === k ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`);
         b.type = 'button';
         b.addEventListener('click', () => {
+          if (live) return live.tab(k);
           synthesisState.subStep = k;
           renderAll();
         });
@@ -1913,7 +2067,9 @@
       const presetBtns = el('div', undefined, 'flex items-center gap-2');
       const loadConflictBtn = el('button', '加载已有预约取舍演示', 'px-2.5 py-1.5 rounded border border-slate-300 hover:bg-slate-100 text-slate-700 font-medium');
       loadConflictBtn.type = 'button';
+      loadConflictBtn.disabled = !!live && (live.busy || live.managed);
       loadConflictBtn.addEventListener('click', () => {
+        if (live) return live.example();
         synthesisState.openItems[0].answer = '';
         synthesisState.confirmed = false;
         toast('已加载取舍演示数据，待决项等待人工答复');
@@ -1922,26 +2078,42 @@
       presetBtns.append(loadConflictBtn);
       topCard.append(stepTabs, presetBtns);
       wrap.append(topCard);
+      if (live?.waiting) {
+        const pending = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-3');
+        live.appendControls(pending);
+        wrap.append(pending);
+        container.append(wrap);
+        return;
+      }
+      if (live?.error) wrap.append(el('p', live.error, 'text-red-700'));
+      if (live?.managed) live.appendControls(wrap);
+      const liveButton = (label, callback) => {
+        const btn = el('button', label, 'px-3 py-1.5 rounded-lg bg-indigo-600 text-white font-semibold');
+        btn.type = 'button'; btn.onclick = callback;
+        btn.disabled = live.busy || live.managed;
+        return btn;
+      };
 
       if (synthesisState.subStep === 'handoff') {
         const handoffBox = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-3');
         handoffBox.innerHTML = `
-          <strong class="text-sm text-slate-900 block">上游赛马交接数据包校验 · REQ-01@v${intakeState.version}</strong>
-          <p class="text-slate-600">已同步需求快照（${intakeState.items.length} 条需求）与 ${intakeState.groups.length} 份赛马草案，结构与版本引用校验通过。</p>
+          <strong class="text-sm text-slate-900 block">上游赛马交接数据包校验 · ${escapeHtml(live ? live.requirement.id : "REQ-01")}@v${live ? live.requirement.version : intakeState.version}</strong>
+          <p class="text-slate-600">已同步需求快照（${live ? live.requirement.items.length : intakeState.items.length} 条需求）与 ${live ? live.drafts.length : intakeState.groups.length} 份赛马草案，结构与版本引用校验通过。</p>
         `;
-        const pre = el('pre', JSON.stringify({ requirement: { id: 'REQ-01', version: intakeState.version, items: intakeState.items }, drafts: intakeState.groups.map((g) => ({ id: g.id, title: g.draftTitle, claims: g.claims })) }, null, 2), 'p-4 rounded-xl bg-slate-900 text-emerald-300 mono text-xs overflow-x-auto max-h-80');
+        const pre = el('pre', JSON.stringify(live ? {requirement:live.requirement,drafts:live.drafts} : { requirement: { id: 'REQ-01', version: intakeState.version, items: intakeState.items }, drafts: intakeState.groups.map((g) => ({ id: g.id, title: g.draftTitle, claims: g.claims })) }, null, 2), 'p-4 rounded-xl bg-slate-900 text-emerald-300 mono text-xs overflow-x-auto max-h-80');
         handoffBox.append(pre);
+        if (live) handoffBox.append(liveButton('生成独立评价', live.evaluate));
         wrap.append(handoffBox);
 
       } else if (synthesisState.subStep === 'eval') {
         // 独立评价结果：只读展示分数与理由，不提供人为修改输入框
         const evalBox = el('div', undefined, 'grid grid-cols-1 md:grid-cols-2 gap-4');
-        for (const gId of ['A', 'B']) {
+        for (const gId of live ? live.groupIds : ['A', 'B']) {
           const ev = synthesisState.evaluations[gId];
           const card = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-3.5 shadow-2xs');
           card.innerHTML = `
             <div class="flex items-center justify-between border-b border-slate-100 pb-2.5">
-              <strong class="text-sm text-slate-900">草案 ${gId} 独立评价</strong>
+              <strong class="text-sm text-slate-900">草案 ${escapeHtml(gId)} 独立评价</strong>
               <span class="mono text-[11px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded font-semibold">评审 Agent 评分</span>
             </div>
             <div class="grid grid-cols-3 gap-2.5 text-center">
@@ -1959,15 +2131,19 @@
               </div>
             </div>
             <div class="p-3 rounded-lg bg-slate-50 border border-slate-200/80 space-y-1">
-              <div class="text-[11px] font-semibold text-slate-700">评分理由与关联主张 · ${ev.claims}</div>
-              <p class="text-slate-600 leading-relaxed">${ev.reason}</p>
+              <div class="text-[11px] font-semibold text-slate-700">评分理由与关联主张 · ${escapeHtml(ev.claims)}</div>
+              <p class="text-slate-600 leading-relaxed">${escapeHtml(ev.reason)}</p>
             </div>
           `;
           evalBox.append(card);
         }
         wrap.append(evalBox);
+        if (live && !live.groupIds.length) wrap.append(liveButton('生成独立评价', live.evaluate));
 
       } else if (synthesisState.subStep === 'spec') {
+        if (live && !live.hasSpec) {
+          wrap.append(liveButton('生成综合方案', live.propose)); container.append(wrap); return;
+        }
         const specWrap = el('div', undefined, 'space-y-4');
 
         // Open items editor
@@ -1975,15 +2151,18 @@
         openCard.append(el('strong', '1. 待决问题处理 · 人工填写答复并写入决策', 'text-sm text-amber-950 block'));
         for (const item of synthesisState.openItems) {
           const row = el('div', undefined, 'bg-white p-3.5 rounded-lg border border-amber-200 space-y-2');
-          row.innerHTML = `<div class="font-semibold text-slate-800">${item.id} · ${item.affectedReq}：${item.question}</div>`;
+          row.innerHTML = `<div class="font-semibold text-slate-800">${escapeHtml(item.id)} · ${escapeHtml(item.affectedReq)}：${escapeHtml(item.question)}</div>`;
           const ansInput = el('input', undefined, 'w-full border border-slate-300 rounded-lg px-3 py-1.5 text-xs');
           ansInput.value = item.answer;
+          ansInput.readOnly = !!live && !live.editable;
           ansInput.placeholder = '在此输入人工答复，例如：取消受停用影响的已有预约并告知原因...';
           ansInput.addEventListener('input', () => { item.answer = ansInput.value; });
           const applyAnsBtn = el('button', '将答复写入决策并同步更新方案正文', 'px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold transition');
           applyAnsBtn.type = 'button';
+          applyAnsBtn.disabled = !!live && !live.editable;
           applyAnsBtn.addEventListener('click', () => {
             if (!item.answer.trim()) { toast('请先输入人工答复内容'); return; }
+            if (live) return live.resolve(item.id, item.answer.trim());
             synthesisState.decisions[0].choice = item.answer.trim();
             synthesisState.specMarkdown = `# 综合开发方案 · SPEC-01 v${synthesisState.currentVersion}\n\n## 1. 范围与选定路线\n基于 REQ-01@v${intakeState.version}，融合路线：${synthesisState.baseRoute}。\n\n## 2. 核心业务规则与人工决定\n- **${synthesisState.decisions[0].id} · ${synthesisState.decisions[0].scope}**：${item.answer.trim()}\n- **关联经验卡**：EXP-012 / V1。`;
             toast('已将人工答复写入决策并同步更新下方正文');
@@ -2002,7 +2181,9 @@
           (() => {
             const addDecBtn = el('button', '+ 新增决策条目', 'px-2.5 py-1 rounded bg-indigo-50 text-indigo-700 font-semibold');
             addDecBtn.type = 'button';
+            addDecBtn.disabled = !!live && !live.editable;
             addDecBtn.addEventListener('click', () => {
+              if (live) return live.addDecision();
               const nextNum = synthesisState.decisions.length + 1;
               synthesisState.decisions.push({
                 id: `DEC-0${nextNum}`,
@@ -2022,13 +2203,16 @@
           const idSpan = el('span', dec.id, 'md:col-span-1 mono font-bold text-indigo-600');
           const scopeInp = el('input', undefined, 'md:col-span-3 border border-slate-300 rounded px-2 py-1 bg-white');
           scopeInp.value = dec.scope;
-          scopeInp.oninput = () => { dec.scope = scopeInp.value; };
+          scopeInp.readOnly = !!live && !live.editable;
+          scopeInp.oninput = () => { dec.scope = scopeInp.value; live?.change(); };
           const choiceInp = el('input', undefined, 'md:col-span-5 border border-slate-300 rounded px-2 py-1 bg-white');
           choiceInp.value = dec.choice;
-          choiceInp.oninput = () => { dec.choice = choiceInp.value; };
+          choiceInp.readOnly = !!live && !live.editable;
+          choiceInp.oninput = () => { dec.choice = choiceInp.value; live?.change(); };
           const reasonInp = el('input', undefined, 'md:col-span-3 border border-slate-300 rounded px-2 py-1 bg-white');
           reasonInp.value = dec.reason;
-          reasonInp.oninput = () => { dec.reason = reasonInp.value; };
+          reasonInp.readOnly = !!live && !live.editable;
+          reasonInp.oninput = () => { dec.reason = reasonInp.value; live?.change(); };
           dRow.append(idSpan, scopeInp, choiceInp, reasonInp);
           decCard.append(dRow);
         }
@@ -2039,12 +2223,15 @@
         mdCard.innerHTML = `<div class="flex items-center justify-between"><strong class="text-sm text-slate-900">3. 综合方案正文编辑器 · 当前版本 v${synthesisState.currentVersion}</strong><span class="mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded">${synthesisState.confirmed ? '已确认定稿' : '草稿待确认'}</span></div>`;
         const mdTa = el('textarea', undefined, 'w-full h-44 p-3 rounded-lg border border-slate-300 mono text-xs leading-relaxed');
         mdTa.value = synthesisState.specMarkdown;
+        mdTa.readOnly = !!live;
         mdTa.addEventListener('input', () => { synthesisState.specMarkdown = mdTa.value; });
 
         const saveBar = el('div', undefined, 'flex flex-wrap items-center gap-2');
         const saveNewVerBtn = el('button', '保存人工编辑为新版本', 'px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition');
         saveNewVerBtn.type = 'button';
+        saveNewVerBtn.disabled = !!live && !live.editable;
         saveNewVerBtn.addEventListener('click', () => {
+          if (live) return live.save();
           synthesisState.currentVersion += 1;
           synthesisState.historyVersions.unshift({
             ver: synthesisState.currentVersion,
@@ -2057,14 +2244,25 @@
 
         const confirmSpecBtn = el('button', '确认当前方案并交接任务分解 →', 'px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition');
         confirmSpecBtn.type = 'button';
+        confirmSpecBtn.disabled = !!live && (live.managed || live.busy);
         confirmSpecBtn.addEventListener('click', () => {
+          if (live) return live.confirm();
           synthesisState.confirmed = true;
           toast(`已确认综合方案 SPEC-01@v${synthesisState.currentVersion}`);
           switchModule('task-planner', '任务分解与配置');
         });
 
         saveBar.append(saveNewVerBtn, confirmSpecBtn);
-        mdCard.append(mdTa, saveBar);
+        mdCard.append(mdTa);
+        if (live) {
+          const notes = el('textarea', null, 'w-full h-20 p-3 rounded-lg border border-slate-300 text-xs');
+          notes.placeholder = '人工补充说明';
+          notes.value = live.notes;
+          notes.readOnly = !live.editable;
+          notes.oninput = () => live.notesInput(notes.value);
+          mdCard.append(notes);
+        }
+        mdCard.append(saveBar);
         specWrap.append(mdCard);
 
         wrap.append(specWrap);
@@ -2085,7 +2283,16 @@
     // 模块 3：任务分解与配置
     function renderModuleTaskPlanner(container) {
       const wrap = el('div', undefined, 'max-w-5xl mx-auto space-y-5 text-xs');
-      const data = getActiveData();
+      const live = plannerLink?.isFullWorkspace ? plannerLink.plannerPage(datasets.lab) : null;
+      const data = live?.layout || getActiveData();
+      const waiting = plannerLink?.plannerWaiting();
+      const editLocked = waiting || (live && !live.editable);
+      const feedback = el('p', '', 'text-xs text-red-700');
+      feedback.setAttribute('role', 'status');
+      const update = (id, patch) => {
+        try { plannerLink.updatePlannerRow(id, patch); feedback.textContent = ''; }
+        catch (error) { feedback.textContent = error.message; }
+      };
 
       const headerCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs flex flex-wrap items-center justify-between gap-3');
       headerCard.innerHTML = `
@@ -2094,9 +2301,22 @@
           <h2 class="text-base font-bold text-slate-900 mt-0.5">自由修改任务名称、执行角色、估时、前置依赖，或新增自定义任务</h2>
         </div>
       `;
+      if (waiting) {
+        const pending = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-3');
+        plannerLink.appendWaitingControls(pending, 'task-planner');
+        wrap.append(headerCard, pending);
+        container.append(wrap);
+        return;
+      }
       const addTaskBtn = el('button', '+ 新增自定义开发任务卡', 'px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition');
       addTaskBtn.type = 'button';
+      addTaskBtn.disabled = !!editLocked;
       addTaskBtn.addEventListener('click', () => {
+        if (live) {
+          try { plannerLink.addPlannerRow(); renderAll(); }
+          catch (error) { feedback.textContent = error.message; }
+          return;
+        }
         const p3 = data.phases[data.phases.length - 1];
         const newIdx = p3.tasks.length + 1;
         const newId = `T3.${newIdx}`;
@@ -2129,31 +2349,33 @@
           const row = el('div', undefined, 'grid grid-cols-1 md:grid-cols-12 gap-2.5 p-3 rounded-lg bg-slate-50 border border-slate-200 items-center');
 
           const idCol = el('div', undefined, 'md:col-span-2');
-          idCol.innerHTML = `<span class="mono font-bold text-indigo-600">${t.id}</span><div class="text-[10px] text-slate-400">${t.worktree}</div>`;
+          idCol.innerHTML = `<span class="mono font-bold text-indigo-600">${escapeHtml(t.id)}</span><div class="text-[10px] text-slate-400">${escapeHtml(t.worktree || "由运行时分配")}</div>`;
 
           const nameInp = el('input', undefined, 'md:col-span-3 border border-slate-300 rounded px-2.5 py-1.5 bg-white font-medium');
           nameInp.value = t.name;
-          nameInp.addEventListener('input', () => { t.name = nameInp.value; });
+          nameInp.addEventListener('input', () => { if (live) update(t.id, {title: nameInp.value}); else t.name = nameInp.value; });
 
           const ownerInp = el('input', undefined, 'md:col-span-2 border border-slate-300 rounded px-2.5 py-1.5 bg-white');
           ownerInp.value = t.owner;
-          ownerInp.addEventListener('input', () => { t.owner = ownerInp.value; });
+          ownerInp.addEventListener('input', () => { if (live) update(t.id, {role: ownerInp.value}); else t.owner = ownerInp.value; });
 
           const depsInp = el('input', undefined, 'md:col-span-2 border border-slate-300 rounded px-2.5 py-1.5 bg-white mono');
           depsInp.value = t.deps.join(', ');
           depsInp.placeholder = '前置ID, 如 T1.1';
           depsInp.addEventListener('change', () => {
             t.deps = depsInp.value.split(',').map((s) => s.trim()).filter(Boolean);
-            toast(`已更新 ${t.id} 的前置依赖`);
+            if (live) update(t.id, {depends_on: t.deps});
+            else toast(`已更新 ${t.id} 的前置依赖`);
           });
 
           const estInp = el('input', undefined, 'md:col-span-1 border border-slate-300 rounded px-2 py-1.5 bg-white mono text-center');
           estInp.type = 'number';
-          estInp.min = '5';
-          estInp.step = '5';
+          estInp.min = live ? '0.01' : '5';
+          estInp.step = live ? 'any' : '5';
           estInp.value = String(t.estimateMin);
           estInp.addEventListener('change', () => {
-            t.estimateMin = Math.max(5, Number(estInp.value) || 5);
+            if (live) update(t.id, {estimate_seconds: Math.round(Number(estInp.value) * 60)});
+            else t.estimateMin = Math.max(5, Number(estInp.value) || 5);
           });
 
           const statusSel = el('select', undefined, 'md:col-span-2 border border-slate-300 rounded px-2 py-1.5 bg-white font-medium');
@@ -2167,7 +2389,14 @@
             opt.value = val;
             statusSel.append(opt);
           }
+          if (live && !Array.from(statusSel.options).some(option => option.value === t.status)) {
+            const status = el('option', statusMeta(t.status).label);
+            status.value = t.status;
+            statusSel.append(status);
+          }
           statusSel.value = t.status;
+          statusSel.disabled = !!live;
+          for (const input of [nameInp, ownerInp, depsInp, estInp]) input.disabled = !!editLocked;
           statusSel.addEventListener('change', () => {
             t.status = statusSel.value;
             toast(`${t.id} 状态已更新`);
@@ -2181,17 +2410,46 @@
 
       const jumpGraphBtn = el('button', '保存任务清单并查看依赖图 →', 'px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold');
       jumpGraphBtn.type = 'button';
-      jumpGraphBtn.addEventListener('click', () => {
+      jumpGraphBtn.addEventListener('click', async () => {
+        if (live?.editable) {
+          jumpGraphBtn.disabled = true;
+          try { await plannerLink.savePlannerPage(); }
+          catch (error) { feedback.textContent = error.message; return; }
+          finally { jumpGraphBtn.disabled = false; }
+        }
         switchModule('workbench', '开发流程工作台');
       });
-      wrap.append(jumpGraphBtn);
+      wrap.append(jumpGraphBtn, feedback);
+      if (live) plannerLink.appendPlannerActions(wrap);
       container.append(wrap);
     }
 
     // 模块 4：数字人档案 / 领域经验卡 / 模型路由 / 会话恢复 / Worktree / SQLite (已绑定 getMemoryState() 实现案例下拉联动)
+    let storageRead = null;
+    function worktreePathConflicts(tasks) {
+      const overlaps = (a, b) => a === b ||
+        a.startsWith(b.replace(/\/+$/, '') + '/') || b.startsWith(a.replace(/\/+$/, '') + '/');
+      return tasks.flatMap((task, index) => tasks.slice(index + 1).flatMap(other => {
+        const paths = task.writePaths.flatMap(path => other.writePaths
+          .filter(candidate => overlaps(path, candidate)).map(candidate => [path, candidate]));
+        return paths.length ? [{left:task.id, right:other.id, paths}] : [];
+      }));
+    }
+
     function renderModuleSystemPanel(container) {
-      const memState = getMemoryState();
-      const caseTitle = currentProjectKey === 'lab' ? '实验室设备预约系统' : '自习室座位预约系统';
+      const liveStorage = plannerLink?.storageState();
+      const liveProfiles = plannerLink?.profiles();
+      const memState = liveProfiles || getMemoryState();
+      const caseTitle = liveStorage?.title || (currentProjectKey === 'lab' ? '实验室设备预约系统' : '自习室座位预约系统');
+      const liveTasks = liveStorage && (liveStorage.plan?.tasks || []).map(task => {
+        const execution = liveStorage.run?.tasks[task.id];
+        const attempt = execution?.attempts.at(-1);
+        return {id: task.id, name: task.title, owner: task.role, deps: task.depends_on,
+          spec: [...task.requirement_ids, ...task.decision_ids, ...task.open_item_ids].join(' · '),
+          status: liveStorage.displayStatus(task.id),
+          worktree: attempt?.checkout_commit ? 'attempt/' + liveStorage.run.id + '/' + attempt.id : '',
+          writePaths: task.write_paths};
+      });
       const wrap = el('div', undefined, 'max-w-5xl mx-auto space-y-5 text-xs');
 
       if (activeModule === 'agents-profile') {
@@ -2202,8 +2460,18 @@
           (() => {
             const b = el('button', '+ 新增领域数字人', 'px-3 py-1.5 rounded-lg bg-indigo-600 text-white font-semibold');
             b.type = 'button';
-            b.addEventListener('click', () => {
-              memState.agents.push({
+            b.disabled = !!(liveProfiles && (!liveProfiles.id || liveProfiles.pending || liveProfiles.error));
+            b.addEventListener('click', async () => {
+              if (liveProfiles) {
+                b.disabled = true;
+                try {
+                  await plannerLink.saveProfile({});
+                } catch (error) {
+                  toast(error.message);
+                  b.disabled = false;
+                  return;
+                }
+              } else memState.agents.push({
                 id: `AG-0${memState.agents.length + 1}`,
                 name: '安全与权限审计专家',
                 role: '交叉评审员',
@@ -2218,11 +2486,14 @@
           })()
         );
         card.append(head);
+        if (liveProfiles?.error || liveProfiles?.pending || (liveProfiles && !liveProfiles.id)) {
+          card.append(el('p', liveProfiles.error || (liveProfiles.pending ? '正在读取数字人档案…' : '请先选择或创建项目。'), 'text-slate-500'));
+        }
 
         const grid = el('div', undefined, 'grid grid-cols-1 md:grid-cols-3 gap-4');
         for (const ag of memState.agents) {
           const box = el('div', undefined, 'p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2');
-          box.innerHTML = `<div class="flex items-center justify-between"><span class="mono font-bold text-indigo-600">${ag.id}</span><span class="px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 font-semibold">${ag.role}</span></div>`;
+          box.innerHTML = `<div class="flex items-center justify-between"><span class="mono font-bold text-indigo-600">${escapeHtml(ag.id)}</span><span class="px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 font-semibold">${escapeHtml(ag.role)}</span></div>`;
           const nameInp = el('input', undefined, 'w-full font-bold text-slate-900 border border-slate-300 rounded px-2 py-1 bg-white');
           nameInp.value = ag.name;
           nameInp.oninput = () => { ag.name = nameInp.value; };
@@ -2232,6 +2503,22 @@
           const focusTa = el('textarea', undefined, 'w-full h-16 text-slate-600 border border-slate-300 rounded p-2 bg-white');
           focusTa.value = ag.focus;
           focusTa.oninput = () => { ag.focus = focusTa.value; };
+          for (const [input, field, label] of [[nameInp, 'name', '数字人名称'], [domInp, 'domain', '领域'], [focusTa, 'focus', '关注点']]) {
+            input.setAttribute('aria-label', label);
+            if (!liveProfiles) continue;
+            input.oninput = null;
+            input.onchange = async () => {
+              input.readOnly = true;
+              try {
+                await plannerLink.saveProfile({id: ag.id, field, value: input.value});
+              } catch (error) {
+                input.value = ag[field];
+                toast(error.message);
+              } finally {
+                input.readOnly = false;
+              }
+            };
+          }
           box.append(nameInp, domInp, focusTa, el('div', ag.history, 'text-[11px] text-slate-500 pt-1'));
           grid.append(box);
         }
@@ -2239,7 +2526,21 @@
         wrap.append(card);
 
       } else if (activeModule === 'exp-memory') {
-        const cards = getExpCards();
+        const liveMemory = plannerLink?.memory();
+        const cards = liveMemory?.cards || getExpCards();
+        const busy = !!(liveMemory && (!liveMemory.id || liveMemory.pending || liveMemory.error));
+        const updateMemory = async (selection, message) => {
+          const form = wrap.querySelectorAll('button');
+          form.forEach(button => { button.disabled = true; });
+          try {
+            await plannerLink.updateMemory(selection);
+            toast(message);
+          } catch (error) {
+            toast(error.message);
+          } finally {
+            if (activeModule === 'exp-memory') renderAll();
+          }
+        };
         const publishedCount = cards.filter((c) => c.pubStatus === '已发布').length;
         const draftCount = cards.length - publishedCount;
 
@@ -2249,10 +2550,10 @@
         headRow.innerHTML = `
           <div>
             <span class="text-[11px] font-bold uppercase tracking-wider text-indigo-600">DOMAIN MEMORY · SQLite 统一领域记忆库</span>
-            <h2 class="text-base font-bold text-slate-900 mt-0.5">${caseTitle} · 领域经验卡管理、基线与发布</h2>
+            <h2 class="text-base font-bold text-slate-900 mt-0.5">${escapeHtml(caseTitle)} · 领域经验卡管理、基线与发布</h2>
           </div>
           <div class="flex flex-wrap items-center gap-2">
-            <span class="mono px-2.5 py-1 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-semibold">基线 Baseline B${memoryBaselineVer}</span>
+            <span class="mono px-2.5 py-1 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-semibold">${liveMemory ? '基线 Baseline · ' + (liveMemory.baseline?.length ?? 0) + ' 张' : '基线 Baseline B' + memoryBaselineVer}</span>
             <span class="mono px-2.5 py-1 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold">已发布 ${publishedCount} / 草稿 ${draftCount}</span>
           </div>
         `;
@@ -2269,10 +2570,12 @@
         const opGrp = el('div', undefined, 'flex flex-wrap items-center gap-2');
         const addExpBtn = el('button', '+ 新建经验卡', 'px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold');
         addExpBtn.type = 'button';
+        addExpBtn.disabled = busy;
         addExpBtn.addEventListener('click', () => {
           const nextNum = 19 + cards.length;
           cards.unshift({
-            id: `EXP-0${nextNum}`, version: 1, domain: caseTitle,
+            id: liveMemory ? 'EXP-' + crypto.randomUUID().slice(0,8) : `EXP-0${nextNum}`, version: 1, domain: caseTitle,
+            ...(liveMemory && {local:true, cause:'', verification:'', evidence:''}),
             phenomenon: '新录入：请填写踩坑现象描述',
             trigger: '请填写触发条件',
             action: '请填写纠正动作与检查步骤',
@@ -2286,7 +2589,9 @@
         });
         const baseBtn = el('button', '保存记忆基线', 'px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-semibold');
         baseBtn.type = 'button';
+        baseBtn.disabled = busy;
         baseBtn.addEventListener('click', () => {
+          if (liveMemory) return updateMemory(null, '已保存记忆基线。');
           memoryBaselineVer += 1;
           cards.forEach((c) => { if (c.pubStatus === '已发布') c.inBaseline = true; });
           addLog('领域记忆', `已保存 SQLite 记忆基线 Baseline B${memoryBaselineVer}`);
@@ -2295,7 +2600,10 @@
         });
         const pubAllBtn = el('button', '发布全部草稿', 'px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold');
         pubAllBtn.type = 'button';
+        const drafts = cards.filter(c => c.pubStatus !== '已发布' && !c.readOnly);
+        pubAllBtn.disabled = busy || (!!liveMemory && !drafts.length);
         pubAllBtn.addEventListener('click', () => {
+          if (liveMemory) return updateMemory(drafts, '全部草稿经验卡已发布。');
           cards.forEach((c) => { if (c.pubStatus !== '已发布') { c.pubStatus = '已发布'; c.version += 1; } });
           addLog('领域记忆', '已将全部草稿经验卡发布至正式记忆库');
           toast('全部草稿经验卡已发布');
@@ -2304,6 +2612,7 @@
         opGrp.append(addExpBtn, baseBtn, pubAllBtn);
         toolRow.append(filterGrp, opGrp);
         topCard.append(toolRow);
+        if (busy) topCard.append(el('p', liveMemory.error || (liveMemory.pending ? '正在读取领域经验卡…' : '请先选择或创建项目。'), 'text-slate-500'));
         wrap.append(topCard);
 
         // Live Multi-Card Recall & Counter-Example Tester
@@ -2312,23 +2621,26 @@
         const qInp = el('input', undefined, 'w-full border border-indigo-300 rounded-lg px-3 py-2 bg-indigo-50/20 font-medium');
         qInp.value = memSimQuery;
         qInp.placeholder = '输入讨论问题测试召回，如：仪器周五送修已约怎么办 / 并行修改 router.py 冲突 / Worker 重试重复回报...';
-        qInp.addEventListener('input', () => { memSimQuery = qInp.value; renderAll(); });
-
-        const isCounter = /改名|名称|不重叠|编号|只读/.test(memSimQuery);
-        const hits = [];
-        for (const c of cards) {
-          const aliasList = c.aliases.split(/[、,，\s]+/).filter(Boolean);
-          const kw = aliasList.find((w) => memSimQuery.includes(w));
-          if (kw) hits.push({ card: c, kw });
+        const resBox = el('div');
+        function renderRecall() {
+          const isCounter = /改名|名称|不重叠|编号|只读/.test(memSimQuery);
+          const hits = [];
+          for (const c of cards) {
+            const aliasList = c.aliases.split(/[、,，\s]+/).filter(Boolean);
+            const kw = aliasList.find((w) => memSimQuery.includes(w));
+            if (kw) hits.push({ card: c, kw });
+          }
+          resBox.className = `p-3.5 rounded-xl border space-y-1.5 ${isCounter ? 'bg-slate-100 border-slate-300 text-slate-700' : (hits.length ? 'bg-emerald-50 border-emerald-300 text-emerald-900' : 'bg-amber-50 border-amber-200 text-amber-900')}`;
+          if (isCounter) {
+            resBox.innerHTML = `<strong>判定结果：命中反例边界 → 不触发经验卡阻断检查</strong><p>输入属于只读或非状态冲突场景，记忆服务已记录豁免。</p>`;
+          } else if (hits.length) {
+            resBox.innerHTML = `<strong>判定结果：共命中 ${hits.length} 张领域经验卡</strong>` + hits.map((h) => `<div class="p-2 rounded bg-white/80 border border-emerald-200 mt-1"><span class="mono font-bold text-indigo-700">${escapeHtml(h.card.id)} V${h.card.version}</span>（关键词「${escapeHtml(h.kw)}」· ${escapeHtml(h.card.evidStatus)}）→ ${escapeHtml(h.card.action)}</div>`).join('');
+          } else {
+            resBox.innerHTML = `<strong>判定结果：未命中现有同义词表</strong><p>可在下方任意经验卡的同义词映射中补充别名，保存后即时生效。</p>`;
+          }
         }
-        const resBox = el('div', undefined, `p-3.5 rounded-xl border space-y-1.5 ${isCounter ? 'bg-slate-100 border-slate-300 text-slate-700' : (hits.length ? 'bg-emerald-50 border-emerald-300 text-emerald-900' : 'bg-amber-50 border-amber-200 text-amber-900')}`);
-        if (isCounter) {
-          resBox.innerHTML = `<strong>判定结果：命中反例边界 → 不触发经验卡阻断检查</strong><p>输入属于只读或非状态冲突场景，记忆服务已记录豁免。</p>`;
-        } else if (hits.length) {
-          resBox.innerHTML = `<strong>判定结果：共命中 ${hits.length} 张领域经验卡</strong>` + hits.map((h) => `<div class="p-2 rounded bg-white/80 border border-emerald-200 mt-1"><span class="mono font-bold text-indigo-700">${escapeHtml(h.card.id)} V${h.card.version}</span>（关键词「${escapeHtml(h.kw)}」· ${escapeHtml(h.card.evidStatus)}）→ ${escapeHtml(h.card.action)}</div>`).join('');
-        } else {
-          resBox.innerHTML = `<strong>判定结果：未命中现有同义词表</strong><p>可在下方任意经验卡的同义词映射中补充别名，保存后即时生效。</p>`;
-        }
+        qInp.addEventListener('input', () => { memSimQuery = qInp.value; renderRecall(); });
+        renderRecall();
         simCard.append(qInp, resBox);
         wrap.append(simCard);
 
@@ -2356,6 +2668,7 @@
             w.append(el('span', lbl, 'text-[11px] font-semibold text-slate-500 block'));
             const ta = el('textarea', undefined, 'w-full h-14 border border-slate-300 rounded-lg p-2 text-xs bg-slate-50/50 focus:bg-white');
             ta.value = val;
+            ta.readOnly = !!c.readOnly;
             ta.addEventListener('input', () => onChg(ta.value));
             w.append(ta);
             return w;
@@ -2367,10 +2680,19 @@
             mkArea('适用边界与反例', c.counterExample, (v) => { c.counterExample = v; })
           );
           cBox.append(editG);
+          if (liveMemory) {
+            const details = el('details', undefined, 'text-slate-600');
+            const summary = el('summary', '验证记录', 'cursor-pointer font-semibold');
+            details.append(summary, mkArea('问题原因', c.cause, v => { c.cause = v; }),
+              mkArea('验证通过条件', c.verification, v => { c.verification = v; }),
+              mkArea('证据或复现记录', c.evidence, v => { c.evidence = v; }));
+            cBox.append(details);
+          }
 
           const footRow = el('div', undefined, 'flex flex-wrap items-center gap-2 pt-1');
           const alInp = el('input', undefined, 'flex-1 min-w-[200px] border border-slate-300 rounded-lg px-2.5 py-1.5 mono text-xs bg-white');
           alInp.value = c.aliases;
+          alInp.readOnly = !!c.readOnly;
           alInp.placeholder = '同义词映射（顿号或逗号分隔）';
           alInp.addEventListener('input', () => { c.aliases = alInp.value; });
 
@@ -2380,12 +2702,18 @@
             o.value = evOpt;
             evSel.append(o);
           }
+          if (liveMemory && ![...evSel.options].some(option => option.value === c.evidStatus)) {
+            evSel.prepend(el('option', c.evidStatus));
+          }
           evSel.value = c.evidStatus;
+          evSel.disabled = !!c.readOnly;
           evSel.addEventListener('change', () => { c.evidStatus = evSel.value; });
 
-          const pubBtn = el('button', c.pubStatus === '已发布' ? `升级至 V${c.version + 1}` : '发布此经验卡', 'px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-semibold');
+          const pubBtn = el('button', c.pubStatus === '已发布' ? `升级至 V${c.version + (liveMemory ? 2 : 1)}` : '发布此经验卡', 'px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-semibold');
           pubBtn.type = 'button';
+          pubBtn.disabled = busy || !!c.readOnly;
           pubBtn.addEventListener('click', () => {
+            if (liveMemory) return updateMemory([c], '经验卡已发布。');
             c.pubStatus = '已发布';
             c.version += 1;
             addLog('领域记忆', `发布经验卡 ${c.id} V${c.version}（证据层级：${c.evidStatus}）`);
@@ -2401,23 +2729,25 @@
         const card = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-2xs');
         card.innerHTML = `<strong class="text-sm text-slate-900 block border-b border-slate-100 pb-3">高低配模型路由与并发预算控制</strong>`;
         const formGrid = el('div', undefined, 'grid grid-cols-1 sm:grid-cols-2 gap-4');
+        const routing = plannerLink?.modelRouting() || modelRouterConfig;
 
         const lowBox = el('label', undefined, 'space-y-1 block');
         lowBox.append(el('span', '低成本模型配置 · 需求提取 / 独立出案 / 样板代码', 'font-semibold text-slate-700 block'));
         const lowInp = el('input', undefined, 'w-full border border-slate-300 rounded-lg px-3 py-2 mono');
-        lowInp.value = modelRouterConfig.lowCostModel;
+        lowInp.value = routing.lowCostModel;
         lowInp.oninput = () => { modelRouterConfig.lowCostModel = lowInp.value; };
         lowBox.append(lowInp);
 
         const highBox = el('label', undefined, 'space-y-1 block');
         highBox.append(el('span', '高能力模型配置 · 冲突复核 / 方案取舍 / 跨模块排障', 'font-semibold text-slate-700 block'));
         const highInp = el('input', undefined, 'w-full border border-slate-300 rounded-lg px-3 py-2 mono');
-        highInp.value = modelRouterConfig.highCapModel;
+        highInp.value = routing.highCapModel;
         highInp.oninput = () => { modelRouterConfig.highCapModel = highInp.value; };
         highBox.append(highInp);
 
         const budgetBox = el('label', undefined, 'space-y-1 block');
-        budgetBox.append(el('span', '单项目模型费用预算上限 (USD)', 'font-semibold text-slate-700 block'));
+        budgetBox.append(el('span', plannerLink?.isFullWorkspace
+          ? '本项目单次任务模型费用上限 (USD)' : '单项目模型费用预算上限 (USD)', 'font-semibold text-slate-700 block'));
         const budgetInp = el('input', undefined, 'w-full border border-slate-300 rounded-lg px-3 py-2 mono');
         budgetInp.type = 'number';
         budgetInp.step = '0.5';
@@ -2426,12 +2756,12 @@
         budgetBox.append(budgetInp);
 
         const paraBox = el('label', undefined, 'space-y-1 block');
-        paraBox.append(el('span', '全局 Git Worktree 并发上限', 'font-semibold text-slate-700 block'));
+        paraBox.append(el('span', plannerLink?.isFullWorkspace ? '计划 Git Worktree 并发上限' : '全局 Git Worktree 并发上限', 'font-semibold text-slate-700 block'));
         const paraInp = el('input', undefined, 'w-full border border-slate-300 rounded-lg px-3 py-2 mono');
         paraInp.type = 'number';
         paraInp.min = '1';
         paraInp.max = '6';
-        paraInp.value = String(modelRouterConfig.maxParallel);
+        paraInp.value = String(routing.maxParallel);
         paraInp.onchange = () => {
           modelRouterConfig.maxParallel = Number(paraInp.value) || 2;
           renderRightStewardSidebar();
@@ -2441,39 +2771,100 @@
 
         formGrid.append(lowBox, highBox, budgetBox, paraBox);
         card.append(formGrid);
+        if (plannerLink?.isFullWorkspace) {
+          lowInp.oninput = highInp.oninput = paraInp.onchange = null;
+          lowInp.onchange = highInp.onchange = async () => {
+            lowInp.disabled = highInp.disabled = true;
+            try {
+              await plannerLink.saveModelRouting(lowInp.value, highInp.value);
+              toast('模型设置已保存。');
+            } catch (error) {
+              const current = plannerLink.modelRouting();
+              lowInp.value = current.lowCostModel;
+              highInp.value = current.highCapModel;
+              toast(error.message);
+            } finally {
+              lowInp.disabled = highInp.disabled = false;
+            }
+          };
+          budgetInp.value = routing.budgetLimit ?? '';
+          budgetInp.min = '0';
+          budgetInp.step = 'any';
+          budgetInp.title = '按已配置模型单价估算，新派发任务生效。0 表示不限制。';
+          budgetInp.readOnly = !routing.canSaveBudget;
+          budgetInp.oninput = null;
+          budgetInp.onchange = async () => {
+            budgetInp.readOnly = true;
+            try {
+              if (!budgetInp.value || !budgetInp.checkValidity()) throw new Error('请输入非负的费用上限。');
+              budgetInp.value = await plannerLink.saveModelBudget(Number(budgetInp.value));
+              toast('已保存费用上限，新派发任务生效。');
+            } catch (error) {
+              budgetInp.value = plannerLink.modelRouting().budgetLimit ?? '';
+              toast(error.message);
+            } finally {
+              budgetInp.readOnly = !routing.canSaveBudget;
+            }
+          };
+          paraInp.readOnly = !plannerLink.canSaveConcurrency();
+          paraBox.title = '并发上限写入新计划版本，下次启动运行时生效。';
+          paraInp.onchange = async () => {
+            paraInp.readOnly = true;
+            try {
+              await plannerLink.saveConcurrency(Number(paraInp.value));
+              toast('已保存当前计划的并发上限。');
+            } catch (error) {
+              toast(error.message);
+            } finally {
+              if (activeModule === 'model-router') renderAll();
+            }
+          };
+          const api = el('button', '配置 API', 'px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-700 font-semibold');
+          api.type = 'button';
+          api.onclick = () => plannerLink.showModelSettings();
+          card.append(api);
+        }
         wrap.append(card);
 
       } else if (activeModule === 'autogen-resume') {
-        const tasks = getAllTasks();
+        const tasks = liveTasks || getAllTasks();
         const card = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-2xs');
         card.innerHTML = `
           <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-            <strong class="text-sm text-slate-900">${caseTitle} · AutoGen 0.2 会话恢复与阶段隔离</strong>
+            <strong class="text-sm text-slate-900">${escapeHtml(caseTitle)} · AutoGen 0.2 会话恢复与阶段隔离</strong>
             <span class="mono text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded font-semibold">GroupChatManager.resume</span>
           </div>
           <p class="text-slate-500">Worker 中断时保留最后检查点，恢复前先对账工作区与已有提交，避免重复修改代码。</p>
         `;
         const list = el('div', undefined, 'space-y-2');
         for (const t of tasks) {
-          const real = findTask(t.id);
-          const sState = real.sessionState || (real.status === 'failed' ? 'interrupted' : (real.status === 'completed' ? 'checkpointed' : 'standby'));
+          const real = liveStorage ? t : findTask(t.id);
+          const sState = liveStorage
+            ? ({completed:'已完成', running:'执行中', failed:'失败', in_progress:'等待审查'})[t.status] || '待派发'
+            : real.sessionState || (real.status === 'failed' ? 'interrupted' : (real.status === 'completed' ? 'checkpointed' : 'standby'));
           const row = el('div', undefined, 'p-3 rounded-lg bg-slate-50 border border-slate-200 flex flex-wrap items-center justify-between gap-2');
           row.append(
             el('div', undefined, 'space-y-0.5'),
             el('div', undefined, 'flex items-center gap-1.5')
           );
           row.children[0].innerHTML = `<div class="font-semibold text-slate-800"><span class="mono text-indigo-600 mr-1.5">${escapeHtml(t.id)}</span>${escapeHtml(t.name)}</div><div class="mono text-[11px] text-slate-500">角色：${escapeHtml(t.owner)} · 会话状态：${escapeHtml(sState)} · 隔离上下文：${escapeHtml(t.spec)}</div>`;
-          const btnInt = el('button', '模拟中断', 'px-2.5 py-1 rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800 font-semibold text-[11px]');
+          const btnInt = el('button', liveStorage ? '查看执行记录' : '模拟中断', 'px-2.5 py-1 rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800 font-semibold text-[11px]');
           btnInt.type = 'button';
           btnInt.addEventListener('click', () => {
+            if (liveStorage) {
+              plannerLink.inspect(t.id);
+              return;
+            }
             real.sessionState = 'interrupted';
             addLog('AutoGen 会话', `${real.id} Worker 中断，已冻结会话检查点等待对账`);
             toast(`${real.id} 已模拟 Worker 中断`);
             renderAll();
           });
-          const btnRec = el('button', '对账并恢复', 'px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-[11px]');
+          const btnRec = el('button', liveStorage ? '重试失败任务' : '对账并恢复', 'px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-[11px]');
           btnRec.type = 'button';
+          btnRec.disabled = !!liveStorage && !liveStorage.canRetrySession(t.id);
           btnRec.addEventListener('click', () => {
+            if (liveStorage) return plannerLink.retrySession(t.id);
             real.sessionState = 'recovered';
             if (real.status === 'failed') real.status = 'in_progress';
             addLog('AutoGen 会话', `${real.id} 完成工作区对账并从检查点恢复执行`);
@@ -2487,85 +2878,153 @@
         wrap.append(card);
 
       } else if (activeModule === 'git-worktree') {
-        const tasks = getAllTasks();
+        const tasks = liveTasks || getAllTasks();
         const wtOwners = new Map();
-        tasks.forEach((t) => {
-          const key = t.worktree || 'default';
-          if (!wtOwners.has(key)) wtOwners.set(key, []);
-          wtOwners.get(key).push(t.id);
-        });
-        const conflicts = [...wtOwners.entries()].filter(([, ids]) => ids.length > 1);
+        if (!liveStorage) {
+          for (const task of tasks) {
+            const key = task.worktree || 'default';
+            wtOwners.set(key, (wtOwners.get(key) || 0) + 1);
+          }
+        }
+        const pairs = liveStorage ? worktreePathConflicts(tasks) : [];
+        const conflictCount = liveStorage ? pairs.length : [...wtOwners.values()].filter(count => count > 1).length;
 
         const card = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-2xs');
         card.innerHTML = `
           <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-            <strong class="text-sm text-slate-900">${caseTitle} · Git Worktree 沙箱分支隔离与冲突检测</strong>
-            <span class="mono px-2.5 py-1 rounded font-semibold ${conflicts.length ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}">${conflicts.length ? `检测到 ${conflicts.length} 处路径重叠` : '并行工作区无路径冲突'}</span>
+            <strong class="text-sm text-slate-900">${escapeHtml(caseTitle)} · Git Worktree 沙箱分支隔离与冲突检测</strong>
+            <span class="mono px-2.5 py-1 rounded font-semibold ${conflictCount ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}">${conflictCount ? `检测到 ${conflictCount} ${liveStorage ? '对任务写入路径重叠' : '处路径重叠'}` : '并行工作区无路径冲突'}</span>
           </div>
         `;
         const table = el('table', undefined, 'w-full text-left border-collapse');
-        table.innerHTML = `<thead><tr class="bg-slate-50 border-b border-slate-200 text-slate-500"><th class="py-2 px-3">任务</th><th class="py-2 px-3">Worktree 目录</th><th class="py-2 px-3">上游依赖</th><th class="py-2 px-3">状态</th><th class="py-2 px-3">沙箱操作</th></tr></thead>`;
+        table.innerHTML = `<thead><tr class="bg-slate-50 border-b border-slate-200 text-slate-500"><th class="py-2 px-3">任务</th><th class="py-2 px-3">${liveStorage ? 'Worktree 分支' : 'Worktree 目录'}</th><th class="py-2 px-3">上游依赖</th><th class="py-2 px-3">状态</th><th class="py-2 px-3">沙箱操作</th></tr></thead>`;
         const tbody = el('tbody', undefined, 'divide-y divide-slate-100');
         for (const t of tasks) {
           const m = statusMeta(t.status);
           const tr = el('tr');
           tr.innerHTML = `
             <td class="py-2 px-3"><span class="mono font-bold text-indigo-600 mr-1">${escapeHtml(t.id)}</span>${escapeHtml(t.name)}</td>
-            <td class="py-2 px-3 mono text-slate-600">${escapeHtml(t.worktree)}</td>
+            <td class="py-2 px-3 mono text-slate-600">${escapeHtml(t.worktree || (liveStorage ? '尚未分配工作区' : ''))}</td>
             <td class="py-2 px-3 mono text-slate-500">${t.deps.length ? escapeHtml(t.deps.join(', ')) : '仓库基线'}</td>
             <td class="py-2 px-3"><span class="px-2 py-0.5 rounded border text-[10px] font-semibold ${m.badgeCls}">${m.label}</span></td>
             <td class="py-2 px-3"></td>
           `;
-          const syncBtn = el('button', '纳入上游提交', 'px-2.5 py-1 rounded border border-indigo-200 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-700 font-semibold text-[11px]');
+          const syncBtn = el('button', liveStorage ? '核对上游提交' : '纳入上游提交', 'px-2.5 py-1 rounded border border-indigo-200 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-700 font-semibold text-[11px]');
           syncBtn.type = 'button';
-          syncBtn.addEventListener('click', () => {
+          const result = el('div', undefined, 'mt-1 space-y-1 text-[11px] text-slate-600');
+          syncBtn.disabled = !!liveStorage && !liveStorage.run;
+          syncBtn.addEventListener('click', async () => {
+            if (liveStorage) {
+              syncBtn.disabled = true;
+              result.textContent = '正在核对…';
+              try {
+                const data = await liveStorage.worktreeInputs(t.id);
+                const note = data.checkout ? '执行起点 ' + data.checkout.slice(0,12) : '暂无可核对的执行起点。';
+                result.replaceChildren(el('div', note));
+                for (const item of data.items) {
+                  const label = item.included == null ? '待核对' : item.included ? '已纳入' : '未纳入';
+                  result.append(el('div', item.commit.slice(0,12) + ' · ' + label));
+                }
+                if (data.checkout && !data.items.length) result.append(el('div', '本次执行没有上游 Git 提交。'));
+              } catch (error) {
+                result.textContent = error.message;
+              } finally {
+                syncBtn.disabled = false;
+              }
+              return;
+            }
             addLog('Git Worktree', `已将上游已放行提交纳入 ${t.worktree} 工作目录`);
             toast(`${t.id} 工作区已同步上游提交`);
             renderAll();
           });
           tr.lastElementChild.append(syncBtn);
+          if (liveStorage?.canPrepareWorktree(t.id)) {
+            const prepare = el('button', '纳入上游并派发', syncBtn.className);
+            prepare.type = 'button';
+            prepare.addEventListener('click', () => plannerLink.taskStatusActions(t.id, {worktree:true}));
+            tr.lastElementChild.append(prepare);
+          }
+          if (liveStorage) tr.lastElementChild.append(result);
           tbody.append(tr);
         }
         table.append(tbody);
         card.append(table);
+        if (pairs.length) {
+          const details = el('details', undefined, 'space-y-2 text-slate-600');
+          details.append(el('summary', '查看重叠的写入路径', 'font-semibold cursor-pointer text-slate-800'));
+          for (const pair of pairs) {
+            for (const [left, right] of pair.paths) {
+              details.append(el('div', `${pair.left}（${left}） · ${pair.right}（${right}）`, 'mono break-all'));
+            }
+          }
+          card.append(details);
+        }
         wrap.append(card);
 
       } else {
-        const tasks = getAllTasks();
-        const doneCount = tasks.filter((t) => t.status === 'completed').length;
+        const tasks = liveStorage ? liveStorage.plan?.tasks || [] : getAllTasks();
+        const doneCount = liveStorage
+          ? Object.values(liveStorage.run?.tasks || {}).filter(t => t.state === 'done').length
+          : tasks.filter(t => t.status === 'completed').length;
+        const eventSeq = liveStorage ? liveStorage.run?.latest_event_seq || 0 : activityLogs.length;
+        const version = liveStorage ? liveStorage.plan?.version ?? '—' : planVersion;
+        const runId = liveStorage?.run?.id;
+        const read = storageRead?.runId === runId ? storageRead : null;
         const card = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-2xs');
         card.innerHTML = `
           <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-            <strong class="text-sm text-slate-900">${caseTitle} · SQLite 检查点事务存储与事件增量回放</strong>
+            <strong class="text-sm text-slate-900">${escapeHtml(caseTitle)} · SQLite 检查点事务存储与事件增量回放</strong>
             <span class="mono text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded font-semibold">data/workbench.sqlite3</span>
           </div>
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200"><div class="text-[11px] text-slate-500">当前计划版本</div><div class="mono font-bold text-sm text-indigo-600 mt-0.5">Plan v${planVersion}</div></div>
+            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200"><div class="text-[11px] text-slate-500">当前计划版本</div><div class="mono font-bold text-sm text-indigo-600 mt-0.5">Plan v${version}</div></div>
             <div class="p-3 rounded-lg bg-slate-50 border border-slate-200"><div class="text-[11px] text-slate-500">已登记交付物</div><div class="mono font-bold text-sm text-emerald-600 mt-0.5">${doneCount} / ${tasks.length}</div></div>
             <div class="p-3 rounded-lg bg-slate-50 border border-slate-200"><div class="text-[11px] text-slate-500">事务写入模式</div><div class="mono font-bold text-sm text-slate-800 mt-0.5">WAL · 幂等</div></div>
-            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200"><div class="text-[11px] text-slate-500">最新事件序号</div><div class="mono font-bold text-sm text-slate-800 mt-0.5">seq#${activityLogs.length}</div></div>
+            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200"><div class="text-[11px] text-slate-500">最新事件序号</div><div class="mono font-bold text-sm text-slate-800 mt-0.5">seq#${eventSeq}</div></div>
           </div>
         `;
         const pollBar = el('div', undefined, 'flex flex-wrap items-center justify-between gap-2 pt-1');
-        pollBar.append(el('strong', '事件增量轮询模拟 · GET /runs/{id}/events?after=序号', 'text-slate-700'));
+        pollBar.append(el('strong', `事件增量轮询${liveStorage ? '' : '模拟'} · GET /runs/{id}/events?after=序号`, 'text-slate-700'));
         const pollCtrl = el('div', undefined, 'flex items-center gap-2');
         const afterInp = el('input', undefined, 'w-16 border border-slate-300 rounded px-2 py-1 mono text-center bg-white');
         afterInp.type = 'number';
+        afterInp.id = 'storage-after-seq';
+        afterInp.setAttribute('aria-label', '起始事件序号');
         afterInp.min = '0';
-        afterInp.value = String(sqliteAfterSeq);
+        afterInp.value = String(liveStorage ? read?.after ?? 0 : sqliteAfterSeq);
         const pollBtn = el('button', '拉取增量事件', 'px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-semibold');
         pollBtn.type = 'button';
-        pollBtn.addEventListener('click', () => {
-          sqliteAfterSeq = Math.max(0, Number(afterInp.value) || 0);
+        pollBtn.addEventListener('click', async () => {
+          const after = Math.max(0, Math.floor(Number(afterInp.value) || 0));
+          if (!liveStorage) {
+            sqliteAfterSeq = after;
+            renderAll();
+            return;
+          }
+          const request = {runId, after, pending: true, rows: []};
+          storageRead = request;
           renderAll();
+          try {
+            request.rows = await plannerLink.storageEvents(after);
+          } catch (error) {
+            request.error = error.message;
+          } finally {
+            request.pending = false;
+            if (storageRead === request && activeModule === 'sqlite-store') renderAll();
+          }
         });
         pollCtrl.append(el('span', 'after ='), afterInp, pollBtn);
         pollBar.append(pollCtrl);
         card.append(pollBar);
 
         const evList = el('div', undefined, 'space-y-1.5 max-h-64 overflow-y-auto');
-        const filteredEv = activityLogs.filter((_, i) => i + 1 > sqliteAfterSeq);
-        if (filteredEv.length) {
+        const filteredEv = liveStorage ? read?.rows || [] : activityLogs.filter((_, i) => i + 1 > sqliteAfterSeq);
+        pollBtn.disabled = !!(liveStorage && (!runId || read?.pending));
+        if (read?.pending && liveStorage) {
+          evList.append(el('div', '正在读取事件…', 'text-slate-400 py-3'));
+        } else if (read?.error && liveStorage) {
+          evList.append(el('div', read.error, 'text-red-700 py-3'));
+        } else if (filteredEv.length) {
           filteredEv.forEach((ev) => {
             evList.append(el('div', `${ev.seq} | ${ev.time} | ${ev.actor} | ${ev.text}`, 'p-2.5 rounded-lg bg-slate-50 border border-slate-200 mono text-[11px] text-slate-700'));
           });
@@ -2601,7 +3060,7 @@
         const visibleTasks =
           filterMode === 'all'
             ? phase.tasks
-            : phase.tasks.filter((t) => t.status !== 'completed');
+            : phase.tasks.filter((t) => ['in_progress', 'failed', 'pending', 'blocked', 'input_required'].includes(t.status));
 
         const pDone = phase.tasks.filter((t) => t.status === 'completed').length;
         const pTotal = phase.tasks.length;
@@ -2720,7 +3179,7 @@
       }
       svg.appendChild(defs);
 
-      const sched = computeSchedule(getAllTasks(), modelRouterConfig.maxParallel);
+      const sched = computeSchedule(getAllTasks(), plannerLink?.monitorState()?.snapshot?.plan.max_parallel ?? modelRouterConfig.maxParallel);
       const capEl = q('#graph-caption');
       if (capEl) capEl.textContent = `Workflow 编排图 · 关键路径 ${sched.cpmTotal}m · 排期 ${sched.plannedTotal}m`;
 
@@ -2762,7 +3221,7 @@
           const isHighlighted = isCritEdge || from.id === selectedTaskId || t.id === selectedTaskId;
           let colorKey = 'indigo';
           if (t.status === 'failed' || from.status === 'failed') colorKey = 'red';
-          else if (t.status === 'in_progress') colorKey = 'amber';
+          else if (['in_progress', 'running'].includes(t.status)) colorKey = 'amber';
           else if (!isCritEdge && t.status === 'pending') colorKey = 'slate';
 
           const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -2840,20 +3299,16 @@
         </div>
         <div class="text-[11px] text-slate-500 flex flex-wrap gap-x-4 gap-y-0.5">
           <span>执行角色: <strong class="text-slate-700">${escapeHtml(sel.owner)}</strong></span>
-          <span>来源: <code class="mono text-slate-700">${escapeHtml(sel.spec)}</code></span>
-          <span>交付物: <code class="mono text-slate-700">${escapeHtml(sel.output)}</code></span>
+          <span class="node-summary-row"><span>来源: </span><code class="mono text-slate-700 node-summary-value" title="${escapeHtml(sel.spec)}">${escapeHtml(sel.spec)}</code></span>
+          <span class="node-summary-row"><span>交付物: </span><code class="mono text-slate-700 node-summary-value" title="${escapeHtml(sel.output)}">${escapeHtml(sel.output)}</code></span>
         </div>
       `;
-      const actionRow = el('div', undefined, 'flex items-center gap-2 pt-1');
-      if (data.reworkEdges) {
-        const details = el('button', '查看任务详情 / 审阅产物 →', 'px-2 py-1 rounded text-indigo-600 hover:underline');
-        details.type = 'button';
-        details.onclick = () => plannerLink.inspect(sel.id);
-        actionRow.append(details);
-        inspector.append(actionRow);
+      const actionRow = el('div', undefined, 'flex flex-wrap items-center gap-2 pt-1');
+      if (plannerLink?.historicalPlan()) {
+        inspector.append(el('p', '正在查看计划版本快照', 'text-slate-500'));
         return;
       }
-
+      const liveGraph = !!plannerLink?.isFullWorkspace;
 
       if (sel.status === 'in_progress' || sel.isReviewNode) {
         const reviewBtn = el('button', '🤖 打开 Agent 审查报告', 'px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-[11px] transition');
@@ -2864,9 +3319,11 @@
         });
         actionRow.append(reviewBtn);
       } else if (sel.status === 'failed') {
-        const retryBtn = el('button', `🔄 重试 ${sel.id} 预约服务并恢复下游`, 'px-2.5 py-1 rounded bg-red-600 hover:bg-red-500 text-white font-semibold text-[11px] transition');
+        const retryBtn = el('button', liveGraph ? `🔄 重试 ${sel.id} 并恢复下游` : `🔄 重试 ${sel.id} 预约服务并恢复下游`, 'px-2.5 py-1 rounded bg-red-600 hover:bg-red-500 text-white font-semibold text-[11px] transition');
         retryBtn.type = 'button';
+        retryBtn.disabled = liveGraph && !plannerLink.storageState().canRetrySession(sel.id);
         retryBtn.addEventListener('click', () => {
+          if (liveGraph) return plannerLink.retrySession(sel.id);
           sel.status = 'completed';
           sel.output = '预约服务提交 v1';
           const t23 = findTask('T2.3');
@@ -2887,7 +3344,9 @@
 
       const cycleBtn = el('button', '切换状态', 'px-2.5 py-1 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold text-[11px] transition');
       cycleBtn.type = 'button';
+      if (liveGraph) cycleBtn.title = '通过任务操作更新当前状态';
       cycleBtn.addEventListener('click', () => {
+        if (liveGraph) return plannerLink.taskStatusActions(sel.id);
         const order = ['completed', 'in_progress', 'failed', 'pending'];
         sel.status = order[(order.indexOf(sel.status) + 1) % order.length];
         renderAll();
@@ -3069,14 +3528,14 @@
     // =========================================================================
     function renderAgentReviewCenter(container) {
       container.replaceChildren();
-      const tasks = getAllTasks();
+      const liveReview = plannerLink?.reviewDashboard();
+      const tasks = liveReview?.tasks || getAllTasks();
       const reviewNodes = tasks.filter((t) => t.isReviewNode);
-      const sel = findTask(selectedTaskId);
-      const activeReviewTask = sel.isReviewNode ? sel : (reviewNodes.find((r) => r.targetTaskId === sel.id) || reviewNodes[0] || sel);
-      const realTask = findTask(activeReviewTask.id);
-      const rev = getAgentReview(realTask);
-      const meta = statusMeta(realTask.status);
-      const downstream = tasks.filter((t) => t.deps.includes(realTask.id)).map((t) => t.id);
+      const sel = liveReview ? tasks.find(task => task.id === selectedTaskId) : findTask(selectedTaskId);
+      const activeReviewTask = sel?.isReviewNode ? sel : (reviewNodes.find((r) => r.targetTaskId && r.targetTaskId === sel?.id) || reviewNodes[0] || sel || tasks[0]);
+      const realTask = liveReview ? activeReviewTask : findTask(activeReviewTask.id);
+      const rev = liveReview ? realTask?.review : getAgentReview(realTask);
+      const downstream = tasks.filter((t) => t.deps.includes(realTask?.id)).map((t) => t.id);
 
       const wrap = el('div', undefined, 'max-w-5xl mx-auto space-y-4 text-xs');
 
@@ -3090,7 +3549,7 @@
             <h2 class="text-base font-bold text-slate-900 mt-0.5">代码审查 Agent 自动化审查与闭环修复（全流程内嵌，无人工审批）</h2>
           </div>
           <span class="mono px-2.5 py-1 rounded font-semibold ${activeCount ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}">
-            ${activeCount ? `${activeCount} 个审查节点待通过` : '全部审查节点已自动放行'}
+            ${!realTask ? '等待任务计划' : activeCount ? `${activeCount} 个审查节点待通过` : '全部审查节点已自动放行'}
           </span>
         </div>
       `;
@@ -3105,11 +3564,11 @@
         pillRow.append(btn);
       }
       topCard.append(pillRow);
-      if (autoLoopState.activeRollbackEdge) {
+      if (!liveReview && autoLoopState.activeRollbackEdge) {
         const rbBanner = el('div', `↩ 自动回退触发：${autoLoopState.activeRollbackEdge.from} → ${autoLoopState.activeRollbackEdge.to}（${autoLoopState.activeRollbackEdge.reason}），开发 Agent 正在执行新一轮重构并准备回流复审。`, 'p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-700 font-semibold text-[11px]');
         topCard.append(rbBanner);
       }
-      if (autoLoopState.timeline.length) {
+      if (!liveReview && autoLoopState.timeline.length) {
         const tlWrap = el('div', undefined, 'pt-2 border-t border-slate-100 space-y-1.5');
         tlWrap.append(el('div', `持续开发-审查多轮迭代轨迹（已自动执行 ${autoLoopState.totalRoundsExecuted} 步 · 当前节点第 ${rev.round} 轮）`, 'text-[11px] font-bold text-slate-600'));
         const tlList = el('div', undefined, 'space-y-1 max-h-32 overflow-y-auto');
@@ -3121,6 +3580,11 @@
         topCard.append(tlWrap);
       }
       wrap.append(topCard);
+      if (!realTask) {
+        topCard.append(el('p', '任务计划生成后，这里会显示审查节点。', 'text-slate-500'));
+        container.append(wrap);
+        return;
+      }
 
       // 2. Automated Gate Checks + Review Agent Verdict & Actions
       const grid = el('div', undefined, 'grid grid-cols-1 lg:grid-cols-12 gap-4');
@@ -3132,10 +3596,11 @@
           <span class="mono text-[11px] text-slate-500">执行角色：${escapeHtml(rev.reviewerAgent)}</span>
         </div>
       `;
+      if (!rev.checks.length) gateCard.append(el('p', '暂无已登记产物。', 'text-slate-500'));
       for (const c of rev.checks) {
         const cls = c.status === 'passed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200';
         const row = el('div', undefined, 'p-2.5 rounded-lg bg-slate-50 border border-slate-200/80 flex items-center justify-between gap-2');
-        row.innerHTML = `<div class="min-w-0"><div class="font-semibold text-slate-800">${escapeHtml(c.name)}</div><div class="text-[11px] text-slate-500 truncate">${escapeHtml(c.detail)}</div></div><span class="px-2 py-0.5 rounded border text-[10px] font-semibold shrink-0 ${cls}">${c.status === 'passed' ? '✓ 通过' : '✕ 阻断'}</span>`;
+        row.innerHTML = `<div class="min-w-0"><div class="font-semibold text-slate-800">${escapeHtml(c.name)}</div><div class="text-[11px] text-slate-500 truncate">${escapeHtml(c.detail)}</div></div><span class="px-2 py-0.5 rounded border text-[10px] font-semibold shrink-0 ${cls}">${c.status === 'passed' ? '✓ 通过' : c.status === 'pending' ? '待审查' : '✕ 阻断'}</span>`;
         gateCard.append(row);
       }
 
@@ -3144,7 +3609,7 @@
         ? { txt: 'Agent 审查通过', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' }
         : (rev.verdict === 'needs_fix'
           ? { txt: '检出缺陷 · 需自动修复', cls: 'bg-red-50 text-red-700 border-red-200' }
-          : { txt: 'Agent 审查执行中', cls: 'bg-amber-50 text-amber-800 border-amber-200' });
+          : { txt: liveReview ? statusMeta(realTask.status).label : 'Agent 审查执行中', cls: 'bg-amber-50 text-amber-800 border-amber-200' });
       verdictCard.innerHTML = `
         <div class="flex items-center justify-between border-b border-slate-100 pb-2">
           <strong class="text-slate-900">代码审查 Agent 判定与自动化动作</strong>
@@ -3157,17 +3622,20 @@
       `;
 
       const actWrap = el('div', undefined, 'space-y-2');
-      const btnLoop = el('button', autoLoopState.running ? '⏹ 停止多轮持续闭环' : '🚀 启动多轮持续开发-审查闭环（直至全部达标）', `w-full py-2 px-3 rounded-lg text-white font-semibold transition ${autoLoopState.running ? 'bg-red-600 hover:bg-red-500' : 'bg-emerald-600 hover:bg-emerald-500'}`);
+      const loopRunning = liveReview?.running ?? autoLoopState.running;
+      const btnLoop = el('button', loopRunning ? '⏹ 停止多轮持续闭环' : '🚀 启动多轮持续开发-审查闭环（直至全部达标）', `w-full py-2 px-3 rounded-lg text-white font-semibold transition ${loopRunning ? 'bg-red-600 hover:bg-red-500' : 'bg-emerald-600 hover:bg-emerald-500'}`);
       btnLoop.type = 'button';
-      btnLoop.addEventListener('click', toggleContinuousAutoLoop);
+      btnLoop.addEventListener('click', () => liveReview ? plannerLink.toggleLoop() : toggleContinuousAutoLoop());
 
       const btnOneTick = el('button', '⏭ 单步推进一轮（审查 → 打回重开 / 复审）', 'w-full py-2 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition');
       btnOneTick.type = 'button';
-      btnOneTick.addEventListener('click', executeOneLoopTick);
+      btnOneTick.disabled = !!liveReview && !liveReview.canStep;
+      btnOneTick.addEventListener('click', () => liveReview ? plannerLink.step() : executeOneLoopTick());
 
-      const btnForceReject = el('button', `↩ 模拟 ${realTask.id} 审查不通过并打回上一轮重开`, 'w-full py-1.5 px-3 rounded-lg border border-red-300 bg-red-50 hover:bg-red-100 text-red-700 font-semibold transition');
+      const btnForceReject = el('button', liveReview ? '↩ 打开审查报告与产物操作' : `↩ 模拟 ${realTask.id} 审查不通过并打回上一轮重开`, 'w-full py-1.5 px-3 rounded-lg border border-red-300 bg-red-50 hover:bg-red-100 text-red-700 font-semibold transition');
       btnForceReject.type = 'button';
       btnForceReject.addEventListener('click', () => {
+        if (liveReview) return plannerLink.inspect(realTask.id);
         rev.checks[0].status = 'failed';
         rev.checks[0].detail = `第 ${rev.round} 轮检出边界缺陷，触发自动打回重开`;
         rev.phaseStep = 'review';
@@ -3176,64 +3644,6 @@
       });
 
       actWrap.append(btnLoop, btnOneTick, btnForceReject);
-      const _unusedLegacyStart = null;
-      if (_unusedLegacyStart) {
-      const btnAutoReview = el('button', '▶ 执行代码审查 Agent 自动审查与放行', 'w-full py-2 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition');
-      btnAutoReview.type = 'button';
-      btnAutoReview.addEventListener('click', () => {
-        if (rev.checks.some((c) => c.status === 'failed')) {
-          toast('存在阻断级门禁失败，请先点击「派发开发 Agent 自动修复并复审」');
-          return;
-        }
-        rev.verdict = 'passed';
-        rev.findings.forEach((f) => { f.resolved = true; });
-        const newSha = Math.random().toString(16).slice(2, 9);
-        rev.commitSha = newSha;
-        realTask.status = 'completed';
-        realTask.output = `审查报告 ${realTask.id} · Agent 审查通过 (${newSha})`;
-        rev.history.unshift({
-          round: rev.history.length + 1, agent: '代码审查 Agent', action: '自动审查通过并放行',
-          commit: newSha, time: new Date().toTimeString().slice(0, 8),
-          note: `全部 4 项确定性门禁与规格走查通过，自动释放下游 [${downstream.join(', ') || '无'}]`
-        });
-        addLog('代码审查 Agent', `${realTask.id} 自动审查通过（提交 ${newSha}），已自动放行下游 ${downstream.join(', ') || ''}`);
-        toast(`${realTask.id} 已由代码审查 Agent 自动通过并放行`);
-        renderAll();
-      });
-
-      const btnAutoFix = el('button', '🔧 退回开发 Agent 自动修复并重新复审', 'w-full py-2 px-3 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-semibold transition');
-      btnAutoFix.type = 'button';
-      btnAutoFix.addEventListener('click', () => {
-        rev.checks.forEach((c) => { c.status = 'passed'; c.detail = '开发 Agent 已自动修复并通过回归验证'; });
-        rev.findings.forEach((f) => { f.resolved = true; });
-        rev.verdict = 'passed';
-        const fixSha = Math.random().toString(16).slice(2, 9);
-        rev.commitSha = fixSha;
-        if (realTask.targetTaskId) {
-          const tgt = findTask(realTask.targetTaskId);
-          if (tgt && tgt.status === 'failed') {
-            tgt.status = 'completed';
-            tgt.output = `${tgt.output.split('·')[0].trim()} · 自动修复通过`;
-          }
-        }
-        if (realTask.id === 'R2.2') {
-          const t23 = findTask('T2.3');
-          if (t23 && t23.status === 'pending') { t23.status = 'completed'; t23.output = '停用处置提交 v1'; }
-        }
-        realTask.status = 'completed';
-        realTask.output = `审查报告 ${realTask.id} · 自动修复复审通过 (${fixSha})`;
-        rev.history.unshift({
-          round: rev.history.length + 1, agent: '开发 Agent → 代码审查 Agent', action: '自动修复并复审通过',
-          commit: fixSha, time: new Date().toTimeString().slice(0, 8),
-          note: '按审查缺陷清单完成自动补丁生成、单测回归与二次复审'
-        });
-        addLog('自动修复闭环', `${realTask.id} 触发开发 Agent 自动修复并复审通过（提交 ${fixSha}）`);
-        toast(`${realTask.id} 自动修复与复审闭环完成`);
-        renderAll();
-      });
-
-      actWrap.append(btnAutoReview, btnAutoFix);
-      }
       verdictCard.append(actWrap);
       grid.append(gateCard, verdictCard);
       wrap.append(grid);
@@ -3247,9 +3657,46 @@
         </div>
       `;
       const diffBody = el('div', undefined, 'p-3 rounded-lg border border-slate-200 bg-slate-50 mono text-[11px] space-y-1 max-h-44 overflow-y-auto');
-      for (const r of buildLineDiff(rev.origCode, rev.fixedCode)) {
+      const diff = rev.origCode === undefined ? [] : buildLineDiff(rev.origCode, rev.fixedCode);
+      if (!diff.length && liveReview) diffBody.append(el('p', '暂无可比较的两个文本版本。', 'text-slate-500'));
+      for (const r of diff) {
         const cls = r.type === 'del' ? 'bg-red-50 text-red-800 px-2 py-0.5 rounded' : (r.type === 'add' ? 'bg-emerald-50 text-emerald-800 px-2 py-0.5 rounded' : 'text-slate-600 px-2 py-0.5');
         diffBody.append(el('div', `${r.type === 'del' ? '−' : (r.type === 'add' ? '+' : ' ')} L${r.ln}  ${r.text}`, cls));
+      }
+      if (rev.loadPatch) {
+        const toolbar = el('div', undefined, 'flex flex-wrap items-center gap-2');
+        const output = el('select', undefined, 'rounded border border-slate-300 px-2 py-1');
+        output.setAttribute('aria-label', '选择补丁产物');
+        for (const id of rev.patchOutputs) output.append(el('option', id));
+        const comparison = el('select', undefined, output.className);
+        comparison.setAttribute('aria-label', '选择补丁对比基准');
+        for (const [value, text] of [['checkout', '执行起点'], ['previous', '上一版产物']]) {
+          const option = el('option', text);
+          option.value = value;
+          comparison.append(option);
+        }
+        const button = el('button', '查看 Git 补丁', 'px-2.5 py-1 rounded border border-indigo-300 text-indigo-700');
+        button.type = 'button';
+        button.onclick = async () => {
+          button.disabled = true;
+          try {
+            const result = await rev.loadPatch(output.value, comparison.value);
+            diffBody.replaceChildren();
+            if (!result.patch) diffBody.append(el('p', '此产物暂无可读取的 Git 补丁。', 'text-slate-500'));
+            for (const line of result.patch.split('\n').filter((line, index, rows) => line || index < rows.length - 1)) {
+              diffBody.append(el('div', line, 'whitespace-pre-wrap break-all ' +
+                (line.startsWith('+') ? 'bg-emerald-50 text-emerald-800' :
+                  line.startsWith('-') ? 'bg-red-50 text-red-800' : 'text-slate-600')));
+            }
+            if (result.truncated) diffBody.append(el('p', '仅显示补丁前 48 KB。', 'text-slate-500'));
+          } catch (error) {
+            toast(error.message);
+          } finally {
+            button.disabled = false;
+          }
+        };
+        toolbar.append(output, comparison, button);
+        diffCard.append(toolbar);
       }
       diffCard.append(diffBody);
 
@@ -3301,7 +3748,11 @@
     }
 
     function renderDetailsTab() {
-      const sel = findTask(selectedTaskId);
+      const original = findTask(selectedTaskId);
+      const live = plannerLink?.isFullWorkspace ? plannerLink.nodeEditData(selectedTaskId) : null;
+      const sel = live ? {...original, ...live, deps: [...original.deps]} : original;
+      const locked = live ? !live.editable : planLocked;
+      const version = live?.version ?? planVersion;
       const meta = statusMeta(sel.status);
       const panel = q('#panel-details');
       panel.replaceChildren();
@@ -3312,14 +3763,17 @@
       card.innerHTML = `
         <div class="flex items-center justify-between border-b border-slate-100 pb-3">
           <div>
-            <div class="mono text-xs text-indigo-600 font-semibold">${escapeHtml(sel.code)} · ${escapeHtml(sel.id)} · Plan v${planVersion}</div>
+            <div class="mono text-xs text-indigo-600 font-semibold">${escapeHtml(sel.code)} · ${escapeHtml(sel.id)} · Plan v${version}</div>
             <h2 class="text-base font-bold text-slate-900 mt-0.5">${escapeHtml(sel.name)}</h2>
           </div>
           <span class="px-3 py-1 rounded-full border text-xs font-semibold ${meta.badgeCls}">${meta.label}</span>
         </div>
       `;
 
-      if (planLocked) {
+      if (live && locked) {
+        card.append(el('p', '暂停主理人或到开工确认点后可以保存节点修改。', 'text-xs text-amber-800'));
+      }
+      if (!live && planLocked) {
         const lockNote = el('div', undefined, 'p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 flex flex-wrap items-center justify-between gap-2');
         lockNote.append(el('span', `Plan v${planVersion} 已锁定运行，如需调整任务配置请升级新计划版本。`));
         const unBtn = el('button', `创建 Plan v${planVersion + 1}`, 'px-2.5 py-1 rounded bg-white border border-amber-300 text-amber-900 font-semibold');
@@ -3344,7 +3798,8 @@
         const inp = el('input', undefined, 'w-full border border-slate-300 rounded-lg px-3 py-1.5 bg-white font-medium text-slate-800 disabled:bg-slate-100 disabled:text-slate-500');
         inp.type = type;
         inp.value = val;
-        inp.disabled = planLocked;
+        inp.disabled = locked;
+        if (live && label === '隔离工作区路径') inp.readOnly = true;
         inp.addEventListener('input', () => onChange(inp.value));
         box.append(inp);
         return box;
@@ -3369,7 +3824,25 @@
       const customBtns = el('div', undefined, 'flex flex-wrap items-center gap-2');
       const saveReqBtn = el('button', '保存人工要求', 'px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold');
       saveReqBtn.type = 'button';
+      const saveLive = async rerun => {
+        saveReqBtn.disabled = saveRerunReqBtn.disabled = true;
+        try {
+          await plannerLink.saveNodeEdit(sel.id, live, {
+            name: sel.name.trim(), owner: sel.owner.trim(),
+            estimateSeconds: Math.round(sel.estimateMin * 60), spec: sel.spec, output: sel.output,
+            requirement: customTa.value.trim(), dependsOn: sel.deps, rerun,
+          });
+          toast(rerun ? '已保存并启动新版计划' : '已保存到新版计划');
+          renderAll();
+        } catch (error) {
+          cycErr.textContent = error.message;
+          cycErr.classList.remove('hidden');
+        } finally {
+          saveReqBtn.disabled = saveRerunReqBtn.disabled = locked;
+        }
+      };
       saveReqBtn.addEventListener('click', () => {
+        if (live) return saveLive(false);
         sel.customRequirement = customTa.value.trim();
         addLog('人工需求注入', `为节点 ${sel.id} 保存人工要求：${sel.customRequirement || '（已清空）'}`);
         toast(`已保存 ${sel.id} 的人工要求`);
@@ -3377,7 +3850,12 @@
       });
       const saveRerunReqBtn = el('button', '保存并触发 Agent 重新执行与自动审查', 'px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold');
       saveRerunReqBtn.type = 'button';
+      if (live) {
+        customTa.readOnly = locked;
+        saveReqBtn.disabled = saveRerunReqBtn.disabled = locked;
+      }
       saveRerunReqBtn.addEventListener('click', () => {
+        if (live) return saveLive(true);
         sel.customRequirement = customTa.value.trim();
         sel.status = 'in_progress';
         const linked = getAllTasks().find((x) => x.isReviewNode && (x.id === sel.id || x.targetTaskId === sel.id));
@@ -3406,7 +3884,7 @@
         const cb = el('input');
         cb.type = 'checkbox';
         cb.checked = sel.deps.includes(other.id);
-        cb.disabled = planLocked;
+        cb.disabled = locked;
         cb.addEventListener('change', () => {
           const nextDeps = cb.checked ? [...new Set([...sel.deps, other.id])] : sel.deps.filter((d) => d !== other.id);
           const simulated = getAllTasks().map((t) => (t.id === sel.id ? { ...t, deps: nextDeps } : t));
@@ -3419,6 +3897,7 @@
           }
           cycErr.classList.add('hidden');
           sel.deps = nextDeps;
+          if (live) return;
           addLog('任务配置', `更新 ${sel.id} 前置依赖为 [${nextDeps.join(', ') || '无'}]`);
           toast(`已更新 ${sel.id} 依赖并重排`);
         });
@@ -3428,6 +3907,12 @@
       depSec.append(depWrap);
       card.append(depSec);
       wrap.append(card);
+
+      if (live) {
+        plannerLink.appendLiveDetails(wrap, sel.id);
+        panel.append(wrap);
+        return;
+      }
 
       const revSummaryCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-3');
       const revData = getAgentReview(sel);
@@ -3452,19 +3937,37 @@
       panel.replaceChildren();
       const wrap = el('div', undefined, 'max-w-5xl space-y-4 text-xs');
       const tasks = getAllTasks();
-      const sched = computeSchedule(tasks, modelRouterConfig.maxParallel);
-      if (!ganttBaselineMap[currentProjectKey]) {
-        ganttBaselineMap[currentProjectKey] = {
-          planStart: new Map(sched.planStart),
-          planEnd: new Map(sched.planEnd),
-          plannedTotal: sched.plannedTotal
+      const live = plannerLink?.monitorState();
+      const snapshot = live?.snapshot;
+      const parallel = snapshot?.plan.max_parallel ?? modelRouterConfig.maxParallel;
+      const baselineKey = snapshot ? 'live:' + snapshot.review_id + ':' + snapshot.plan.id : currentProjectKey;
+      const planned = snapshot?.schedule;
+      const sched = planned ? {
+        planStart: new Map(planned.map(row => [row.task_id, row.early_start_seconds / 60])),
+        planEnd: new Map(planned.map(row => [row.task_id, row.early_finish_seconds / 60])),
+        plannedTotal: Math.max(0, ...planned.map(row => row.early_finish_seconds / 60)),
+        criticalSet: new Set(planned.filter(row => row.critical).map(row => row.task_id)),
+      } : computeSchedule(tasks, parallel);
+      if (!ganttBaselineMap[baselineKey]) {
+        ganttBaselineMap[baselineKey] = {
+          planStart: new Map(sched.planStart), planEnd: new Map(sched.planEnd),
+          plannedTotal: sched.plannedTotal,
         };
       }
-      const base = ganttBaselineMap[currentProjectKey];
-      const extraDelay = tasks.some((t) => t.status === 'failed') ? 5 : 0;
-      const totalActual = sched.plannedTotal + extraDelay;
+      const base = ganttBaselineMap[baselineKey];
+      const runStart = Date.parse(live?.run?.started_at);
+      const actualBar = attempt => {
+        const start = (Date.parse(attempt.started_at) - runStart) / 60000;
+        const end = ((attempt.ended_at ? Date.parse(attempt.ended_at) : Date.now()) - runStart) / 60000;
+        return Number.isFinite(start) && end >= start ? {start, end, state: attempt.state} : null;
+      };
+      const actualBars = new Map(tasks.map(task => [task.id,
+        (live?.run?.tasks[task.id]?.attempts || []).map(actualBar).filter(Boolean)]));
+      const totalActual = live
+        ? Math.max(0, ...[...actualBars.values()].flat().map(bar => bar.end))
+        : sched.plannedTotal + (tasks.some(task => task.status === 'failed') ? 5 : 0);
       const diffFromBase = totalActual - base.plannedTotal;
-      const axisMax = Math.ceil((Math.max(totalActual, base.plannedTotal, 25) + ganttScale) / ganttScale) * ganttScale;
+      const axisMax = Math.ceil((Math.max(totalActual, sched.plannedTotal, base.plannedTotal, 25) + ganttScale) / ganttScale) * ganttScale;
       const tickCount = Math.max(1, Math.round(axisMax / ganttScale));
       const doneCount = tasks.filter((t) => t.status === 'completed').length;
 
@@ -3472,8 +3975,8 @@
       const header = el('div', undefined, 'flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3');
       header.innerHTML = `
         <div>
-          <strong class="text-sm text-slate-900">甘特图与进度对照 · ${doneCount} / ${tasks.length} 已交付 · 并发上限 ${modelRouterConfig.maxParallel}</strong>
-          <p class="text-slate-500 mt-0.5">首版基线 ${base.plannedTotal} 分钟 · 当前排期 ${sched.plannedTotal} 分钟 · 预计实际 ${totalActual} 分钟${diffFromBase !== 0 ? `（较基线 ${diffFromBase > 0 ? '+' : ''}${diffFromBase} 分钟）` : '（与基线一致）'}</p>
+          <strong class="text-sm text-slate-900">甘特图与进度对照 · ${doneCount} / ${tasks.length} 已交付 · 并发上限 ${parallel}</strong>
+          <p class="text-slate-500 mt-0.5">首版基线 ${base.plannedTotal} 分钟 · 当前排期 ${sched.plannedTotal} 分钟 · ${live ? '记录耗时' : '预计实际'} ${Number(totalActual.toFixed(2))} 分钟${diffFromBase !== 0 ? `（较基线 ${diffFromBase > 0 ? '+' : ''}${Number(diffFromBase.toFixed(2))} 分钟）` : '（与基线一致）'}</p>
         </div>
       `;
       const ctrlWrap = el('div', undefined, 'flex flex-wrap items-center gap-1.5');
@@ -3486,7 +3989,7 @@
       const saveBaseBtn = el('button', '重置基线', 'px-2.5 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 text-[11px] font-semibold');
       saveBaseBtn.type = 'button';
       saveBaseBtn.addEventListener('click', () => {
-        ganttBaselineMap[currentProjectKey] = {
+        ganttBaselineMap[baselineKey] = {
           planStart: new Map(sched.planStart),
           planEnd: new Map(sched.planEnd),
           plannedTotal: sched.plannedTotal
@@ -3522,6 +4025,12 @@
         const pDur = Math.max(1, pe - ps);
         const isCrit = sched.criticalSet.has(t.id);
 
+        const bars = actualBars.get(t.id).map(bar => {
+          const color = bar.state === 'failed' ? 'bg-red-600'
+            : bar.state === 'running' ? 'bg-amber-500' : 'bg-emerald-600';
+          const length = (bar.end - bar.start) * 100 / axisMax;
+          return `<div class="absolute bottom-1 h-3 rounded-xs ${color}" style="left:${bar.start * 100 / axisMax}%;width:${length}%;min-width:2px" title="实际尝试 ${bar.start.toFixed(2)}m–${bar.end.toFixed(2)}m"></div>`;
+        }).join('');
         const row = el('div', undefined, `grid grid-cols-12 items-center gap-2 p-1.5 rounded-lg cursor-pointer transition hover:bg-slate-50 ${t.id === selectedTaskId ? 'bg-indigo-50/80 ring-1 ring-indigo-200' : ''}`);
         row.addEventListener('click', () => { selectedTaskId = t.id; renderAll(); });
         row.innerHTML = `
@@ -3531,9 +4040,10 @@
           </div>
           <div class="col-span-9 bg-slate-50 h-9 rounded border border-slate-200/70 relative overflow-hidden" style="background-image:linear-gradient(to right,#e2e8f0 1px,transparent 1px);background-size:${100 / tickCount}% 100%;">
             <div class="absolute top-1 h-3 bg-blue-100 border border-blue-300 text-blue-800 text-[9px] font-bold flex items-center justify-center rounded-xs overflow-hidden" style="left:${(bs / axisMax) * 100}%;width:${(bDur / axisMax) * 100}%;" title="首版基线 ${bs}m-${be}m">${bDur}m</div>
-            ${t.status === 'completed' ? `<div class="absolute bottom-1 h-3 bg-emerald-600 text-white text-[9px] font-bold flex items-center justify-center rounded-xs overflow-hidden" style="left:${(ps / axisMax) * 100}%;width:${(pDur / axisMax) * 100}%;" title="实际完成 ${ps}m-${pe}m">${pDur}m</div>` : ''}
-            ${t.status === 'in_progress' ? `<div class="absolute bottom-1 h-3 bg-amber-500 text-white text-[9px] font-bold flex items-center justify-center rounded-xs overflow-hidden" style="left:${(ps / axisMax) * 100}%;width:${(pDur / axisMax) * 100}%;" title="执行/审查中">${pDur}m</div>` : ''}
-            ${t.status === 'failed' ? `<div class="absolute bottom-1 h-3 bg-red-600 text-white text-[9px] font-bold flex items-center justify-center rounded-xs overflow-hidden" style="left:${(ps / axisMax) * 100}%;width:${(Math.min(5, pDur) / axisMax) * 100}%;" title="尝试失败 5m">5m</div>` : ''}
+            ${live ? bars : ''}
+            ${!live && t.status === 'completed' ? `<div class="absolute bottom-1 h-3 bg-emerald-600 text-white text-[9px] font-bold flex items-center justify-center rounded-xs overflow-hidden" style="left:${(ps / axisMax) * 100}%;width:${(pDur / axisMax) * 100}%;" title="实际完成 ${ps}m-${pe}m">${pDur}m</div>` : ''}
+            ${!live && t.status === 'in_progress' ? `<div class="absolute bottom-1 h-3 bg-amber-500 text-white text-[9px] font-bold flex items-center justify-center rounded-xs overflow-hidden" style="left:${(ps / axisMax) * 100}%;width:${(pDur / axisMax) * 100}%;" title="执行/审查中">${pDur}m</div>` : ''}
+            ${!live && t.status === 'failed' ? `<div class="absolute bottom-1 h-3 bg-red-600 text-white text-[9px] font-bold flex items-center justify-center rounded-xs overflow-hidden" style="left:${(ps / axisMax) * 100}%;width:${(Math.min(5, pDur) / axisMax) * 100}%;" title="尝试失败 5m">5m</div>` : ''}
           </div>
         `;
         rowsWrap.append(row);
@@ -3551,7 +4061,7 @@
       // Selected Task Detail & Attempts Card below Gantt (aligned with Dev Doc Fig 5)
       const sel = findTask(selectedTaskId);
       const selMeta = statusMeta(sel.status);
-      const revInfo = getAgentReview(sel);
+      const revInfo = live ? null : getAgentReview(sel);
       const detailCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-3');
       const dTop = el('div', undefined, 'flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2');
       dTop.append(el('strong', `${sel.id} · ${sel.name}`, 'text-sm text-slate-900'));
@@ -3576,7 +4086,7 @@
       if (sel.customRequirement) {
         detailCard.append(el('div', `✎ 人工补充要求：${sel.customRequirement}`, 'p-2.5 rounded-lg bg-indigo-50/60 border border-indigo-200 text-indigo-900 text-[11px]'));
       }
-      const attNote = revInfo.history.length
+      const attNote = live ? (live.run?.tasks[sel.id]?.attempts.length || 0) + ' 次实际尝试' : revInfo.history.length
         ? revInfo.history.map((h) => `第 ${h.round} 轮 · ${h.action} (${h.commit})`).join(' ｜ ')
         : `当前第 ${revInfo.round} 轮 · 提交 ${revInfo.commitSha}`;
       detailCard.append(el('div', `尝试与审查轮次：${attNote}`, 'mono text-[11px] text-slate-500 pt-1 border-t border-slate-100'));
@@ -3590,6 +4100,8 @@
       panel.replaceChildren();
       const wrap = el('div', undefined, 'max-w-4xl space-y-4 text-xs');
 
+      const rows = plannerLink?.activityRows();
+      if (!rows) {
       const exp = getMemoryState().experience;
       const expCard = el('div', undefined, 'bg-white border border-slate-200 rounded-xl p-5 space-y-3');
       expCard.innerHTML = `
@@ -3605,15 +4117,17 @@
         </div>
       `;
       wrap.append(expCard);
+      }
 
       const list = el('div', undefined, 'bg-white border border-slate-200 rounded-xl divide-y divide-slate-100');
-      for (const item of activityLogs) {
+      if (rows && !rows.length) list.append(el('p', '暂无运行记录。', 'p-4 text-slate-500'));
+      for (const item of rows || activityLogs) {
         const row = el('div', undefined, 'p-4 flex items-start gap-3');
         row.innerHTML = `
-          <span class="mono text-[11px] text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded font-semibold">${item.seq}</span>
+          <span class="mono text-[11px] text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded font-semibold">${escapeHtml(String(item.seq ?? ""))}</span>
           <div class="flex-1">
-            <div class="font-semibold text-slate-800">${item.actor} <span class="text-slate-400 font-normal ml-2 mono">${item.time}</span></div>
-            <p class="text-slate-600 mt-0.5">${item.text}</p>
+            <div class="font-semibold text-slate-800">${escapeHtml(String(item.actor ?? ""))} <span class="text-slate-400 font-normal ml-2 mono">${escapeHtml(String(item.time ?? ""))}</span></div>
+            <p class="text-slate-600 mt-0.5">${escapeHtml(String(item.text ?? ""))}</p>
           </div>
         `;
         list.append(row);
@@ -3661,14 +4175,32 @@
 
       if (plannerLink?.render(activeModule)) return;
       if (!plannerLink) renderRightStewardSidebar();
+      else if (['intake-race', 'review-synthesis'].includes(activeModule)) {
+        const sidebar = plannerLink.stageSidebar(activeModule);
+        renderRightStewardSidebar(sidebar);
+        if (sidebar) appendRuntimeSidebar(sidebar.controls);
+      } else if (activeModule !== 'workbench' && plannerLink.isFullWorkspace && plannerLink.graphData()) {
+        renderRightStewardSidebar(plannerLink.workbenchSidebar());
+      }
 
       if (activeModule === 'workbench') {
         dedicatedView.classList.add('hidden');
         workbenchView.classList.remove('hidden');
 
-        q('#selected-node-indicator').textContent = selectedTaskId;
+        const waiting = plannerLink?.workbenchWaiting();
+        const historical = plannerLink?.historicalPlan();
+        if (historical) {
+          currentTab = 'graph';
+          q('#btn-step-sim').disabled = true;
+          q('#btn-auto-loop').disabled = true;
+          q('#steward-sidebar-body').replaceChildren(el('p', '计划版本快照 · 只读', 'text-slate-600'));
+        }
+        if (!waiting) selectedTaskId = findTask(selectedTaskId).id;
+        q('#selected-node-indicator').textContent = waiting ? '—' : selectedTaskId;
+        if (plannerLink?.isFullWorkspace && !waiting && !historical) renderRightStewardSidebar(plannerLink.workbenchSidebar());
         document.querySelectorAll('.ws-tab').forEach((b) => {
           const active = b.dataset.tab === currentTab;
+          b.disabled = !!historical && b.dataset.tab !== 'graph';
           b.className = `ws-tab h-full border-b-2 transition ${
             active ? 'border-indigo-600 text-indigo-600 font-semibold' : 'border-transparent text-slate-500 hover:text-slate-800'
           }`;
@@ -3680,8 +4212,26 @@
         q('#panel-activity').classList.toggle('hidden', currentTab !== 'activity');
         q('#panel-review').classList.toggle('hidden', currentTab !== 'review');
 
+        if (waiting) {
+          for (const id of ['graph-phases-layer', 'graph-nodes-layer', 'graph-edges-svg', 'phase-list-container']) q('#' + id).replaceChildren();
+          q('#progress-pct').textContent = '0%';
+          q('#progress-bar').style.width = '0%';
+          q('#progress-count').textContent = '0 / 0 项任务已完成';
+          q('#graph-caption').textContent = 'Workflow 编排图';
+          q('#active-badge').textContent = '等待计划';
+          q('#btn-fit-graph').disabled = true;
+          const content = q(currentTab === 'graph' ? '#graph-node-inspector' : '#panel-' + currentTab);
+          content.replaceChildren();
+          plannerLink.appendWaitingControls(content, 'workbench');
+          return;
+        }
+        q('#btn-fit-graph').disabled = false;
         renderPhaseList();
         if (currentTab === 'graph') renderTwinGraph();
+        else if (currentTab === 'details' && plannerLink?.graphData() && plannerLink.nodeEditData(selectedTaskId)) renderDetailsTab();
+        else if (currentTab === 'monitor' && plannerLink?.graphData()) renderMonitorTab();
+        else if (currentTab === 'activity' && plannerLink?.isFullWorkspace) renderActivityTab();
+        else if (currentTab === 'review' && plannerLink?.isFullWorkspace) renderAgentReviewCenter(q('#panel-review'));
         else if (plannerLink?.renderTab(currentTab, selectedTaskId)) return;
         else if (currentTab === 'details') renderDetailsTab();
         else if (currentTab === 'monitor') renderMonitorTab();
@@ -3690,9 +4240,12 @@
       } else {
         workbenchView.classList.add('hidden');
         dedicatedView.classList.remove('hidden');
-        dedicatedView.replaceChildren();
+        const liveSteward = activeModule === 'steward' && plannerLink?.isFullWorkspace;
+        if (!liveSteward || dedicatedView.dataset.view !== 'steward') dedicatedView.replaceChildren();
+        dedicatedView.dataset.view = activeModule;
 
-        if (activeModule === 'steward') renderModuleSteward(dedicatedView);
+        if (liveSteward) plannerLink.showSteward(dedicatedView);
+        else if (activeModule === 'steward') renderModuleSteward(dedicatedView);
         else if (activeModule === 'intake-race') renderModuleIntakeRace(dedicatedView);
         else if (activeModule === 'review-synthesis') renderModuleReviewSynthesis(dedicatedView);
         else if (activeModule === 'task-planner') renderModuleTaskPlanner(dedicatedView);
@@ -3778,13 +4331,17 @@
 
     q('#btn-auto-loop').addEventListener('click', () => {
       if (plannerLink?.isFullWorkspace) {
-        plannerLink.open('steward');
+        plannerLink.toggleLoop();
         return;
       }
       toggleContinuousAutoLoop();
     });
 
     q('#btn-step-sim').addEventListener('click', () => {
+      if (plannerLink?.isFullWorkspace) {
+        plannerLink.step();
+        return;
+      }
       if (activeModule !== 'workbench' && activeModule !== 'code-review') {
         switchModule('workbench', '开发流程工作台');
       }
@@ -3952,7 +4509,11 @@
         if (idx >= scripts.length) {
           try {
             if (typeof window.createPlannerLink === 'function') {
-              plannerLink = window.createPlannerLink({ q, el, switchModule, toast,
+              plannerLink = window.createPlannerLink({ q, el, switchModule, toast, stewardViews: {overview:renderStewardOverview, message:renderStewardMessage, composer:renderStewardComposer, gates:renderStewardGates, layout:renderStewardLayout}, showNodeEditor: openNodeEditModal,
+                showPlanVersion: () => {
+                  currentTab = 'graph';
+                  switchModule('workbench', '开发流程工作台');
+                },
                 showTask: id => {
                   selectedTaskId = id;
                   currentTab = 'details';

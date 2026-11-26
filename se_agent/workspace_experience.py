@@ -42,6 +42,19 @@ class ProjectDelivery:
         database.db.execute("CREATE TABLE IF NOT EXISTS workspace_targets "
                             "(project_id TEXT PRIMARY KEY, path TEXT NOT NULL, repo TEXT UNIQUE)")
 
+        database.db.execute("CREATE TABLE IF NOT EXISTS workspace_model_budgets "
+                            "(project_id TEXT PRIMARY KEY, budget REAL NOT NULL)")
+
+    def budget(self, project_id):
+        row = self.database.db.execute(
+            "SELECT budget FROM workspace_model_budgets WHERE project_id=?", (project_id,)).fetchone()
+        return row["budget"] if row else None
+
+    def set_budget(self, project_id, budget):
+        with self.database.tx() as db:
+            db.execute("INSERT INTO workspace_model_budgets VALUES(?,?) "
+                       "ON CONFLICT(project_id) DO UPDATE SET budget=excluded.budget", (project_id, budget))
+
     def target(self, project_id):
         row = self.database.db.execute("SELECT * FROM workspace_targets WHERE project_id=?",
                                        (project_id,)).fetchone()

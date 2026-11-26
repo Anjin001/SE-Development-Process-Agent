@@ -45,6 +45,22 @@ class CommitVerifier:
             output = self._git("show", "--pretty=format:", "--name-only", commit_sha)
         return [line.strip() for line in output.splitlines() if line.strip()]
 
+    def review_patch(self, base, commit, paths):
+        if not paths or not self.exists(base) or not self.exists(commit):
+            return {"patch": "", "truncated": False}
+        try:
+            result = subprocess.run(
+                ["git", "--literal-pathspecs", "-C", self.repo, "diff",
+                 "--no-ext-diff", "--no-textconv", "--no-color", base, commit, "--", *paths],
+                capture_output=True, timeout=5)
+        except subprocess.TimeoutExpired:
+            raise OutputInvalid("读取 Git 补丁超时") from None
+        if result.returncode:
+            raise OutputInvalid("无法读取 Git 补丁")
+        limit = 48_000
+        return {"patch": result.stdout[:limit].decode("utf-8", errors="replace"),
+                "truncated": len(result.stdout) > limit}
+
     def verify_checkout(self, checkout, baseline, upstreams):
         if not self.exists(checkout) or not self.is_ancestor(baseline,checkout):
             raise OutputInvalid("执行起点不是已绑定的基线提交",field="checkout_commit")

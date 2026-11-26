@@ -1,7 +1,6 @@
 /* Primary workspace: one conversation, with inspectable execution milestones. */
-window.createStewardLink = function ({q,el,action,get,post,open,modelMode,limits,existingProject,openProject,onJobChange,canContinue}) {
-  const root = el('div',null,'max-w-5xl mx-auto px-5 py-4 space-y-4');
-  const section = () => el('section',null,'bg-white border border-slate-200 rounded-xl p-4 space-y-3');
+window.createStewardLink = function ({q,el,action,get,post,open,modelMode,limits,existingProject,openProject,onJobChange,canContinue,views}) {
+  const section = () => el('section',null,'bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-3');
   const small = message => el('p',message,'text-xs text-slate-600 leading-relaxed');
   const strong = message => el('strong',message,'text-sm text-slate-900');
   const line = (...items) => {const node=el('div',null,'flex flex-wrap items-center gap-2'); node.append(...items); return node;};
@@ -22,73 +21,54 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,limits
   let selected=null, busy=false, syncing=false, visible=false, refreshFailed=false, history=[], shown=null;
   let picked = safeRead('se-agent-steward-job') || '', jobFingerprint='', canReplan=false;
   const cfg = {gates:[],group_count:0,parallel:0,race_parallel:3,prompts:[],mode:'auto',guidance:'',directory:''};
-  const header = section();
-  header.append(el('h2','项目主理人','font-bold text-xl text-slate-900'),
-    small('告诉我你要做什么。我会组织讨论、做决策、编排和推进开发。想改哪里，直接在这里说。'));
   const buttons=line();
   const newButton=action('新对话',()=> {
-    selected=null; picked=''; safeSave('se-agent-steward-job',''); input.value=''; render();
+    selection++; selected=null; picked=''; safeSave('se-agent-steward-job',''); input.value=''; render();
   });
   const historyPicker=el('select',null,'text-xs border border-slate-200 bg-white rounded-md px-2 py-2 max-w-xs');
   historyPicker.setAttribute('aria-label','历史对话');
   historyPicker.onchange=()=> { if(historyPicker.value) select(historyPicker.value); };
   const adopt=action('接管当前项目',()=>send('接管当前项目',null,true));
   buttons.append(newButton,historyPicker,adopt);
-  header.append(buttons);
   const progress=section();
   const log=el('details',null,'border border-slate-200 rounded-xl bg-white p-4 text-xs text-slate-600');
   const eventView=el('ul',null,'ml-4 mt-2 list-disc space-y-1');
   log.append(el('summary','执行记录','font-semibold cursor-pointer'), eventView);
-  const timeline=el('div',null,'flex flex-wrap gap-1.5');
-  timeline.setAttribute('aria-label','自动流水线');
+  const overview=el('div');
+  let overviewKey='';
   let activeKey='';
-  const phaseNodes=phases.map(([key,title])=>{
-    const node=el('span',title,'text-xs rounded-md px-2 py-1 border');
-    node.dataset.phase=key; timeline.append(node); return node;
-  });
   const activity=el('div',null,'space-y-1');
   activity.setAttribute('role','status');
   const taskList=el('div',null,'text-xs text-slate-600 space-y-1');
   const controls=line();
-  progress.append(timeline,activity,taskList,controls);
+  progress.append(strong('运行与历史对话'),buttons,activity,taskList,controls);
   const conversation=section();
-  conversation.append(strong('对话'));
-  const msgs=el('div',null,'max-h-72 overflow-y-auto space-y-2 text-sm');
+  const msgs=el('div',null,'space-y-2 max-h-64 overflow-y-auto');
   msgs.style.overflowAnchor='auto';
   conversation.append(msgs);
-  const [inputWrap,input]=field('发给主理人','',true);
-  input.rows=3; input.placeholder='例如：做一个图文笔记应用，用户能发布、收藏和关注作者。';
-  const sendBtn=action('交给主理人',()=>send(input.value),true);
-  input.onkeydown=event=>{if((event.ctrlKey || event.metaKey)&&event.key==='Enter')send(input.value);};
+  const {row:compose, input, button:sendBtn}=views.composer(value=>send(value));
   const alert=el('p',null,'text-sm text-rose-700'); alert.setAttribute('role','alert'); alert.hidden=true;
-  const compose=el('div',null,'space-y-2'); compose.append(inputWrap,line(sendBtn,small('Ctrl + Enter 发送')),alert);
-  conversation.append(compose);
+  conversation.append(compose,alert);
 
   const summaryBox = el('details',null,'border border-slate-200 rounded-xl bg-white p-4 text-xs text-slate-600');
   summaryBox.append(el('summary','查看综合方案、工作流和交付','font-semibold cursor-pointer'));
   const summaryBody=el('div',null,'space-y-2 mt-3'); summaryBox.append(summaryBody);
   const advanced=el('details',null,'border border-slate-200 rounded-xl bg-white p-4 text-xs text-slate-600');
   advanced.append(el('summary','高级设置 · 可选','font-semibold cursor-pointer'));
-  const reviewPanel=section(); reviewPanel.append(strong('由你决定是否暂停确认'),
-    small('默认全自动。你可以临时为本轮打开或关闭任意确认点。'));
-  const gateWrap=line();
-  const gateInputs=Object.entries(gateLabels).map(([key,title])=>{
-    const label=el('label',null,'flex gap-1.5 items-center text-xs text-slate-700');
-    const input=el('input');input.type='checkbox';
-    input.onchange=()=>{
-      cfg.gates=gateInputs.filter(choice=>choice.input.checked).map(choice=>choice.key);
-      if(selected) updateGates();
-    };
-    label.append(input,el('span',title)); gateWrap.append(label);
-    return {key,input};
+  let savingGates = false;
+  const {bar:gateBar, inputs:gateInputs}=views.gates({
+    title:'流程确认门禁', options:Object.entries(gateLabels), selected:cfg.gates,
+    change(key, checked) {
+      cfg.gates = checked ? [...new Set([...cfg.gates, key])] : cfg.gates.filter(item => item !== key);
+      if (selected) updateGates();
+    },
   });
-  reviewPanel.append(gateWrap);
-  const more=section(); more.append(strong('流程偏好与覆盖'),
-    small('留空由主理人生成。这里的设置用于下次运行；不会突然改写正在执行的任务。'));
+  const settings=el('div',null,'pt-3 space-y-3');
+  settings.append(small('这些设置用于新对话或从需求重新出案。'));
   const [groupWrap,groupCount]=field('分组数（0 代表自动）','0');
   groupCount.type='number';groupCount.min=0;groupCount.max=5;groupCount.oninput=()=>cfg.group_count=Number(groupCount.value);
   const [raceWrap,raceParallel]=field('出案并发上限','3');
-  raceWrap.hidden=true; raceParallel.type='number'; raceParallel.min=1; raceParallel.max=5;
+  raceParallel.type='number'; raceParallel.min=1; raceParallel.max=5;
   raceParallel.oninput=()=>cfg.race_parallel=Number(raceParallel.value);
   const [parallelWrap,parallel]=field('开发并发上限（0 代表自动）','0');
   parallel.type='number';parallel.min=0;parallel.max=6;parallel.oninput=()=>cfg.parallel=Number(parallel.value);
@@ -103,7 +83,7 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,limits
   pref.oninput=()=>cfg.guidance=pref.value;
   const [pathWrap,path]=field('产物目录（留空使用自动位置）','');
   path.placeholder='例如 D:\\Projects\\MyApp';path.oninput=()=>cfg.directory=path.value;
-  const routes=el('div',null,'space-y-1');
+  const routes=el('div',null,'grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2');
   const promptFields=[];
   for(let i=0;i<5;i++){
     const [wrap,f]=field(String.fromCharCode(65+i)+' 组的提示词覆盖（可留空）','',true);
@@ -112,24 +92,36 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,limits
   const prompts=el('details',null,'space-y-2');
   prompts.append(el('summary','分组提示词覆盖','cursor-pointer'),routes);
   const generated=el('div',null,'space-y-2');
-  more.append(line(groupWrap,raceWrap,parallelWrap,type),prefWrap,pathWrap,prompts,generated,
-    small('真实开发默认使用工作台附近的 SE-Agent-Projects 独立目录。已有项目不会被覆盖。'),
+  const modeWrap = el('label','开发模式','block text-xs text-slate-700 space-y-1');
+  type.className = 'block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs';
+  modeWrap.append(type);
+  const grid = el('div',null,'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3');
+  grid.append(groupWrap,raceWrap,parallelWrap,modeWrap);
+  const scheduling = el('div',null,'rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2');
+  scheduling.append(strong('分组与并发'),grid);
+  const output = el('div',null,'rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2');
+  output.append(strong('流程偏好与产物'),prefWrap,pathWrap,
+    small('产物目录留空时，由工作台分配独立目录。'));
+  const groupPrompts = el('div',null,'rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2');
+  groupPrompts.append(prompts,generated);
+  settings.append(scheduling,output,groupPrompts,
     line(action('从已确认方案编排并单步',()=>send('从任务编排开始，单步调试','replan_manual')),
       action('从需求重新出案',()=>restart()),action('打开任务分解',()=>open('task-planner'))));
-  advanced.append(reviewPanel,more);
-  root.append(header,progress,conversation,summaryBox,log,advanced);
+  advanced.append(settings);
+  const root = views.layout(overview,gateBar,conversation,progress,advanced,summaryBox,log);
 
   function messageContent(value){alert.textContent=value || '';alert.hidden=!value;}
   function elapsed(seconds){
     const n=Math.max(0,Math.floor(seconds || 0)); return n<60?n+' 秒':Math.floor(n/60)+' 分 '+n%60+' 秒';
   }
   async function send(raw,command=null,takeover=false,settings=null){
-    if(busy || !raw.trim()) return;
+    if(busy || savingGates || !raw.trim()) return;
     if(selected && (command==='continue' || /^(?:继续|开始|同意|确认|通过|确认继续|继续推进)[。！!？? ]*$/.test(raw.trim()))
         && !canContinue()) return messageContent('请先回到对应栏目保存手动修改，再继续。');
     const maxBytes = limits()?.max_input_bytes;
     if (maxBytes && new TextEncoder().encode(raw.trim()).length > maxBytes) return messageContent('输入超过 '+maxBytes.toLocaleString()+' 字节（UTF-8）。');
     const project=takeover?existingProject():null;
+    const submittingSettings = !selected || takeover || command === 'redo';
     busy=true; messageContent(''); render();
     try {
       const value=takeover
@@ -137,6 +129,7 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,limits
         : selected ? await post('/workspace/steward/'+selected.id+'/chat',{message:raw,command,settings})
         : await post('/workspace/steward',{markdown:raw,settings:cfg});
       picked=value.id; safeSave('se-agent-steward-job',picked); selected=value; refreshFailed=false;
+      if (submittingSettings) displaySettings(value.settings);
       if(raw===input.value)input.value='';
       loadHistory();
     }catch(err){messageContent(err.message);}
@@ -146,33 +139,59 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,limits
     if(!selected || busy) return;
     if(['running','pausing'].includes(selected.status)){messageContent('先在对话中暂停，再用这些设置重跑。');return;}
     await send('按高级设置重新运行','redo',false,cfg);
-    if(selected){
-      Object.assign(cfg,selected.settings); path.value=cfg.directory; render();
-    }
   }
   async function updateGates() {
-    if(!selected) return;
-    const id=selected.id;
-    try{
-      const updated=await post('/workspace/steward/'+id+'/gates',{gates:cfg.gates});
-      if(selected?.id===id){selected=updated;render();}
-    }catch(err){messageContent(err.message);}
-  }
-  async function select(id){
-    try{
-      const data=await get('/workspace/steward/'+id);
-      selected=data;picked=id;safeSave('se-agent-steward-job',id);
-      Object.assign(cfg,data.settings);
-      groupCount.value=cfg.group_count; raceParallel.value=cfg.race_parallel; parallel.value=cfg.parallel; type.value=cfg.mode;
-      pref.value=cfg.guidance;path.value=cfg.directory;promptFields.forEach((item,i)=>item.value=cfg.prompts[i] || '');
+    if (!selected || savingGates) return;
+    const id = selected.id;
+    const previous = selected.settings.gates;
+    savingGates = true;
+    render();
+    try {
+      const updated = await post('/workspace/steward/' + id + '/gates', {gates:cfg.gates});
+      if (selected?.id === id) {
+        selected = updated;
+        cfg.gates = updated.settings.gates;
+      }
+    } catch (error) {
+      if (selected?.id === id) {
+        cfg.gates = previous;
+        messageContent(error.message);
+      }
+    } finally {
+      savingGates = false;
       render();
-    }catch(err){messageContent(err.message);}
+    }
+  }
+  function displaySettings(settings) {
+    Object.assign(cfg, settings);
+    groupCount.value = cfg.group_count;
+    raceParallel.value = cfg.race_parallel;
+    parallel.value = cfg.parallel;
+    type.value = cfg.mode;
+    pref.value = cfg.guidance;
+    path.value = cfg.directory;
+    promptFields.forEach((field, index) => { field.value = cfg.prompts[index] || ''; });
+  }
+
+  let selection = 0;
+  async function select(id) {
+    const request = ++selection;
+    try {
+      const data = await get('/workspace/steward/' + id);
+      if (request !== selection || busy || savingGates) return;
+      selected = data;
+      picked = id;
+      safeSave('se-agent-steward-job', id);
+      displaySettings(data.settings);
+      render();
+    } catch (error) {
+      if (request === selection) messageContent(error.message);
+    }
   }
   async function loadHistory(){
     try{
       const index=await get('/workspace/steward');
       history=index.items;
-      raceWrap.hidden=!Number.isInteger(index.race_parallel);
       canReplan=index.team_plan===true;
       render();
       const empty=el('option','历史对话');empty.value=''; historyPicker.replaceChildren(empty);
@@ -188,12 +207,17 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,limits
       queueMicrotask(()=>onJobChange?.());
     }
     const index=s?phases.findIndex(([key])=>key===s.stage):-1;
-    phaseNodes.forEach((node,i)=>{
-      const classes=i===index && s?.status==='running' ? ' bg-indigo-100 text-indigo-800 border-indigo-300 animate-pulse' :
-        (i<index || s?.status==='completed')?' bg-emerald-50 text-emerald-700 border-emerald-200':
-        i===index?' bg-amber-50 text-amber-800 border-amber-200':' bg-slate-50 text-slate-500 border-slate-200';
-      node.className='text-xs rounded-md px-2 py-1 border'+classes;
-    });
+    const model = {
+      title:s?.title || '项目主理人', version:s?.summary?.plan_version,
+      done:s?.execution?.done ?? 0, total:s?.execution?.total ?? s?.summary?.tasks?.length ?? 0,
+      stage:s?.status === 'completed' ? 8 : [0,1,2,3,3,3,4,5,6,7][index] ?? -1,
+      complete:s?.status === 'completed',
+    };
+    const nextOverviewKey = JSON.stringify(model);
+    if (overviewKey !== nextOverviewKey) {
+      overviewKey = nextOverviewKey;
+      overview.replaceChildren(views.overview(model));
+    }
     const current=s ? (statuses[s.status] || s.status) + ' · ' + (s.activity || phases[index]?.[1]) :
       busy ? '正在交接给主理人' : '等待你的需求';
     let duration='';
@@ -229,10 +253,7 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,limits
     const changes=JSON.stringify([s?.id,s?.messages,s?.events,s?.summary,s?.target,s?.delivery,s?.groups]);
     if(changes!==shown){
       shown=changes;
-      msgs.replaceChildren(...(s?.messages || [{role:'steward',text:'你好。把需求直接发给我就行，默认不需要你逐步确认。'}]).map(m=>{
-        const bubble=el('div',null,'rounded-lg px-3 py-2 whitespace-pre-wrap '+(m.role==='user'?'bg-indigo-50 text-indigo-900 ml-8':'bg-slate-50 text-slate-800 mr-8'));
-        bubble.append(el('div',m.role==='user'?'你':'主理人','font-semibold text-xs mb-1'),el('div',m.text)); return bubble;
-      }));
+      msgs.replaceChildren(...(s?.messages || [{role:'steward',text:'你好。把需求直接发给我就行，默认不需要你逐步确认。'}]).map(views.message));
       msgs.scrollTop=msgs.scrollHeight;
       eventView.replaceChildren(...(s?.events || []).slice(-25).map(e=>el('li',e.title+(e.detail?' · '+e.detail:''))));
       log.hidden=!s?.events.length;
@@ -257,21 +278,21 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,limits
         generated.append(detail);
       }
     }
-    newButton.disabled=busy; sendBtn.disabled=busy;
+    newButton.disabled=busy || savingGates; sendBtn.disabled=busy || savingGates;
+    historyPicker.disabled=busy || savingGates;
     adopt.hidden=!existingProject() || !!s;
-    adopt.disabled=busy;
-    input.placeholder=s?'例如：把关注流改成独立页面，其他需求不变。':'例如：做一个图文笔记应用，用户能发布、收藏和关注作者。';
-    sendBtn.textContent=busy?'正在处理…':s?'发送给主理人':'交给主理人';
-    gateInputs.forEach(({key,input})=>{input.checked=cfg.gates.includes(key);});
+    adopt.disabled=busy || savingGates;
+    sendBtn.textContent=busy?'正在处理…':'发送指令';
+    gateInputs.forEach(({key,input})=>{input.checked=cfg.gates.includes(key); input.disabled=busy || savingGates;});
   }
   let initialized=false;
   const timer=setInterval(async()=>{
-    if(!picked || syncing || busy || ['completed','cancelled'].includes(selected?.status))return;
+    if(!picked || syncing || busy || savingGates || ['completed','cancelled'].includes(selected?.status))return;
     syncing=true;
-    const id=picked;
+    const id=picked, previous=selected;
     try{
       const value=await get('/workspace/steward/'+id);
-      if(id===picked){selected=value;refreshFailed=false;render();}
+      if(id===picked && selected===previous && !busy && !savingGates){selected=value;refreshFailed=false;render();}
     }catch{refreshFailed=true;render();}
     finally{syncing=false;}
   },1300);
@@ -282,11 +303,11 @@ window.createStewardLink = function ({q,el,action,get,post,open,modelMode,limits
     current(){return selected;},
     control(command){return send(command==='pause'?'暂停':'继续',command);},
     async enableGate(name){
-      if(!selected || busy || cfg.gates.includes(name))return;
+      if(!selected || busy || savingGates || cfg.gates.includes(name))return;
       cfg.gates=[...cfg.gates,name];
       await updateGates();
     },
     load(id){open('steward');select(id);},
-    newProject(){selected=null; picked='';safeSave('se-agent-steward-job','');open('steward'); render();},
+    newProject(){selection++; selected=null; picked='';safeSave('se-agent-steward-job','');open('steward'); render();},
   };
 };

@@ -1,6 +1,8 @@
 """Integrated project workspace using the CLY, HSX, QLM, ZXQ and Hza modules."""
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from math import isfinite
+from .model_router import ModelRouter
 from .limits import WORKER_LEASE_SECONDS
 
 import json
@@ -177,7 +179,7 @@ class Dispatch:
                 if self.stop.is_set():
                     return
 
-    def advance(self, run_id, manual=True, *, single=False):
+    def advance(self, run_id, manual=True, *, single=False, task_id=None):
         with self.lock:
             if run_id in self.busy:
                 return False
@@ -186,14 +188,21 @@ class Dispatch:
             with self.database.tx():
                 self.database.expire_leases(run_id)
                 if manual:
-                    self.database.step(run_id, single=single)
+                    self.database.step(run_id, single=single, task_id=task_id)
                 handed = self.database.claim(run_id, "workspace-worker", lease_seconds=WORKER_LEASE_SECONDS)
                 worker = self.worker
                 if handed and self.delivery and isinstance(worker, Worker):
                     project_id = self.database.db.execute("SELECT project_id FROM runs WHERE id=?", (run_id,)).fetchone()["project_id"]
                     repo = self.delivery.target(project_id)["repo"]
-                    if repo:
-                        worker = Worker(mode="auto", repo_root=repo, router=worker.router,
+                    cap = self.delivery.budget(project_id)
+                    router = worker.router
+                    if cap is not None:
+                        config = deepcopy(router.config)
+                        config["routing"]["max_cost_usd_per_attempt"] = cap
+                        router = ModelRouter(config)
+                    if repo or cap is not None:
+                        worker = Worker(mode="auto" if repo else worker.mode, repo_root=repo or worker.repo_root,
+                                        worktree_root=worker.worktree_root, router=router,
                                         provider=worker.provider, executor=worker.executor)
             if not handed:
                 with self.lock:
@@ -254,6 +263,9 @@ class Workspace:
         self.dispatch = Dispatch(database, worker)
         self.dispatch.delivery = self.delivery
         self.actor = "lead-local"
+        database.db.execute("""CREATE TABLE IF NOT EXISTS workspace_profiles (
+            project_id TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL,
+            PRIMARY KEY(project_id, id))""")
 
     def projects(self):
         return [{"id": p["id"], "title": p["requirement"]["items"][0]["title"],
@@ -266,7 +278,68 @@ class Workspace:
         runs = list(self.database.db.execute(
             "SELECT id FROM runs WHERE project_id=? ORDER BY rowid DESC", (project_id,)))
         run = self.run(project_id, runs[0]["id"]) if runs else None
-        return dict(review=review, planning=plan, run=run, target=self.delivery.target(project_id))
+        versions = [dict(row) for row in self.database.db.execute(
+            "SELECT id, version, spec_id FROM plans WHERE project_id=? ORDER BY rowid DESC", (project_id,))]
+        return dict(review=review, planning=plan, plan_versions=versions, run=run, target=self.delivery.target(project_id),
+                    model_budget=self.delivery.budget(project_id))
+
+    def save_model_budget(self, project_id, value):
+        self.reviews.get(project_id)
+        if type(value) not in (int, float) or value < 0:
+            raise InvalidReference("费用上限必须为非负数")
+        try:
+            value = float(value)
+        except OverflowError:
+            raise InvalidReference("费用上限必须为有限数") from None
+        if not isfinite(value):
+            raise InvalidReference("费用上限必须为有限数")
+        self.delivery.set_budget(project_id, value)
+        return {"model_budget": value}
+
+    def worktree_inputs(self, project_id, run_id, task_id):
+        with self.database._lock:
+            run = self.database.snapshot(run_id)
+            if run["project_id"] != project_id or task_id not in run["tasks"]:
+                raise NotFound("任务不属于该项目或运行")
+            attempt = self.database.db.execute(
+                "SELECT checkout_commit, input_refs FROM attempts WHERE run_id=? AND task_id=? "
+                "ORDER BY number DESC LIMIT 1", (run_id, task_id)).fetchone()
+            verifier = self.database.verifier_for(project_id)
+        if not attempt:
+            return {"checkout": None, "items": []}
+        checkout = attempt["checkout_commit"]
+        commits = dict.fromkeys(ref["commit_sha"] for ref in json.loads(attempt["input_refs"])
+                                if ref.get("commit_sha"))
+        readable = bool(verifier and checkout and verifier.exists(checkout))
+        return {"checkout": checkout, "items": [
+            {"commit": commit, "included": verifier.is_ancestor(commit, checkout)
+             if readable and verifier.exists(commit) else None} for commit in commits
+        ]}
+
+    def review_patch(self, project_id, run_id, task_id, output_id=None, against="checkout"):
+        if against not in ("checkout", "previous"):
+            raise InvalidReference("补丁对比基准无效")
+        with self.database._lock:
+            task = self.run(project_id, run_id)["tasks"].get(task_id)
+            if task is None:
+                raise NotFound("任务不存在")
+            artifacts = [item for item in task["artifacts"] if item["commit_sha"]]
+            if output_id is not None:
+                artifacts = [item for item in artifacts if item["output_id"] == output_id]
+            artifact = artifacts[-1] if artifacts else None
+            attempt = artifact and next((item for item in task["attempts"] if item["id"] == artifact["attempt_id"]), None)
+            verifier = self.database.verifier_for(project_id)
+        if not verifier or not artifact or not attempt or not attempt["checkout_commit"]:
+            return {"patch": "", "truncated": False}
+        base, paths = attempt["checkout_commit"], artifact["changed_paths"]
+        if against == "previous":
+            previous = next((item for item in reversed(artifacts[:-1])
+                             if item["output_id"] == artifact["output_id"]), None)
+            if not previous:
+                return {"patch": "", "truncated": False}
+            base = previous["commit_sha"]
+            paths = list(dict.fromkeys(previous["changed_paths"] + paths))
+        return verifier.review_patch(base, artifact["commit_sha"], paths)
 
     def run(self, project_id, run_id):
         snapshot = self.database.snapshot(run_id)
@@ -301,7 +374,9 @@ class Workspace:
         if action == "stop":
             self.database.stop_run(run_id)
         elif action == "advance":
-            self.dispatch.advance(run_id, single=body.get("single") is True)
+            dispatched = self.dispatch.advance(run_id, single=body.get("single") is True, task_id=task_id)
+            if task_id is not None and not dispatched:
+                raise InvalidState("当前任务无法派发，请刷新状态后再试。")
         elif action in ("pause", "resume"):
             self.database.set_dispatch(run_id, action == "pause")
         elif action == "retry":
@@ -403,11 +478,45 @@ class Workspace:
         return [steward_question(id_, items.get(id_, {"question": questions.get(id_, "请补充此项。")}),
                                  task_ids, requirement) for id_, task_ids in sorted(missing.items())]
 
+    def profiles(self, project_id):
+        self.reviews.get(project_id)
+        rows = self.database.db.execute(
+            "SELECT payload FROM workspace_profiles WHERE project_id=? ORDER BY rowid", (project_id,))
+        return [json.loads(row["payload"]) for row in rows]
+
+    def save_profile(self, project_id, body):
+        project = self.reviews.get(project_id)
+        with self.database.tx() as db:
+            profiles = self.profiles(project_id)
+            if "id" not in body:
+                title = project["requirement"]["items"][0]["title"]
+                profile = dict(id=f"AG-{len(profiles) + 1:02}", name="安全与权限审计专家", role="交叉评审员",
+                               domain="RBAC 权限隔离、接口鉴权", focus="检查管理员接口越权与跨组数据泄露",
+                               history=f"新增数字人角色，已绑定「{title}」基线")
+                db.execute("INSERT INTO workspace_profiles VALUES(?,?,?)",
+                           (project_id, profile["id"], json.dumps(profile, ensure_ascii=False)))
+                return profile
+            profile = next((item for item in profiles if item["id"] == body["id"]), None)
+            if profile is None:
+                raise NotFound("数字人档案不存在")
+            field, value = body.get("field"), body.get("value")
+            if field not in ("name", "domain", "focus") or not isinstance(value, str) or len(value) > 10000:
+                raise InvalidReference("数字人档案字段或内容不合法")
+            profile[field] = value
+            db.execute("UPDATE workspace_profiles SET payload=? WHERE project_id=? AND id=?",
+                       (json.dumps(profile, ensure_ascii=False), project_id, profile["id"]))
+            return profile
+
     def experiences(self, project_id, terms=None, domain=""):
         self.reviews.get(project_id)
         memory = self.database.memory
         return memory.search(project_id, self.actor, "retrospective", domain, terms) if terms else (
             memory.list_records(project_id, self.actor, "retrospective", kind="experience"))
+
+    def experience_baseline(self, project_id):
+        self.reviews.get(project_id)
+        row = self.database.db.execute("SELECT refs FROM dm_baselines WHERE project=?", (project_id,)).fetchone()
+        return json.loads(row["refs"]) if row else None
 
     def refresh_baseline(self, project_id):
         self.reviews.get(project_id)
@@ -443,16 +552,50 @@ class Workspace:
         with self.database.tx():
             return self._publish_experience(project_id, ref, expected_version, note)
 
-    def _publish_experience(self, project_id, ref, expected_version, note):
+    def publish_cards(self, project_id, cards):
+        if not isinstance(cards, list) or not 1 <= len(cards) <= 100:
+            raise InvalidReference("请选择 1 至 100 张经验卡")
+        with self.database.tx():
+            references = []
+            for card in cards:
+                if not isinstance(card, dict):
+                    raise InvalidReference("经验卡应为对象")
+                content = card.get("content")
+                if not isinstance(content, dict):
+                    raise InvalidReference("经验卡内容应为对象")
+                fields = ("problem", "cause", "correction", "domain", "trigger", "pass_condition", "evidence")
+                details = {field: content.get(field) for field in fields}
+                if any(not isinstance(value, str) or not value.strip() for value in details.values()):
+                    raise InvalidReference("请填写完整经验并提供验证记录")
+                tags = content.get("tags", [])
+                counter = content.get("counter_example", "")
+                level = content.get("evidence_state")
+                if (not isinstance(tags, list) or not all(isinstance(tag, str) and tag.strip() for tag in tags)
+                        or not isinstance(counter, str) or level not in ("walkthrough", "pilot", "production")):
+                    raise InvalidReference("经验卡关键词、反例或证据等级不合法")
+                details.update(tags=tags, counter_example=counter, evidence_state=level)
+                ref = card.get("ref")
+                if ref is None:
+                    ref = self._record_experience(project_id, details)
+                references.append(self._publish_experience(
+                    project_id, ref, ref["version"], "经项目负责人核对后发布", details))
+            return references
+
+    def _publish_experience(self, project_id, ref, expected_version, note, changes=None):
         memory = self.database.memory
         record = memory.read(ref["id"], ref["version"], project_id, self.actor, "retrospective")
-        if record["kind"] != "experience" or record["version"] != expected_version:
+        if record["kind"] != "experience" or record["project"] != project_id or record["version"] != expected_version:
             raise InvalidReference("经验编号或版本无效")
+        body = dict(record["body"], **(changes or {}))
+        source_refs = list(record["body"]["sources"])
+        if changes and body["evidence"] != record["body"].get("evidence"):
+            source_refs.append(memory.save("EVIDENCE-" + uuid4().hex[:12], "artifact", project_id,
+                                           record["owner"], dict(evidence=body["evidence"]), visibility="project"))
         sources = []
-        for source in record["body"]["sources"]:
+        for source in source_refs:
             item = memory.read(source["id"], source["version"], project_id, self.actor, "retrospective")
             sources.append(source if item["visibility"] == "published" else memory.publish(
                 project_id, self.actor, source, source["version"], note))
         updated = memory.save(record["id"], "experience", project_id, record["owner"],
-                              dict(record["body"], sources=sources), "project", expected_version)
+                              dict(body, sources=sources), "project", expected_version)
         return memory.publish(project_id, self.actor, updated, updated["version"], note)

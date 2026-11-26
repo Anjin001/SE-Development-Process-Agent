@@ -1,5 +1,5 @@
 /* Connect the QLM workbench to the local intake, review, and task planner. */
-window.createPlannerLink = function ({ q, el, switchModule, toast, showTask }) {
+window.createPlannerLink = function ({ q, el, switchModule, toast, showTask, showNodeEditor, stewardViews, showPlanVersion }) {
   const dedicated = q('#module-dedicated-view');
   const workbench = q('#workbench-split-view');
   const sidebar = q('#right-steward-sidebar');
@@ -89,14 +89,15 @@ window.createPlannerLink = function ({ q, el, switchModule, toast, showTask }) {
   q('#select-project').style.display = 'none';
   q('#select-engine').style.display = 'none';
   q('#planner-model-mode').textContent = mode;
-  q('#btn-step-sim').style.display = 'none';
-  q('#graph-demo-legend').style.display = 'none';
-  q('#graph-caption').textContent = '任务依赖图';
-  q('#graph-hint').textContent = '拖拽平移 · 点击节点查看任务来源';
-  q('#filter-异常').style.display = 'none';
-  q('#progress-pct').style.display = 'none';
-  q('#progress-bar').parentElement.style.display = 'none';
-  document.querySelectorAll('.ws-tab:not([data-tab="graph"])').forEach(tab => { tab.style.display = 'none'; });
+  if (!window.createWorkspaceLink) q('#btn-step-sim').style.display = 'none';
+  if (!window.createWorkspaceLink) {
+    q('#graph-caption').textContent = '任务依赖图';
+    q('#graph-hint').textContent = '拖拽平移 · 点击节点查看任务来源';
+    q('#filter-异常').style.display = 'none';
+    q('#progress-pct').style.display = 'none';
+    q('#progress-bar').parentElement.style.display = 'none';
+    document.querySelectorAll('.ws-tab:not([data-tab="graph"])').forEach(tab => { tab.style.display = 'none'; });
+  }
 
   function download(name, content, mime) {
     const link = el('a');
@@ -371,8 +372,8 @@ window.createPlannerLink = function ({ q, el, switchModule, toast, showTask }) {
     updateActions();
   }
 
-  function graphData() {
-    const view = extension?.executionSnapshot() || snapshot;
+  function graphData(template, override) {
+    const view = override || extension?.executionSnapshot() || snapshot;
     if (!view || (!extension?.executionSnapshot() && !ready())) return null;
     const layers = new Map();
     const phaseNames = new Map([
@@ -389,31 +390,47 @@ window.createPlannerLink = function ({ q, el, switchModule, toast, showTask }) {
       return layers.get(task.id);
     }
     for (const task of view.plan.tasks) {
-      const key = task.phase || 'other';
+      const key = ({verification:'review', documentation:'integration'})[task.phase] || task.phase || 'other';
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(task);
     }
     const order = [...phaseNames.keys()];
-    let top = 20;
+    // Use the supplied demo's phase positions as layout anchors.
+    const anchors = template?.phases || [];
+    const anchorFor = {
+      planning: anchors[1]?.box, development: anchors[2]?.box,
+      review: anchors[3]?.box, integration: anchors[4]?.box,
+    };
+    const placed = [];
+    const phaseNumber = {planning:1, development:2, review:3, integration:4};
     const phases = [...groups].sort(([a], [b]) =>
       (order.includes(a) ? order.indexOf(a) : order.length) -
       (order.includes(b) ? order.indexOf(b) : order.length)
     ).map(([key, items], index) => {
-      items.sort((a, b) => layer(a) - layer(b));
-      const columns = Math.min(4, items.length);
-      const box = { x: 24, y: top, w: 24 + columns * 230, h: 44 + Math.ceil(items.length / columns) * 100 };
-      top += box.h + 34;
-      return { id: key, title: 'Phase ' + (index + 1) + ' · ' + (phaseNames.get(key) || key),
+      if (!override) items.sort((a, b) => layer(a) - layer(b));
+      const anchor = anchorFor[key] || { x: 35, y: 20, w: 720, h: 130 };
+      const columns = Math.max(1, Math.floor((anchor.w - 24) / 220));
+      const box = { ...anchor, h: Math.max(anchor.h, 44 + Math.ceil(items.length / columns) * 90) };
+      for (const prior of placed) {
+        const overlapsX = box.x < prior.x + prior.w && prior.x < box.x + box.w;
+        if (overlapsX && box.y < prior.y + prior.h + 20 && prior.y < box.y + box.h + 20) {
+          box.y = prior.y + prior.h + 20;
+        }
+      }
+      placed.push(box);
+      return { id: key, title: anchors[phaseNumber[key]]?.title ||
+        'Phase ' + (phaseNumber[key] || index + 1) + ' · ' + (phaseNames.get(key) || key),
         box, tasks: items.map((task, position) => ({
         id: task.id, code: task.id, name: task.title, owner: task.role, status: extension?.taskStatus(task.id) || 'planned',
         estimateMin: Number((task.estimate_seconds / 60).toFixed(2)),
         spec: [...task.requirement_ids, ...task.decision_ids, ...task.open_item_ids].join(' · '),
         output: task.write_paths.join(' · '), deps: task.depends_on,
-        reviewRequired: task.review_required,
+        reviewRequired: task.review_required, isReviewNode: ['review','verification'].includes(task.phase),
+        customRequirement: task.completion_condition.split(requirementMarker).slice(1).join(requirementMarker),
         testFiles: task.outputs.filter(item=>item.path?.startsWith('tests/')).map(item=>item.path),
         critical: view.schedule?.find(row => row.task_id === task.id)?.critical || false,
-        x: box.x + 16 + (position % columns) * 230,
-        y: box.y + 34 + Math.floor(position / columns) * 100,
+        x: box.x + 16 + (position % columns) * 220,
+        y: box.y + 34 + Math.floor(position / columns) * 90,
         })),
       };
     });
@@ -421,7 +438,10 @@ window.createPlannerLink = function ({ q, el, switchModule, toast, showTask }) {
   }
 
   function render(module) {
-    if (extension?.render(module)) return true;
+    if (extension) {
+      extension.render(module);
+      return false;
+    }
     const frame = module === 'intake-race' ? intake : module === 'review-synthesis' ? review : null;
     frames.style.display = frame ? 'block' : 'none';
     intake.style.display = frame === intake ? 'block' : 'none';
@@ -448,7 +468,6 @@ window.createPlannerLink = function ({ q, el, switchModule, toast, showTask }) {
       q('#steward-parallel-label').textContent = ready() ? 'max_parallel = ' + snapshot.plan.max_parallel : '—';
     }
     if (graph) {
-      extension?.sidebar(module);
       return false;
     }
     workbench.classList.add('hidden');
@@ -462,16 +481,168 @@ window.createPlannerLink = function ({ q, el, switchModule, toast, showTask }) {
       dedicated.append(card);
       sidebar.style.display = 'none';
     }
-    extension?.sidebar(module);
     return true;
   }
 
   if (window.createWorkspaceLink) {
     extension = window.createWorkspaceLink({ q, el, open, action, download, toast,
       getPlan: () => snapshot, accept, setSpecification: value => { specification = value; },
-      renderGantt, showTask, isDirty: () => dirty, clearPlan: () => { snapshot = null; draft = []; dirty = false; },
+      renderGantt, stewardViews, showTask, editTask, showPlanVersion, isDirty: () => dirty, clearPlan: () => { snapshot = null; draft = []; dirty = false; },
     });
   }
-  return { render, graphData, open, renderTab: (tab, selection) => extension?.renderTab(tab, selection) || false,
+  const requirementMarker = '\n\n人工补充要求：\n';
+  function nodeEditData(id) {
+    const task = snapshot?.plan.tasks.find(row => row.id === id);
+    if (!task) return null;
+    const [condition, ...notes] = task.completion_condition.split(requirementMarker);
+    const run = extension?.nodeRunInfo(id);
+    return {
+      reviewId: snapshot.review_id, version: snapshot.plan.version, name: task.title, owner: task.role,
+      estimateMin: task.estimate_seconds / 60, spec: [...task.requirement_ids, ...task.decision_ids, ...task.open_item_ids].join('、'),
+      output: task.outputs.map(output => output.path || output.id).join('、'),
+      worktree: run?.worktree || '由运行时分配', runVersion: run?.version,
+      customRequirement: notes.join(requirementMarker), condition,
+      editable: !dirty && (extension?.canEditNode() ?? true),
+      rerunBlocked: (() => {
+        try { extension?.checkNodeRerun(); return ''; }
+        catch (error) { return error.message; }
+      })(),
+    };
+  }
+
+  async function saveNodeEdit(id, model, fields) {
+    if (!snapshot || snapshot.review_id !== model.reviewId || snapshot.plan.version !== model.version || dirty || !model.editable ||
+        !(extension?.canEditNode() ?? true)) {
+      throw new Error('计划已变化或暂不可编辑，请核对当前版本后重新打开。');
+    }
+    const original = snapshot.plan.tasks.find(task => task.id === id);
+    if (!original) throw new Error('节点已不存在。');
+    const split = value => value.split(/[,，、\n]+/).map(item => item.trim()).filter(Boolean);
+    const refs = [...new Set(split(fields.spec))];
+    const requirement_ids = refs.filter(ref => /^REQ-/i.test(ref));
+    const decision_ids = refs.filter(ref => /^DEC-/i.test(ref));
+    const open_item_ids = refs.filter(ref => /^OPEN-/i.test(ref));
+    if (!requirement_ids.length || requirement_ids.length + decision_ids.length + open_item_ids.length !== refs.length) {
+      throw new Error('请填写有效的需求、决策或待确认事项编号，以顿号或逗号分隔。');
+    }
+    const paths = split(fields.output);
+    if (paths.length !== original.outputs.length) {
+      throw new Error('请按原交付物数量填写路径，以顿号或逗号分隔。');
+    }
+    const outputs = original.outputs.map((output, index) => ({
+      ...output, path: !output.path && paths[index] === output.id ? null : paths[index],
+    }));
+    const renamed = new Map(original.outputs.filter(output => output.path)
+      .map(output => [output.path, outputs[original.outputs.indexOf(output)].path]));
+    const write_paths = [...new Set([
+      ...original.write_paths.map(path => renamed.get(path) || path),
+      ...outputs.filter(output => output.kind === 'git_commit').map(output => output.path),
+    ])];
+    const rows = snapshot.plan.tasks.map(task => task.id === id ? {
+      ...task, title: fields.name, role: fields.owner, requirement_ids, decision_ids, open_item_ids,
+      depends_on: fields.dependsOn ?? task.depends_on,
+      write_paths, outputs, estimate_seconds: fields.estimateSeconds,
+      completion_condition: model.condition +
+        (fields.requirement ? requirementMarker + fields.requirement : ''),
+    } : task);
+    if (fields.rerun) extension.checkNodeRerun();
+    accept(await post('/preview/plans/edit', {
+      review_id: snapshot.review_id, expected_version: model.version,
+      tasks: rows, max_parallel: snapshot.plan.max_parallel,
+    }));
+    if (fields.rerun) {
+      try { await extension.startNodeRerun(snapshot); }
+      catch (error) { return error.message; }
+    }
+    return '';
+  }
+
+  function plannerPage(template) {
+    if (!snapshot) return null;
+    const layout = graphData(template, {...snapshot, plan: {...snapshot.plan, tasks: draft}});
+    return {layout, editable: extension?.canEditPlan() ?? true};
+  }
+
+  function updatePlannerRow(id, patch) {
+    if (!(extension?.canEditPlan() ?? true)) throw new Error('当前计划暂不可编辑。');
+    const task = draft.find(row => row.id === id);
+    if (!task) throw new Error('该任务已不存在。');
+    Object.assign(task, patch);
+    dirty = true;
+  }
+
+  async function savePlannerPage(maxParallel = snapshot?.plan.max_parallel) {
+    if (!snapshot || !(extension?.canEditPlan() ?? true)) throw new Error('当前计划暂不可保存。');
+    if (!dirty && maxParallel === snapshot.plan.max_parallel) return;
+    accept(await post('/preview/plans/edit', {
+      review_id: snapshot.review_id, expected_version: snapshot.plan.version,
+      tasks: draft, max_parallel: maxParallel,
+    }));
+  }
+
+  async function saveConcurrency(value) {
+    if (!Number.isInteger(value) || value < 1 || value > 6) throw new Error('并发上限请输入 1 至 6 的整数。');
+    if (dirty) throw new Error('请先保存任务分解页面里的未保存编辑。');
+    await savePlannerPage(value);
+  }
+
+  function addPlannerRow() {
+    if (!snapshot || !(extension?.canEditPlan() ?? true)) throw new Error('当前计划暂不可编辑。');
+    let number = 1;
+    while (draft.some(task => task.id === 'T' + number)) number++;
+    const id = 'T' + number;
+    const source = draft.find(task => task.requirement_ids.length);
+    if (!source) throw new Error('请先交接至少一条已确认的需求。');
+    const path = 'docs/custom/' + id.toLowerCase() + '.md';
+    draft.push({
+      id, title: '新增自定义开发任务', role: 'developer', phase: 'development',
+      depends_on: [], estimate_seconds: 300, review_required: true,
+      requirement_ids: [source.requirement_ids[0]], decision_ids: [], open_item_ids: [],
+      write_paths: [path], outputs: [{id: 'OUT-01', kind: 'text', path}],
+      completion_condition: '按关联需求核对并记录成果。',
+    });
+    dirty = true;
+  }
+
+  function editTask(id) {
+    const model = nodeEditData(id);
+    if (!model) {
+      toast('当前计划中没有这个节点，请核对计划版本。');
+      return;
+    }
+    showNodeEditor(id, model);
+  }
+
+  return { render, graphData, open, editTask, nodeEditData, saveNodeEdit,
+    intakePage: () => extension?.intakePage(),
+    reviewPage: () => extension?.reviewPage(),
+    plannerPage, updatePlannerRow, savePlannerPage, addPlannerRow,
+    appendPlannerActions: parent => extension?.planActions(parent, snapshot, () => dirty),
+    showSteward: container => extension?.showSteward(container),
+    historicalPlan: () => extension?.historicalPlan(),
+    workbenchWaiting: () => extension?.workbenchWaiting(),
+    plannerWaiting: () => extension?.plannerWaiting(),
+    appendWaitingControls: (parent, module) => extension?.appendWaitingControls(parent, module),
+    stageSidebar: module => extension?.stageSidebar(module),
+    workbenchSidebar: () => extension?.workbenchSidebar(),
+    reviewDashboard: () => extension?.reviewDashboard(),
+    memory: () => extension?.memory(),
+    updateMemory: cards => extension?.updateMemory(cards),
+    profiles: () => extension?.profiles(),
+    saveProfile: body => extension?.saveProfile(body),
+    modelRouting: () => extension?.modelRouting(),
+    showModelSettings: () => extension?.showModelSettings(),
+    saveModelBudget: value => extension?.saveModelBudget(value),
+    saveModelRouting: (low, high) => extension?.saveModelRouting(low, high),
+    saveConcurrency,
+    canSaveConcurrency: () => !!snapshot && !dirty && !!extension?.canEditPlan(),
+    taskStatusActions: (id, options) => extension?.taskStatusActions(id, options),
+    retrySession: id => extension?.retrySession(id),
+    storageState: () => extension?.storageState(),
+    storageEvents: after => extension?.storageEvents(after),
+    activityRows: () => extension?.activityRows(),
+    monitorState: () => extension?.monitorState(),
+    appendLiveDetails: (container, id) => extension?.appendLiveDetails(container, id),
+    step: () => extension?.step(), toggleLoop: () => extension?.toggleLoop(), renderTab: (tab, selection) => extension?.renderTab(tab, selection) || false,
     inspect: id => extension?.inspect(id), isFullWorkspace: !!extension };
 };

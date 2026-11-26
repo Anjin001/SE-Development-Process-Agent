@@ -266,6 +266,25 @@ class WorkspaceTest(unittest.TestCase):
             time.sleep(0.03)
         self.assertTrue(completed, self.db.snapshot(run["id"]))
 
+    def test_workbench_cards_publish_atomically_and_keep_versioned_evidence(self):
+        content = dict(domain="编排", problem="并发覆盖", cause="写路径相同",
+                       trigger="同时写入", correction="分批派发", pass_condition="两项任务分批领取",
+                       evidence="首次执行记录", tags=["写冲突"], counter_example="任务仅读取",
+                       evidence_state="walkthrough")
+        with self.assertRaises(DomainError):
+            self.workspace.publish_cards(self.id, [{"content": content}, {"content": {}}])
+        self.assertEqual(self.workspace.experiences(self.id), [])
+        [first] = self.workspace.publish_cards(self.id, [{"content": content}])
+        self.workspace.refresh_baseline(self.id)
+        second_content = dict(content, evidence="第二次执行记录", evidence_state="production")
+        [second] = self.workspace.publish_cards(self.id, [{"ref": first, "content": second_content}])
+        self.assertEqual(first["id"], second["id"])
+        self.assertGreater(second["version"], first["version"])
+        [record] = self.workspace.experiences(self.id)
+        self.assertEqual(record["body"]["evidence"], "第二次执行记录")
+        self.assertEqual(record["body"]["evidence_state"], "production")
+        self.assertEqual(self.workspace.experience_baseline(self.id), [first])
+
     def test_specific_experience_requires_evidence_and_independent_publication(self):
         body = dict(domain="编排", problem="同名文件被两个任务覆盖", cause="未检查写入路径",
                     trigger="两个任务修改同一目录", correction="串行派发冲突任务",

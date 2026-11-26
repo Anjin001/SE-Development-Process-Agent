@@ -425,7 +425,7 @@ class Store:
 
     # ---------- dispatch ----------
 
-    def step(self, run_id, *, single=False):
+    def step(self, run_id, *, single=False, task_id=None):
         """Manual mode: fix this batch as the queue that claim() consumes."""
         with self.tx() as db:
             run, rows = self._task_map(db, run_id)
@@ -440,8 +440,11 @@ class Store:
                 raise InvalidState("上一批名单尚未领取完", pending=pending)
             tasks = {task["id"]: task for task in self.plan_tasks(
                 run["project_id"], run["plan_id"], run["plan_version"])}
-            batch = self._admit(db, run, rows, tasks,
-                                sorted(t for t, row in rows.items() if row["state"] == READY))
+            if task_id is not None and (not isinstance(task_id, str) or task_id not in rows):
+                raise NotFound("任务不存在", task_id=task_id)
+            order = ([task_id] if task_id is not None else
+                     sorted(t for t, row in rows.items() if row["state"] == READY))
+            batch = self._admit(db, run, rows, tasks, order)
             if single:
                 batch = batch[:1]
             if not batch:

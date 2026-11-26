@@ -1,8 +1,7 @@
 /* Bind the QLM interface to the combined workspace services. */
 window.createWorkspaceLink = function (hooks) {
   const { q, el, open, action, toast, getPlan, accept, setSpecification,
-    clearPlan, isDirty, renderGantt, download, showTask } = hooks;
-  const dedicated = q('#module-dedicated-view');
+    clearPlan, isDirty, renderGantt, stewardViews, download, showTask, editTask, showPlanVersion } = hooks;
   const nav = q('#left-sidebar nav');
   const stageBounds = {
     'intake-race':[0,1], 'review-synthesis':[2,5], 'task-planner':[6,7], workbench:[8,9],
@@ -26,6 +25,11 @@ window.createWorkspaceLink = function (hooks) {
   picker.style.display = '';
   picker.setAttribute('aria-label', '当前项目');
   oldPicker.replaceWith(picker);
+  const originalVersion = q('#select-engine');
+  const versionPicker = originalVersion.cloneNode(false);
+  versionPicker.style.display = '';
+  versionPicker.disabled = true;
+  originalVersion.replaceWith(versionPicker);
   const state = {
     module: 'steward', config: null, project: null, run: null, runPlan: null, reviewTab: 'handoff',
     spec: null, dirty: false, selection: 'merge', inspection: null, pending: false, error: '',
@@ -33,20 +37,18 @@ window.createWorkspaceLink = function (hooks) {
     version: 1, frozen: null, groups: [], extraPrompt: '', paused: false, queue: false,
     simulateFailure: false, selectedTask: null, edits: new Map(), feedback: '', feedbackGroup: '',
     target: null, runQuestions: [], activity: null, eventTrail: [], statusError: '',
-    memory: null, domain: '', terms: '', projects: [], memoryDraft: {},
+    projects: [],
     followSteward: true, selectedJobId: null, syncedJob: '', syncInFlight: null, syncError: '',
   };
   let epoch = 0;
   let polling = false;
-  const statusBar = el('div', null, 'px-5 py-2 bg-indigo-50 border-b border-indigo-100 text-xs shrink-0');
+  const statusBar = el('div', null, 'p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs');
   statusBar.id = 'workspace-live-status';
-  q('#active-badge').parentElement.parentElement.after(statusBar);
   const targetButton = action('产物位置', () => showTarget());
   const helpButton = action('使用答疑 AI', () => showHelp());
-  q('#active-badge').before(targetButton, helpButton);
   const steward = window.createStewardLink?.({
     q,el,action,get,post,open,modelMode:()=>state.config?.discussion_mode,limits:()=>state.config?.limits,
-    existingProject:()=>state.project,
+    existingProject:()=>state.project, views:stewardViews,
     onJobChange:handleJobChange,
     canContinue:()=>!(state.dirty || isDirty()),
     openProject: id=>{
@@ -220,6 +222,15 @@ window.createWorkspaceLink = function (hooks) {
     if(module==='workbench' && !getPlan())return true;
     return false;
   }
+  function appendWaitingControls(parent, module) {
+    const job = linkedJob();
+    const failed = job?.project_id && state.syncError === jobKey(job);
+    parent.append(text(failed ? '暂时读不到当前项目。' :
+      module !== 'review-synthesis' ? '任务计划生成后会显示在这里。' : '等待赛马草案交接。'));
+    if (job) parent.append(...stageActions(module));
+    if (failed) parent.append(action('重新读取项目', clearStageError));
+  }
+
   async function operate(callback) {
     if (state.pending) return;
     state.pending = true; state.error = ''; refresh();
@@ -263,6 +274,9 @@ window.createWorkspaceLink = function (hooks) {
     state.run = data.run; state.target = data.target || null;
     state.selectedTask = null; state.runQuestions = []; state.eventTrail = []; state.statusError = ''; state.activity = null;
     state.runPlan = runPlan;
+    state.modelBudget = data.model_budget;
+    state.planVersions = data.plan_versions || [];
+    state.viewedPlan = null;
     state.markdown = data.review.requirement.markdown;
     state.version = data.review.requirement.version;
     state.frozen = data.review.requirement;
@@ -274,7 +288,7 @@ window.createWorkspaceLink = function (hooks) {
       const option=el('option',data.review.requirement.items[0].title+' · '+projectId.slice(0,6));
       option.value=projectId;picker.append(option);
     }
-    picker.value = projectId; state.memory = null;
+    picker.value = projectId;
     if (state.run) await readRunDetails(state.run);
     return true;
   }
@@ -308,8 +322,8 @@ window.createWorkspaceLink = function (hooks) {
       }
       else {
         state.followSteward=true;state.syncedJob='';state.syncError='';
-        epoch++; state.project = state.run = state.runPlan = state.spec = state.frozen = null;
-        state.memory = null; state.version = 1; state.target = null;
+        epoch++; state.project = state.viewedPlan = state.run = state.runPlan = state.spec = state.frozen = null;
+        state.version = 1; state.target = null;
         state.runQuestions = []; state.eventTrail = []; state.selectedTask = null; state.activity = null;
         state.groups.forEach(group => { group.status = 'idle'; group.result = null; });
         clearPlan(); setSpecification(null); state.module = steward ? 'steward' : 'intake-race';
@@ -358,255 +372,195 @@ window.createWorkspaceLink = function (hooks) {
     }
     await updateProjects(); state.reviewTab = 'handoff'; state.module = 'review-synthesis';
   }
-  function renderIntake(wrap) {
-    const requirement = card('需求录入与快照版本控制');
-    const input = field(requirement, '需求 Markdown', state.markdown, value => { state.markdown = value; }, true);
-    input.rows = 8; input.disabled = !!state.frozen || state.pending;
-    if (!state.frozen) {
-      const hint = text('标题只用于分节。请在标题下写至少一条具体需求，例如「- 用户可以发布图文笔记。」');
-      hint.id = 'requirement-markdown-hint';
-      input.setAttribute('aria-describedby', hint.id);
-      requirement.append(hint);
+  function intakePage() {
+    const job = linkedJob();
+    if (job) {
+      const project = state.project?.id === job.project_id ? state.project : null;
+      const drafts = new Map((project?.drafts || []).map(draft => [draft.id, draft]));
+      return {
+        busy: true, managed: true, complete: job.groups.length >= 2 && job.groups.every(group => group.finished),
+        locked: true, markdown: job.markdown, version: project?.requirement.version || job.phase,
+        dispatchPaused: job.status === 'paused', simulateBFailure: false,
+        items: (project?.requirement.items || []).map(item => ({
+          id: item.id, text: item.text, line: item.source.start_line,
+        })),
+        groups: job.groups.map(group => ({
+          id: group.id, prompt: group.prompt, status: group.status, defaultGroup: true,
+          draftTitle: drafts.get(group.id)?.title || group.id + ' 组方案草案',
+          summary: drafts.get(group.id)?.summary || group.step,
+        })),
+        appendControls: parent => parent.append(...stageActions('intake-race')),
+      };
     }
-    const running = state.groups.some(group => group.status === 'running');
-    const confirm = action('确认需求快照', () => operate(async () => {
-      state.frozen = await tracked('检查需求正文并锁定快照', '/preview/snapshot', { markdown: state.markdown, version: state.version });
-      q('#sidebar-req-ver').textContent = state.frozen.id + '@v' + state.version;
-    }), true);
-    confirm.disabled = !!state.frozen || state.pending;
-    const edit = action('编辑并创建新版本', () => {
-      epoch++; state.version++; state.frozen = null;
-      for (const group of state.groups) { group.status = 'idle'; group.result = null; group.error = ''; }
-      refresh();
-    });
-    edit.disabled = !state.frozen || running;
-    requirement.append(line(confirm, edit));
-    if (state.frozen) {
-      requirement.append(text('已锁定 ' + state.frozen.id + '@v' + state.version));
-      const items = el('div', null, 'grid grid-cols-1 md:grid-cols-2 gap-2');
-      for (const item of state.frozen.items) {
-        const row = el('div', null, 'p-3 rounded-lg border border-slate-200 bg-slate-50');
-        row.append(el('strong', item.id + ' · ' + item.title, 'text-xs text-indigo-700'));
-        row.append(text('来源 L' + item.source.start_line + '—L' + item.source.end_line)); items.append(row);
-      }
-      requirement.append(items);
-    }
-    wrap.append(requirement);
-    const groups = card('赛马出案 · 分组与提示词配置');
-    const add = action('＋ 添加讨论组', () => {
-      const id = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').find(id => !state.groups.some(group => group.id === id));
-      if (!id) return;
-      state.groups.push({ id, prompt: state.extraPrompt, status: 'idle' }); refresh();
-    });
-    add.disabled = running || state.pending;
-    const run = action('启动赛马生成草案', () => race(), true);
-    run.disabled = !state.frozen || running || state.paused || state.pending;
-    groups.append(line(add, run));
-    const toggle = el('label', null, 'flex gap-2 items-center text-xs text-slate-600');
-    const fail = el('input'); fail.type = 'checkbox'; fail.checked = state.simulateFailure;
-    fail.onchange = () => { state.simulateFailure = fail.checked; };
-    toggle.append(fail, el('span', '模拟 B 组首次中断')); groups.append(toggle);
-    const grid = el('div', null, 'grid grid-cols-1 md:grid-cols-2 gap-3.5');
-    const labels = { idle: '待派发', running: '生成中', done: '已提交', failed: '失败' };
-    const all = state.groups.length >= 2 && state.groups.every(group => group.status === 'done');
-    for (const group of state.groups) {
-      const box = el('article', null, 'p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2');
-      box.append(el('strong', group.id + ' 组 · ' + labels[group.status], 'text-xs text-slate-800'));
-      const errorNotice = group.error ? text(group.error, 'text-xs text-red-700') : null;
-      const prompt = field(box, group.id + ' 组系统提示词', group.prompt, value => {
-        group.prompt = value; group.status = 'idle'; group.result = null;
-        if (errorNotice) errorNotice.hidden = true;
-        group.error = '';
-        q('#native-race-handoff')?.setAttribute('disabled', '');
-      }, true);
-      prompt.disabled = running || state.pending;
-      if (errorNotice) box.append(errorNotice);
-      if (group.status === 'done' && !all) {
-        box.append(text('本组草案已保留，等待其他组提交后一起公开。'));
-      }
-      const rerun = action(group.status === 'failed' ? '重试 ' + group.id + ' 组' : '单独运行 ' + group.id + ' 组', () => runGroup(group));
-      rerun.disabled = !state.frozen || running || state.paused || state.pending; box.append(rerun);
-      if (state.groups.length > 2) {
-        const remove = action('移除 ' + group.id + ' 组', () => { state.groups = state.groups.filter(other => other !== group); refresh(); });
-        remove.disabled = running || state.pending; box.append(remove);
-      }
-      if (all) {
-        const draft = group.result.draft;
-        box.append(el('h3', draft.title, 'font-semibold text-sm text-indigo-700'), text(draft.summary));
-        for (const claim of draft.claims) box.append(text(claim.id + ' · ' + claim.requirement_ids.join(', ') + ' · ' + claim.text));
-        const audit = el('details', null, 'text-xs text-slate-600');
-        audit.append(el('summary', '查看组内讨论记录'));
-        for (const idea of group.result.ideas) audit.append(text(idea.role + ' · ' + idea.proposal + ' ' + idea.risk));
-        audit.append(text(group.result.challenge || '已从历史项目恢复草案。')); box.append(audit);
-      }
-      grid.append(box);
-    }
-    groups.append(grid);
-    if (state.groups.some(g => g.status === 'failed')) {
-      groups.append(text('先重试失败组。已提交的组无需重跑。'));
-    }
-    if (all) {
-      const handoffButton = action('进入评审与整合 →', () => operate(handoff), true);
-      handoffButton.id = 'native-race-handoff';
-      groups.append(handoffButton);
-    }
-    wrap.append(groups);
+    const busy = state.pending || state.groups.some(group => group.status === 'running');
+    const complete = state.groups.length >= 2 && state.groups.every(group => group.status === 'done');
+    return {
+      busy, complete, locked: Boolean(state.frozen), markdown: state.markdown,
+      version: state.version, dispatchPaused: state.paused, simulateBFailure: state.simulateFailure,
+      items: (state.frozen?.items || []).map(item => ({
+        id: item.id, text: item.text, line: item.source.start_line,
+      })),
+      groups: state.groups.map(group => ({
+        ...group, defaultGroup: ['A', 'B'].includes(group.id),
+        draftTitle: complete ? group.result.draft.title : group.id + ' 组方案草案',
+        summary: complete ? group.result.draft.summary : group.error ||
+          (group.status === 'done' ? '本组已提交，等待其他组完成。' : ''),
+      })),
+      input: value => { state.markdown = value; },
+      freeze: () => operate(async () => {
+        state.frozen = await tracked('检查需求正文并锁定快照', '/preview/snapshot', {
+          markdown: state.markdown, version: state.version,
+        });
+        q('#sidebar-req-ver').textContent = state.frozen.id + '@v' + state.version;
+      }),
+      unlock() {
+        epoch++; state.version++; state.frozen = null;
+        for (const group of state.groups) Object.assign(group, {status:'idle', result:null, error:''});
+        refresh();
+      },
+      add() {
+        const id = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'].find(key => !state.groups.some(group => group.id === key));
+        if (!id) return;
+        state.groups.push({id, prompt:state.extraPrompt, status:'idle'});
+        refresh();
+      },
+      remove(id) { state.groups = state.groups.filter(group => group.id !== id); refresh(); },
+      prompt(id, value) {
+        const group = state.groups.find(row => row.id === id);
+        Object.assign(group, {prompt:value, status:'idle', result:null, error:''});
+      },
+      fail: value => { state.simulateFailure = value; },
+      race, retry: id => runGroup(state.groups.find(group => group.id === id)),
+      handoff: () => operate(handoff),
+    };
   }
-  function reviewButton(title, callback, primary = false, clean = false) {
-    const button = action(title, () => operate(callback), primary);
-    button.disabled = state.pending || (clean && state.dirty) || (linkedJob() && !permission('review-synthesis'));
-    if (clean) button.dataset.requiresCleanSpec = '';
-    return button;
-  }
-  function renderReview(wrap) {
-    if (!state.project) {
-      const empty = card('评审与方案整合');
-      empty.append(text('先完成至少两个小组的赛马出案。'), action('返回需求与赛马', () => open('intake-race')));
-      wrap.append(empty); return;
-    }
+
+  function reviewPage() {
     const project = state.project;
-    const job=linkedJob();
-    const canEdit=permission('review-synthesis');
-    if (!job && (!project.specification || project.specification.status !== 'confirmed')) {
-      const shortcut = card('主理人整合方案');
-      shortcut.append(text('自动组织独立评审、融合各组可取的做法，再把需要你确认的方案交给你。'));
-      if (!state.spec) shortcut.append(reviewButton('主理人整合方案', async () => {
-        if (!state.project.evaluations.length) await reviewAction('evaluate');
-        await reviewAction('propose', { selection: 'merge', expected_version: state.project.latest_version });
-      }, true, true));
-      wrap.append(shortcut);
+    const spec = state.spec;
+    const job = linkedJob();
+    if (!project || linkedStageWaiting('review-synthesis')) {
+      return {
+        waiting:true, busy:true, managed:!!job, subStep:state.reviewTab,
+        tab(key) { state.reviewTab = key; refresh(); },
+        appendControls:parent => appendWaitingControls(parent, 'review-synthesis'),
+      };
     }
-    const tabs = card();
-    tabs.append(line(...[['handoff', '交接材料'], ['eval', '独立评价'], ['spec', '方案与决策'], ['history', '历史版本']]
-      .map(([key, label]) => action(label, () => { state.reviewTab = key; refresh(); }, state.reviewTab === key))));
-    wrap.append(tabs);
-    if (state.reviewTab === 'handoff') {
-      const materials = card('同版本需求与参赛草案');
-      materials.append(text(project.requirement.id + '@v' + project.requirement.version + ' · 第 ' + project.round + ' 轮'));
-      materials.append(el('pre', JSON.stringify({requirement:project.requirement,drafts:project.drafts},null,2),
-        'p-4 bg-slate-900 text-emerald-300 mono text-xs rounded-xl overflow-auto max-h-96'));
-      materials.append(reviewButton('生成独立评价', () => reviewAction('evaluate'), true)); wrap.append(materials);
-    } else if (state.reviewTab === 'eval') {
-      if (!project.evaluations.length) wrap.append(reviewButton('生成独立评价', () => reviewAction('evaluate'), true));
-      for (const evaluation of project.evaluations) {
-        const box = card(evaluation.draft_id + ' 组独立评价');
-        const scores = el('div', null, 'grid grid-cols-3 gap-3');
-        for (const criterion of evaluation.criteria) {
-          const item = el('div', null, 'rounded-lg p-3 border border-slate-200 bg-slate-50');
-          item.append(el('strong', ({value:'用户价值',feasibility:'技术可行性',cost:'成本友好度'})[criterion.criterion] +
-            ' · ' + criterion.score + '/5', 'text-xs text-indigo-700'));
-          item.append(text(criterion.reason), text('依据 ' + criterion.claim_ids.join(', '), 'text-xs mono text-slate-500'));
-          scores.append(item);
-        }
-        box.append(scores); wrap.append(box);
-      }
-    } else if (state.reviewTab === 'history') {
-      const versions = card('方案历史版本');
-      for (const version of [...project.versions].reverse()) {
-        const row = el('details', null, 'p-3 border border-slate-200 rounded-lg text-xs');
-        row.append(el('summary', version.id + '@v' + version.version + ' · 第 ' + version.round + ' 轮 · ' + version.status));
-        row.addEventListener('toggle', async () => {
-          if (row.open && row.children.length === 1) {
-            try {
-              const historical = await get('/preview/projects/' + project.id + '/specifications/' + version.id + '/versions/' + version.version);
-              row.append(el('pre', historical.markdown, 'whitespace-pre-wrap mono pt-3'));
-            } catch (error) { row.append(text(error.message)); }
-          }
-        });
-        versions.append(row);
-      }
-      for (const record of project.review_records) versions.append(text('v' + record.version + ' · ' + record.action + ' · ' + record.reason));
-      wrap.append(versions);
-    } else if (!state.spec) wrap.append(text(job?'主理人还没生成综合方案。':'在右侧选择方案起点并生成草稿。'));
-    else {
-      const spec = state.spec;
-      const openItems = el('details',null,cardClass);
-      openItems.open=!job;
-      openItems.append(el('summary',job?'主理人已处理的待决事项及其来源':'待决事项 · 人工答复与取舍',
-        'cursor-pointer text-sm font-bold text-slate-900'));
-      for (const item of spec.open_items) {
-        const row = el('div', null, 'p-3 border border-amber-200 rounded-lg bg-amber-50 space-y-2');
-        row.id = 'open-' + item.id;
-        row.append(el('strong', item.id + ' · ' + item.question, 'text-xs text-amber-950'));
-        row.append(text('关联需求 ' + item.affected_requirement_ids.join(', ')));
-        for (const option of item.options || []) row.append(text(option.draft_id + ' · ' + option.claim_id + ' · ' + (option.text || option.choice || '')));
-        const response = field(row, '处理答复 ' + item.id, item.resolution || '', value => {
-          item.resolution = value.trim() || null; dirty();
-        }, true);
-        response.readOnly=!canEdit;
-        const apply = action('将答复写入决策', () => {
-          if (!response.value.trim()) { toast('请填写具体答复。'); return; }
-          item.resolution = response.value.trim();
-          const id = item.decision_id || 'DEC-HUMAN-' + item.id;
-          item.decision_id=id;
-          const prior = spec.decisions.find(decision => decision.id === id);
-          const decision = {id,scope:item.question,choice:item.resolution,reason:'负责人确认待决问题',
-            requirement_ids:[...item.affected_requirement_ids],draft_ids:[...new Set((item.options || []).map(option => option.draft_id))]};
-          if (!decision.draft_ids.length) decision.draft_ids = project.drafts.map(draft => draft.id);
-          if (prior) Object.assign(prior,decision); else spec.decisions.push(decision);
-          dirty(); refresh();
-        });
-        if(canEdit){apply.disabled = state.pending; row.append(apply);} openItems.append(row);
-      }
-      if (!spec.open_items.length) openItems.append(text('当前没有待决事项。'));
-      wrap.append(openItems);
-      const decisions = card('方案取舍与决策编辑');
-      if(canEdit)decisions.append(action('＋ 新增决策', () => {
+    const editable = !state.pending && !!spec && spec.status !== 'confirmed' && permission('review-synthesis');
+    const evaluations = Object.fromEntries(project.evaluations.map(evaluation => [
+      evaluation.draft_id, {
+        ...Object.fromEntries(evaluation.criteria.map(item => [item.criterion, item.score])),
+        claims: [...new Set(evaluation.criteria.flatMap(item => item.claim_ids))].join('、'),
+        reason: evaluation.criteria.map(item => item.reason).join('；'),
+      },
+    ]));
+    return {
+      editable, busy: state.pending, error: state.error, managed: !!job, hasSpec: !!spec,
+      groupIds: Object.keys(evaluations), evaluations, subStep: state.reviewTab,
+      currentVersion: spec?.version || 0, confirmed: spec?.status === 'confirmed',
+      specMarkdown: spec?.markdown || '', notes: spec?.notes_markdown || '',
+      requirement: project.requirement, drafts: project.drafts,
+      openItems: spec?.open_items.map(item => ({
+        ...item, affectedReq: item.affected_requirement_ids.join('、'), answer: item.resolution || '',
+      })) || [],
+      decisions: spec?.decisions || [],
+      historyVersions: (project.versions || []).slice().reverse().map(version => ({
+        ver: version.version, time: '', note: version.status === 'confirmed' ? '已确认定稿' : '草稿',
+      })),
+      tab(key) { state.reviewTab = key; refresh(); },
+      change: dirty,
+      notesInput(value) { spec.notes_markdown = value; dirty(); },
+      evaluate: () => operate(() => reviewAction('evaluate')),
+      propose: () => operate(async () => {
+        if (!project.evaluations.length) await reviewAction('evaluate');
+        await reviewAction('propose', {selection:'merge', expected_version:state.project.latest_version});
+      }),
+      example: () => operate(async () => {
+        if (state.dirty || isDirty()) throw new Error('请先保存当前编辑。');
+        const payload = await get('/preview/examples/conflict');
+        const next = await post('/preview/projects', payload);
+        await load(next.id);
+        state.reviewTab = 'handoff';
+      }),
+      resolve(id, answer) {
+        const item = spec.open_items.find(row => row.id === id);
+        item.resolution = answer;
+        const decisionId = item.decision_id || 'DEC-HUMAN-' + id;
+        item.decision_id = decisionId;
+        const decision = {id:decisionId, scope:item.question, choice:answer, reason:'负责人确认待决问题',
+          requirement_ids:[...item.affected_requirement_ids], draft_ids:project.drafts.map(draft => draft.id)};
+        const prior = spec.decisions.find(row => row.id === decisionId);
+        if (prior) Object.assign(prior, decision);
+        else spec.decisions.push(decision);
+        dirty(); refresh();
+      },
+      addDecision() {
         spec.decisions.push({id:'DEC-HUMAN-' + crypto.randomUUID().slice(0,8),scope:'',choice:'',reason:'',
           requirement_ids:[project.requirement.items[0].id],draft_ids:project.drafts.map(draft=>draft.id)});
-        dirty();refresh();
-      }));
-      for (const decision of spec.decisions) {
-        const row = el('fieldset', null, 'grid grid-cols-1 md:grid-cols-2 gap-2 p-3 bg-slate-50 border border-slate-200 rounded-lg');
-        row.append(el('legend', decision.id, 'mono text-xs text-indigo-700'));
-        field(row, '取舍范围', decision.scope, value => { decision.scope = value; dirty(); }).readOnly=!canEdit;
-        field(row, '采用做法', decision.choice, value => {
-          const prior=decision.choice;
-          decision.choice=value;
-          for(const item of spec.open_items){
-            if(item.decision_id===decision.id || (!item.decision_id && prior?.trim()===item.resolution?.trim()
-                && item.affected_requirement_ids.every(ref=>decision.requirement_ids.includes(ref)))) {
-              item.decision_id=decision.id;item.resolution=value.trim() || null;
-            }
-          }
-          dirty();
-        }, true).readOnly=!canEdit;
-        field(row, '决策理由', decision.reason, value => { decision.reason = value; dirty(); }, true).readOnly=!canEdit;
-        field(row, '关联需求', decision.requirement_ids.join(', '), value => { decision.requirement_ids = split(value); dirty(); }).readOnly=!canEdit;
-        if(canEdit && !spec.open_items.some(item=>item.decision_id===decision.id))row.append(action('删除决策 ' + decision.id, () => {
-          spec.decisions = spec.decisions.filter(item => item !== decision); dirty(); refresh();
-        }));
-        decisions.append(row);
-      }
-      field(decisions, '人工补充说明', spec.notes_markdown || '', value => { spec.notes_markdown = value; dirty(); }, true).readOnly=!canEdit;
-      if(canEdit)decisions.append(reviewButton('保存人工编辑为新版本', () => reviewAction('save', {
-        expected_version:spec.version,markdown:spec.markdown,notes_markdown:spec.notes_markdown || '',
-        decisions:spec.decisions,open_items:spec.open_items,
-      }), true));
-      const confirm = reviewButton('确认当前方案', () => reviewAction('confirm', {
-        expected_version:state.project.specification.version,
-      }), true, true);
-      confirm.disabled ||= spec.status === 'confirmed'; if(!job)decisions.append(confirm);
-      if (!job && state.project.specification.status === 'confirmed') decisions.append(reviewButton('进入任务分解 →', async () => {
-        await localStep('分解任务，检查依赖并计算甘特排期',
-          () => window.openTaskPlanner({review_id:project.id,version:state.project.specification.version}));
+        dirty(); refresh();
+      },
+      save: () => operate(() => reviewAction('save', {
+        expected_version:spec.version, markdown:spec.markdown, notes_markdown:spec.notes_markdown || '',
+        decisions:spec.decisions, open_items:spec.open_items,
+      })),
+      confirm: () => operate(async () => {
+        if (state.dirty) throw new Error('请先保存人工编辑。');
+        if (spec.status !== 'confirmed') await reviewAction('confirm', {expected_version:spec.version});
+        await window.openTaskPlanner({review_id:project.id,version:state.project.specification.version});
         state.module = 'task-planner';
-      }, true, true));
-      wrap.append(decisions);
-      const markdown = card('综合方案正文 · ' + spec.id + '@v' + spec.version + ' · ' + spec.status);
-      markdown.append(text(state.dirty ? '结构化编辑待保存，保存后同步生成正文。' : '正文已与结构化决策同步。'));
-      markdown.append(el('pre', spec.markdown, 'whitespace-pre-wrap mono text-xs bg-slate-50 rounded-lg p-4'));
-      if (spec.status === 'confirmed' && !state.dirty) markdown.append(action('下载方案 Markdown',
-        () => download('specification.md', spec.markdown, 'text/markdown;charset=utf-8')));
-      wrap.append(markdown);
-    }
+      }),
+      appendControls: parent => parent.append(...stageActions('review-synthesis')),
+    };
   }
+
+  function canRetrySession(id) {
+    return !state.pending && state.run?.state === 'active' &&
+      state.run.tasks[id]?.state === 'failed' && permission('workbench');
+  }
+
   async function runAction(name, body = {}) {
     const previous = state.run;
     state.run = await write(projectURL('/runs/' + previous.id + '/actions/' + name),
       {...body,expected_revision:previous.revision});
     await readRunDetails(state.run);
   }
+  function canEditNode() {
+    if (state.pending || !getPlan()) return false;
+    if (permission('task-planner')) return true;
+    const job = linkedJob();
+    return !!job?.run_id && job.project_id === state.project?.id && job.run_id === state.run?.id &&
+      (state.run.dispatch === 'paused' || state.run.state !== 'active') &&
+      ['failed', 'paused', 'cancelled', 'gate'].includes(job.status);
+  }
+
+  function checkNodeRerun() {
+    if (state.run?.state === 'active') {
+      throw new Error('当前运行仍在进行。请结束当前运行后再启动修改后的计划。');
+    }
+    const job = linkedJob();
+    if (job && !['completed', 'cancelled'].includes(job.status)) {
+      throw new Error('主理人正在管理本轮流程。请在开工确认点保存，再由主理人继续。');
+    }
+  }
+
+  async function startNodeRerun(snapshot) {
+    checkNodeRerun();
+    try {
+      state.run = await write(projectURL('/runs'), {
+        plan_ref: {id: snapshot.plan.id, version: snapshot.plan.version},
+        mode: 'auto', steward: true,
+      });
+    } catch (error) {
+      throw new Error('新版计划已保存。启动失败：' + error.message);
+    }
+    state.runPlan = structuredClone(snapshot);
+    try {
+      await readRunDetails(state.run);
+    } catch {
+      state.statusError = '新一轮已启动，暂时无法读取运行详情。';
+    }
+  }
+
   function planActions(parent, snapshot, draftDirty) {
     const controls = el('div', null, 'pt-3 border-t border-slate-200 space-y-2');
     const job=linkedJob();
@@ -651,19 +605,32 @@ window.createWorkspaceLink = function (hooks) {
     parent.append(controls);
   }
   function inspect(id) { state.selectedTask = id; showTask(id); }
-  function renderDetails(container) {
+  function renderDetails(container, {header = true} = {}) {
     const plan = state.runPlan?.plan || getPlan()?.plan;
     if (!plan) return;
     state.selectedTask ||= plan.tasks[0].id;
     const task = plan.tasks.find(task => task.id === state.selectedTask) || plan.tasks[0];
     const taskRun = state.run?.tasks[task.id];
     const canEdit=permission('workbench');
-    const box = card(task.id + ' · ' + task.title);
-    box.append(text('来源 ' + [...task.requirement_ids,...task.decision_ids,...task.open_item_ids].join(' · ')));
-    box.append(text('完成条件 ' + task.completion_condition), text('预计产物 ' + task.write_paths.join(' · ')));
+    const box = card(header ? task.id + ' · ' + task.title : '任务执行与产物审阅');
+    if (header) {
+    const technical = el('details', null, 'space-y-2 text-xs');
+    technical.append(el('summary', '查看需求编号、验收条件和文件路径', 'cursor-pointer text-indigo-700'));
+    technical.append(text('关联需求 ' + task.requirement_ids.join('、')),
+      text('关联决策与待确认事项 ' + [...task.decision_ids, ...task.open_item_ids].join('、')),
+      text('验收条件 ' + task.completion_condition), text('计划改动的文件 ' + task.write_paths.join('、')));
+    box.append(technical);
     const select = el('select', null, inputClass); select.setAttribute('aria-label','选择执行任务');
     for (const item of plan.tasks) { const option = el('option',item.id + ' · ' + item.title); option.value=item.id; select.append(option); }
-    select.value=task.id; select.onchange=()=>inspect(select.value); box.append(select); container.append(box);
+    select.value=task.id; select.onchange=()=>inspect(select.value); box.append(select);
+    if (getPlan()?.plan.tasks.some(item => item.id === task.id)) {
+      box.append(action('修改节点 / 输入要求', () => editTask(task.id)));
+      if (state.run?.state === 'active') {
+        box.append(text('当前运行使用启动时的计划。保存修改会生成新版计划，供后续运行使用。'));
+      }
+    }
+    }
+    container.append(box);
     if (!taskRun) { box.append(text('尚未启动开发。')); return; }
     box.append(text('任务状态：' + (taskLabels[taskRun.state] || taskRun.state)));
     for (const blocker of taskRun.blockers || []) {
@@ -707,26 +674,31 @@ window.createWorkspaceLink = function (hooks) {
     const revisions={};
     for(const artifact of taskRun.artifacts) {
       const entry=el('div',null,'p-3 border border-slate-200 rounded-lg space-y-2');
-      entry.append(el('strong',artifact.output_id+'@v'+artifact.version+' · '+artifact.status,'mono text-xs text-indigo-700'));
-      entry.append(text('来源 '+artifact.origin+' · 类型 '+artifact.kind));
+      const artifactStatus = {draft:'待审查', approved:'已批准', rejected:'已退回'};
+      const title = artifact.kind === 'text' ? '文本产物' : '代码提交';
+      entry.append(el('strong', title + ' · 第 ' + artifact.version + ' 版 · ' +
+        (artifactStatus[artifact.status] || '状态待同步'), 'text-xs text-indigo-700'));
+      const raw = el('details', null, 'space-y-2');
+      raw.append(el('summary', '查看产物原文与技术细节', 'cursor-pointer text-indigo-700'));
+      entry.append(raw);
       if(artifact.kind==='text') {
         const key=state.run.id+':'+artifact.id+':'+artifact.version;
         const original=state.edits.has(key)?state.edits.get(key):artifact.content;
-        const input=field(entry,'产物正文 '+artifact.output_id,original,value=>{
+        const input=field(raw,'产物正文 '+artifact.output_id,original,value=>{
           state.edits.set(key,value);revisions[artifact.output_id]={content:value};
         },true);
         input.rows=6; input.readOnly=artifact.status!=='draft' || !canEdit;
         if(state.edits.has(key))revisions[artifact.output_id]={content:original};
       } else {
-        entry.append(el('code',artifact.commit_sha || '','mono block text-xs break-all'));
+        raw.append(el('code',artifact.commit_sha || '','mono block text-xs break-all'));
         const attempt = taskRun.attempts.find(row=>row.id===artifact.attempt_id) || taskRun.attempts.at(-1);
         if (attempt?.checkout_commit && state.target?.repo) {
-          entry.append(text('目标仓库：'+state.target.repo),
+          raw.append(text('目标仓库：'+state.target.repo),
             text('任务分支：attempt/'+state.run.id+'/'+attempt.id));
         } else if (!attempt?.checkout_commit) entry.append(text('模拟提交，不对应本地源码。'));
-        entry.append(text('改动文件 '+artifact.changed_paths.join(', ')));
+        raw.append(text('改动文件 '+artifact.changed_paths.join(', ')));
         if(canEdit && artifact.status==='draft' && (state.target?.repo || state.config?.real_available)) {
-          field(entry,'人工修订提交 '+artifact.output_id,artifact.commit_sha,value=>{
+          field(raw,'人工修订提交 '+artifact.output_id,artifact.commit_sha,value=>{
             revisions[artifact.output_id]={commit_sha:value.trim()};
           });
         }
@@ -774,16 +746,71 @@ window.createWorkspaceLink = function (hooks) {
         box.append(rework);
       }
     }
-    for(const attempt of taskRun.attempts) box.append(text('尝试 '+attempt.id+' · '+(attempt.provider || '待执行')+
-      (attempt.model?' / '+attempt.model:'')+' · '+attempt.state));
+    if (taskRun.attempts.length) {
+      const attempts = el('details', null, 'space-y-2');
+      attempts.append(el('summary', '查看执行记录（' + taskRun.attempts.length + ' 次）', 'cursor-pointer'));
+      for (const attempt of taskRun.attempts) {
+        attempts.append(text('尝试 ' + attempt.id + ' · ' + (attempt.provider || '待执行') +
+          (attempt.model ? ' / ' + attempt.model : '') + ' · ' + attempt.state));
+      }
+      box.append(attempts);
+    }
   }
+  const taskDisplayStatus = {
+    done:'completed', review:'in_progress', failed:'failed', running:'running',
+    ready:'ready', waiting:'pending', blocked:'blocked', input_required:'input_required',
+  };
+
+  function reviewDashboard() {
+    const plan = (state.runPlan || getPlan())?.plan;
+    const run = state.run;
+    const tasks = (plan?.tasks || []).map(task => {
+      const record = run?.tasks[task.id];
+      const artifacts = record?.artifacts || [];
+      const latest = new Map(artifacts.map(artifact => [artifact.output_id, artifact]));
+      const checks = [...latest.values()].map(artifact => ({name:artifact.output_id,
+        detail:({approved:'产物已放行', rejected:'产物已退回', draft:'产物等待审查'})[artifact.status] || '等待更新',
+        status:({approved:'passed', rejected:'failed'})[artifact.status] || 'pending'}));
+      const findings = (run?.findings || []).filter(finding => finding.ref_id === task.id ||
+        finding.affected_task_ids?.includes(task.id)).map(finding => ({
+        id:finding.code, line:finding.ref_id || task.id, text:finding.summary,
+        severity:finding.severity === 'error' ? 'blocker' : 'warning', resolved:false,
+      }));
+      const texts = artifacts.filter(artifact => artifact.kind === 'text' && typeof artifact.content === 'string');
+      const current = texts.at(-1);
+      const previous = current && texts.filter(artifact => artifact.output_id === current.output_id).at(-2);
+      const commit = artifacts.filter(artifact => artifact.commit_sha).at(-1)?.commit_sha;
+      const history = artifacts.filter(artifact => ['approved','rejected'].includes(artifact.status)).map(artifact => ({
+        round:artifact.version, action:artifact.status === 'approved' ? '产物审查放行' : '产物退回',
+        agent:'执行记录', commit:artifact.commit_sha || '—', time:'', note:artifact.output_id,
+      })).reverse();
+      return {id:task.id, name:task.title, owner:task.role, deps:task.depends_on,
+        spec:[...task.requirement_ids, ...task.decision_ids].join(' · '),
+        status:taskDisplayStatus[record?.state] || 'planned',
+        isReviewNode:task.review_required || ['review','verification'].includes(task.phase) || record?.state === 'review' || !!commit || checks.some(check => check.status === 'failed'),
+        review:{reviewerAgent:task.role, checks, findings, history,
+          verdict:record?.state === 'done' ? 'passed' : record?.state === 'failed' ? 'needs_fix' : 'pending',
+          round:record?.attempts.length || 0, commitSha:commit || '—',
+          excerptRange:current?.output_id || '暂无文本差异', origCode:previous?.content,
+          fixedCode:previous ? current.content : undefined,
+          patchOutputs:[...new Set(artifacts.filter(artifact => artifact.commit_sha).map(artifact => artifact.output_id))],
+          loadPatch:commit && state.project && run ? (output, against) => get('/workspace/projects/' +
+            encodeURIComponent(state.project.id) + '/runs/' + encodeURIComponent(run.id) +
+            '/tasks/' + encodeURIComponent(task.id) + '/patch?' + new URLSearchParams({output, against})) : null}};
+    });
+    return {tasks, canStep:canStep(), running:state.run?.mode === 'auto' && state.run.dispatch === 'active'};
+  }
+
   function renderTab(tab, selection) {
     if (selection && (state.runPlan || getPlan())?.plan.tasks.some(t=>t.id===selection)) state.selectedTask = selection;
     if(tab==='graph')return false;
-    const container=q(tab==='details'?'#panel-details':tab==='monitor'?'#panel-monitor':'#panel-activity');
+    const panels = {details:'#panel-details', monitor:'#panel-monitor',
+      activity:'#panel-activity'};
+    if (!panels[tab]) return false;
+    const container = q(panels[tab]);
     container.replaceChildren();
     const wrap=el('div',null,'p-5 space-y-4 max-w-5xl mx-auto'); container.append(wrap);
-    if(tab==='details')renderDetails(wrap);
+    if (tab === 'details') renderDetails(wrap);
     else if(tab==='monitor') {
       const snapshot=state.runPlan || getPlan();
       if(snapshot?.schedule)wrap.append(renderGantt(snapshot.plan,snapshot.schedule,state.run,inspect));
@@ -803,7 +830,7 @@ window.createWorkspaceLink = function (hooks) {
     return true;
   }
   function renderSidebar(module) {
-    sidebarBody.replaceChildren(); sidebarBody.append(el('strong','STAGE STEWARD · 主理控制','text-xs text-indigo-700'));
+    sidebarBody.replaceChildren(el('strong','STAGE STEWARD · 主理控制','text-xs text-indigo-700'), statusBar, line(targetButton, helpButton));
     q('#steward-case-label').textContent=state.project?.requirement.id || '新建需求';
     q('#steward-parallel-label').textContent='max_parallel = '+(getPlan()?.plan.max_parallel || 2);
     if(state.error)sidebarBody.append(text(state.error,'text-xs p-3 rounded-lg bg-red-50 text-red-700'));
@@ -824,56 +851,8 @@ window.createWorkspaceLink = function (hooks) {
       }
       return;
     }
-    if(module==='intake-race') {
-      sidebarBody.append(el('h3','赛马出案主理 AI','text-sm font-bold'),text('独立调用按组隔离。全部小组提交后公开草案并交接评审。'));
-      sidebarBody.append(action(state.paused?'恢复赛马派发':'暂停后续派发',()=>{
-        state.paused=!state.paused;refresh();if(!state.paused)race();
-      }));
-      const targets=el('select',null,inputClass);
-      for(const group of state.groups){const option=el('option',group.id+' 组');option.value=group.id;targets.append(option);}
-      targets.value=state.feedbackGroup || state.groups[0]?.id; targets.onchange=()=>{state.feedbackGroup=targets.value;}; sidebarBody.append(targets);
-      const instruction=field(sidebarBody,'负责人补充指令',state.feedback,value=>{state.feedback=value;},true);
-      const apply=action('追加指令并重跑该组',()=>{
-        if(!instruction.value.trim()){toast('请填写补充指令。');return;}
-        const group=state.groups.find(group=>group.id===targets.value); if(!group)return;
-        group.prompt+='\n负责人补充指令：'+instruction.value.trim();
-        group.status='idle';group.result=null;state.feedback=''; runGroup(group);
-      },true);
-      apply.disabled=state.groups.some(group=>group.status==='running') || !state.frozen || state.paused; sidebarBody.append(apply);
-    } else if(module==='review-synthesis') {
-      sidebarBody.append(el('h3','评审与整合主理 AI','text-sm font-bold'));
-      if(!state.project){sidebarBody.append(text('等待需求与草案交接。'));return;}
-      if(state.project.evaluations.length) {
-        const select=el('select',null,inputClass);
-        for(const [id,label] of [['merge','融合各组方案'],...state.project.drafts.map(draft=>[draft.id,'以 '+draft.id+' 组为起点'])]){
-          const option=el('option',label);option.value=id;select.append(option);
-        }
-        select.value=state.selection;select.onchange=()=>{state.selection=select.value;};
-        sidebarBody.append(select,reviewButton('生成方案草稿',()=>reviewAction('propose',{
-          selection:state.selection,expected_version:state.project.latest_version,
-        }),true,true));
-      }
-      if(state.spec)sidebarBody.append(reviewButton('检查当前方案',async()=>{
-        const result=await post('/preview/projects/'+state.project.id+'/actions/inspect',{
-          expected_version:state.spec.version,markdown:state.spec.markdown,notes_markdown:state.spec.notes_markdown || '',
-          decisions:state.spec.decisions,open_items:state.spec.open_items,
-        }); state.inspection=result.findings;
-      }));
-      for(const finding of state.inspection || state.project.findings) {
-        sidebarBody.append(text(finding.summary,finding.severity==='error'?'text-xs text-red-700':'text-xs text-slate-600'));
-        if(finding.ref_id)sidebarBody.append(action('定位 '+finding.ref_id,()=>{
-          state.reviewTab='spec';refresh();document.getElementById('open-'+finding.ref_id)?.scrollIntoView({block:'center'});
-        }));
-      }
-      const target=el('select',null,inputClass);
-      for(const draft of state.project.drafts){const option=el('option',draft.id+' 组');option.value=draft.id;target.append(option);}
-      target.value=state.feedbackGroup || state.project.drafts[0].id;target.onchange=()=>{state.feedbackGroup=target.value;}; sidebarBody.append(target);
-      field(sidebarBody,'返工说明',state.feedback,value=>{state.feedback=value;},true);
-      sidebarBody.append(action('退回指定小组补充',()=>{
-        if(!state.feedback.trim()){toast('请填写返工说明。');return;}
-        state.feedbackGroup=target.value;open('intake-race');
-      }));
-    } else {
+    if (['intake-race', 'review-synthesis'].includes(module)) return;
+    {
       sidebarBody.append(el('h3','编排与执行主理','text-sm font-bold'));
       const displayed = state.runPlan || getPlan();
       if(displayed)sidebarBody.append(text('计划 v'+displayed.plan.version+' · '+displayed.plan.tasks.length+' 项任务 · '+
@@ -911,39 +890,84 @@ window.createWorkspaceLink = function (hooks) {
       } else sidebarBody.append(text('核对需求覆盖、任务边界与待决问题，再保存和启动开发。'));
     }
   }
-  async function loadMemory() {
-    state.memory=await get(projectURL('/memory')+'?domain='+encodeURIComponent(state.domain)+'&terms='+encodeURIComponent(state.terms));
+  let profiles;
+  function loadProfiles() {
+    const id = state.project?.id;
+    if (profiles && profiles.id === id) return;
+    const view = profiles = {id, agents: [], pending: !!id};
+    if (!id) return;
+    get(projectURL('/profiles')).then(data => { view.agents = data.items; })
+      .catch(error => { view.error = error.message; })
+      .finally(() => {
+        view.pending = false;
+        if (profiles === view && state.module === 'agents-profile') refresh();
+      });
   }
-  function renderMemory(wrap) {
-    const box=card('领域经验卡库');
-    if(!state.project){box.append(text('先选择或创建项目。'));wrap.append(box);return;}
-    field(box,'领域',state.domain,value=>{state.domain=value;});
-    field(box,'关键词或同义词',state.terms,value=>{state.terms=value;});
-    box.append(line(action('查询经验',()=>operate(loadMemory),true), action('采用最新已审核经验基线',()=>operate(async()=>{
-      await write(projectURL('/memory/baseline'),{});await loadMemory();
-    }))));
-    if(state.memory && !state.memory.items.length)box.append(text('当前基线没有匹配经验。可更新基线后按领域和关键词检索。'));
-    for(const record of state.memory?.items || []) {
-      const row=el('article',null,'p-3 rounded-lg border border-slate-200 bg-slate-50 space-y-2');
-      row.append(el('strong',record.id+'@v'+record.version+' · '+record.visibility,'text-xs text-indigo-700'));
-      row.append(text('问题 '+record.body.problem),text('原因 '+record.body.cause),text('改正 '+record.body.correction));
-      row.append(text('验证条件 '+record.body.pass_condition+' · 证据等级 '+record.body.evidence_state));
-      if(record.visibility!=='published')row.append(action('审核并发布经验',()=>operate(async()=>{
-        await write(projectURL('/memory/publish'),{ref:{id:record.id,version:record.version},expected_version:record.version,note:'项目负责人核对问题、证据与改正步骤后发布。'});
-        await loadMemory();
-      }))); box.append(row);
-    }
-    wrap.append(box);
-    const create=card('记录一次具体踩坑与改正'); const body=state.memoryDraft;
-    for(const [key,label] of [['domain','经验领域'],['problem','本次发现的问题'],['cause','问题原因'],['trigger','再次遇到的触发条件'],
-      ['correction','下次执行的改正步骤'],['pass_condition','如何确认已经改正'],['evidence','本次证据或复现记录'],['tags','关键词、同义词']]) {
-      field(create,label,key==='tags'?(body[key] || []).join(', '):(body[key] || ''),value=>{
-        body[key]=key==='tags'?split(value):value;
-      },key!=='domain'&&key!=='tags');
-    }
-    create.append(action('保存候选经验',()=>operate(async()=>{await write(projectURL('/memory'),body);state.memoryDraft={};await loadMemory();}),true));
-    wrap.append(create);
+
+  async function saveProfile(body) {
+    const view = profiles;
+    if (!view?.id) throw new Error('请先选择项目。');
+    const saved = await write(projectURL('/profiles'), body);
+    if (profiles !== view) return;
+    if (!body.id) view.agents.push(saved);
+    else view.agents.find(agent => agent.id === body.id)[body.field] = saved[body.field];
   }
+
+  let memory;
+  const evidenceLabels = {pending:'待验证', simulated:'模拟验证', walkthrough:'方案走查', pilot:'单测验证', production:'真实代码执行'};
+  function applyMemory(view, data) {
+    view.baseline = data.baseline;
+    view.cards = data.items.map(record => {
+      const body = record.body;
+      return {id:record.id, version:record.version, domain:body.domain, phenomenon:body.problem || '',
+        trigger:body.trigger, action:body.correction, counterExample:body.counter_example || '',
+        aliases:(body.tags || []).join('、'), cause:body.cause || '', verification:body.pass_condition,
+        evidence:body.evidence || '', pubStatus:record.visibility === 'published' ? '已发布' : '草稿',
+        evidStatus:evidenceLabels[body.evidence_state] || '待验证', readOnly:record.project !== view.id,
+        inBaseline:data.baseline?.some(ref => ref.id === record.id && ref.version === record.version)};
+    });
+  }
+
+  function loadMemory() {
+    const id = state.project?.id;
+    if (memory && memory.id === id) return;
+    const view = memory = {id, cards:[], pending:!!id};
+    if (!id) return;
+    get(projectURL('/memory')).then(data => applyMemory(view, data))
+      .catch(error => { view.error = error.message; })
+      .finally(() => {
+        view.pending = false;
+        if (memory === view && state.module === 'exp-memory') refresh();
+      });
+  }
+
+  async function updateMemory(cards) {
+    const view = memory;
+    if (!view?.id || view.pending) throw new Error('请先选择项目并等待读取完成。');
+    const url = projectURL('/memory');
+    const toPublish = cards && cards.map(card => ({
+      ref:card.local ? null : {id:card.id, version:card.version},
+      content:{domain:card.domain, problem:card.phenomenon, trigger:card.trigger,
+        correction:card.action, counter_example:card.counterExample, tags:split(card.aliases),
+        cause:card.cause, pass_condition:card.verification, evidence:card.evidence,
+        evidence_state:Object.keys(evidenceLabels).find(level => evidenceLabels[level] === card.evidStatus)},
+    }));
+    view.pending = true;
+    try {
+      await write(url + (toPublish ? '/publish-cards' : '/baseline'), toPublish ? {cards:toPublish} : {});
+      const untouched = view.cards.filter(card => !cards?.includes(card));
+      const edits = new Map(untouched.filter(card => !card.local).map(card => [card.id, card]));
+      applyMemory(view, await get(url));
+      view.cards = view.cards.map(card => {
+        const edited = edits.get(card.id);
+        return edited?.version === card.version ? {...edited, inBaseline:card.inBaseline} : card;
+      });
+      view.cards.unshift(...untouched.filter(card => card.local));
+    } finally {
+      view.pending = false;
+    }
+  }
+
   function renderModelSettings(wrap) {
     const box = card('模型 API 配置');
     const settings = state.config;
@@ -1065,7 +1089,45 @@ window.createWorkspaceLink = function (hooks) {
   statusHistory.append(statusSteps);
   statusBar.append(statusTitle,statusDetail,statusHistory);
   let lastRows = '';
+  versionPicker.onchange = () => {
+    const value = versionPicker.value;
+    if (!value) { state.viewedPlan = null; refresh(); return; }
+    const [id, version] = value.split(':');
+    if (!state.project) return;
+    const project = state.project.id;
+    operate(async () => {
+      const view = await get('/api/v2/projects/' + project + '/plans/' + id + '/versions/' + version);
+      if (state.project?.id !== project) return;
+      state.viewedPlan = view;
+      showPlanVersion();
+    });
+  };
+
   function renderStatus() {
+    const plan = (state.runPlan || getPlan())?.plan;
+    const versions = state.project ? state.planVersions || [] : [];
+    const refs = new Map(versions.map(ref => [ref.id + ':' + ref.version, ref]));
+    for (const extra of [plan, getPlan()?.plan]) {
+      if (extra) refs.set(extra.id + ':' + extra.version, {id:extra.id, version:extra.version, spec_id:extra.spec_ref.id});
+    }
+    if (state.project) state.planVersions = [...refs.values()];
+    const keyFor = ref => ref && ref.id + ':' + ref.version;
+    const labelFor = ref => ref.spec_id + ' · ' + ref.id + ' v' + ref.version;
+    const currentKey = keyFor(plan);
+    const latestKey = keyFor(getPlan()?.plan);
+    const labels = [['', plan ? labelFor(refs.get(currentKey)) + (state.runPlan ? ' · 运行版本' : ' · 当前计划') : '等待计划'],
+      ...[...refs].filter(([key]) => key !== currentKey)
+        .map(([key, ref]) => [key, labelFor(ref) + (key === latestKey ? ' · 最新计划' : ' · 历史快照')])];
+    const versionSignature = JSON.stringify(labels);
+    if (versionPicker.dataset.versions !== versionSignature) {
+      versionPicker.dataset.versions = versionSignature;
+      versionPicker.replaceChildren(...labels.map(([value, label]) => {
+        const option = el('option', label); option.value = value; return option;
+      }));
+    }
+    const viewed = state.viewedPlan?.plan;
+    versionPicker.value = viewed ? viewed.id + ':' + viewed.version : '';
+    versionPicker.disabled = state.pending || labels.length < 2;
     const badge = q('#nav-review-badge');
     const pendingReviews = Object.values(state.run?.tasks || {}).filter(task => task.state === 'review').length;
     badge.hidden = pendingReviews === 0;
@@ -1190,7 +1252,7 @@ window.createWorkspaceLink = function (hooks) {
     modal.append(body);
     modal.addEventListener('close',()=>modal.remove());
     document.body.append(modal); modal.showModal();
-    return {body,close:action('关闭',()=>modal.close())};
+    return {body, dismiss:()=>modal.close(), close:action('关闭',()=>modal.close())};
   }
 
   function showTarget() {
@@ -1256,90 +1318,65 @@ window.createWorkspaceLink = function (hooks) {
     input.focus();
   }
 
-  function render(module) {
-    state.module=module; renderStatus(); updateStageBadges();
-    const job=linkedJob();
-    if(job?.project_id)syncLinkedProject(job);
-    const conversation=module==='steward' && steward;
-    statusBar.hidden=!!conversation;
-    targetButton.hidden=!!conversation;
-    if(conversation){
-      q('#btn-fit-graph').style.display='none';
-      q('#right-steward-sidebar').style.display='none';
-      q('#btn-toggle-right-sidebar').style.display='none';
-      q('#workbench-split-view').classList.add('hidden');
-      dedicated.classList.remove('hidden');
-      if(!dedicated.querySelector('[data-steward-root]')){
-        dedicated.replaceChildren();
-        const wrap=el('div');wrap.setAttribute('data-steward-root','');
-        dedicated.append(wrap);
-        steward.show(wrap);
-      }else steward.show(dedicated.querySelector('[data-steward-root]'));
-      return true;
-    }
-    steward?.hide();
-    q('#btn-fit-graph').style.display=module==='workbench'?'':'none';
-    q('#progress-pct').style.display = state.run ? '' : 'none';
-    q('#progress-bar').parentElement.style.display = state.run ? '' : 'none';
-    q('#btn-toggle-right-sidebar').style.display='';q('#right-steward-sidebar').style.display='';
-    document.querySelectorAll('.ws-tab').forEach(tab=>{tab.style.display='';});
-    if(linkedStageWaiting(module)){
-      q('#workbench-split-view').classList.add('hidden');dedicated.classList.remove('hidden');dedicated.replaceChildren();
-      const wrap=el('div',null,'max-w-5xl mx-auto p-5');dedicated.append(wrap);
-      const pending=card(q('#page-title').textContent);
-      const failed=!!job.project_id && state.syncError===jobKey(job);
-      pending.append(text(failed?'暂时读不到当前项目。':job.project_id && state.project?.id!==job.project_id?
-        '正在读取当前对话的项目。':'这个阶段的结果还没有生成，生成后这里会自动更新。'),...stageActions(module));
-      if(failed)pending.append(action('重新读取项目',clearStageError));
-      wrap.append(pending);
-      sidebarBody.replaceChildren(...stageActions(module));
-      return true;
-    }
-    if(module==='task-planner'||module==='workbench')return false;
-    q('#workbench-split-view').classList.add('hidden'); dedicated.classList.remove('hidden'); dedicated.replaceChildren();
-    const wrap=el('div',null,'max-w-5xl mx-auto space-y-5 text-xs'); dedicated.append(wrap);
-    if(state.error)wrap.append(text(state.error,'p-3 rounded-lg bg-red-50 text-red-700 text-sm'));
-    if(module==='intake-race' && job){
-      const box=card('需求快照与赛马');
-      box.append(...stageActions(module));
-      box.append(el('pre',job.markdown,'whitespace-pre-wrap text-sm bg-slate-50 p-3 rounded'));
-      if(job.groups.length){
-        box.append(text('主理人安排 '+job.groups.length+' 组，'+job.groups.filter(g=>g.finished).length+' 组已提交。'));
-        for(const g of job.groups.filter(g=>g.status==='running' || g.status==='failed'))box.append(text(g.step));
-        const routes=el('details');
-        routes.append(el('summary','查看分组和提示词','cursor-pointer font-semibold'));
-        for(const group of job.groups) routes.append(text(group.id+' 组 · '+group.focus),text(group.prompt));
-        box.append(routes);
-      }
-      box.append(text('需求快照已经绑定本轮。修改需求或分组时，可回对话或在主理人高级设置中发起下一轮。'));
-      wrap.append(box);
-    }else if(module==='intake-race')renderIntake(wrap);
-    else if(module==='review-synthesis')renderReview(wrap);
-    else if(module==='exp-memory')renderMemory(wrap);
-    else if(module==='model-router')renderModelSettings(wrap);
-    else if(module==='code-review') {
-      const review = Object.values(state.run?.tasks || {}).find(task => task.state === 'review');
-      const box = card('Agent 代码审查');
-      if (review) box.append(action('查看待审产物 ' + review.task_id, () => inspect(review.task_id), true));
-      else box.append(text(state.run ? '当前没有待审任务。' : '启动开发后可查看待审产物。'));
-      if (state.run) box.append(action('查看运行与审查记录', () => open('workbench')));
-      wrap.append(box);
-    }
-    else {
-      const box=card(module==='sqlite-store'?'SQLite 项目存储':'项目记录与数字人上下文');
-      box.append(text('需求、评审版本、任务计划、执行产物与领域经验共用当前项目数据库。'));
-      if(state.project)box.append(action('查看当前项目可见记录',async()=>{
-        try {
-          const records=await get(projectURL('/memory/records'));
-          box.append(el('pre',JSON.stringify(records,null,2),'whitespace-pre-wrap mono text-xs max-h-96 overflow-auto'));
-        }catch(error){toast(error.message);}
-      }));
-      if(state.project)box.append(action('下载当前项目交付记录',()=>operate(async()=>{
-        const data=await get(projectURL());download('project-delivery.json',JSON.stringify(data,null,2),'application/json');
-      })));wrap.append(box);
-    }
-    renderSidebar(module);return true;
+  function canPrepareWorktree(id) {
+    return canStep() && !!state.target?.repo && !!state.runPlan?.plan.base_commit &&
+      state.run.tasks[id]?.state === 'ready' &&
+      state.runPlan.plan.tasks.some(task => task.id === id && task.outputs.some(output => output.kind === 'git_commit'));
   }
+
+  function canStep() {
+    return !state.pending && state.run?.state === 'active' && state.run.mode === 'manual' &&
+      state.run.dispatch === 'active' && permission('workbench') &&
+      Object.values(state.run.tasks).some(task => task.state === 'ready');
+  }
+
+  function updateWorkflowControls() {
+    q('#btn-step-sim').disabled = !canStep();
+    const job = linkedJob();
+    const run = state.run;
+    const autoActive = run?.state === 'active' && run.mode === 'auto';
+    const running = job ? job.status === 'running' : autoActive && run.dispatch === 'active';
+    const paused = job ? ['paused', 'gate'].includes(job.status) : autoActive && run.dispatch === 'paused';
+    const loop = q('#btn-auto-loop');
+    loop.disabled = !!state.pending || job?.status === 'pausing';
+    loop.textContent = running ? '暂停持续开发-审查闭环'
+      : paused ? '继续持续开发-审查闭环' : '↻ 启动持续开发-审查闭环';
+  }
+
+  function step() {
+    if (canStep()) return operate(() => runAction('advance', {single: true}));
+    toast('当前没有可单步派发的任务。');
+  }
+
+  function toggleLoop() {
+    const job = linkedJob();
+    if (job && ['running', 'paused', 'gate'].includes(job.status)) {
+      return steward.control(job.status === 'running' ? 'pause' : 'continue');
+    }
+    if (state.run?.state === 'active' && state.run.mode === 'auto') {
+      return operate(() => runAction(state.run.dispatch === 'paused' ? 'resume' : 'pause'));
+    }
+    const plan = getPlan();
+    if (plan && !state.pending && !isDirty() && !job && state.run?.state !== 'active') {
+      return operate(() => startNodeRerun(plan));
+    }
+    open(plan ? 'task-planner' : 'steward');
+  }
+
+  function render(module) {
+    state.module = module;
+    renderStatus();
+    updateStageBadges();
+    updateWorkflowControls();
+    const job = linkedJob();
+    if (job?.project_id) syncLinkedProject(job);
+    if (module !== 'steward') steward?.hide();
+    q('#btn-fit-graph').style.display = module === 'workbench' ? '' : 'none';
+    if (module === 'agents-profile') loadProfiles();
+    if (module === 'exp-memory') loadMemory();
+    renderSidebar(module);
+  }
+
   async function initialize() {
     try {
       const defaults=await get('/preview/config');state.extraPrompt=defaults.extra_prompt;
@@ -1354,6 +1391,7 @@ window.createWorkspaceLink = function (hooks) {
   initialize();
   setInterval(async()=>{
     renderStatus();
+    updateWorkflowControls();
     if(polling || !state.run || state.run.state!=='active' || state.pending)return;
     polling=true;
     try {
@@ -1364,14 +1402,174 @@ window.createWorkspaceLink = function (hooks) {
       if (changed) await readRunDetails(run);
       if(epoch !== currentEpoch || state.run !== current) return;
       state.run=run; state.statusError='';
-      if (changed && ['workbench', 'code-review'].includes(state.module)) refresh();
+      const editingForm = document.activeElement?.matches(
+        '#panel-details input, #panel-details textarea, #panel-details select, #storage-after-seq');
+      if (changed && !editingForm && ['workbench', 'code-review', 'autogen-resume', 'git-worktree', 'sqlite-store'].includes(state.module)) refresh();
       else renderStatus();
     }catch(error){state.statusError='状态同步中断，当前画面可能已过时。'; renderStatus();}
     finally{polling=false;}
   },1500);
-  return {render,sidebar:renderSidebar,renderTab,planActions,inspect,
-    executionSnapshot:()=>state.module === 'workbench' ? state.runPlan : null,
-    reworkEdges:()=>state.run?.rework_edges || [],
-    taskStatus:id=>({done:'completed',review:'in_progress',failed:'failed',running:'running'})[state.run?.tasks[id]?.state] ||
-      (state.run?'pending':'planned')};
+  return {render,renderTab,planActions,inspect,step,toggleLoop,intakePage,reviewPage,
+    appendLiveDetails(container, id) {
+      state.selectedTask = id;
+      renderDetails(container, {header: false});
+    },
+    nodeRunInfo(id) {
+      const attempt = state.run?.tasks[id]?.attempts.at(-1);
+      return {
+        version: state.run?.state === 'active' ? state.run.plan_ref.version : null,
+        worktree: attempt?.checkout_commit ? 'attempt/' + state.run.id + '/' + attempt.id : '',
+      };
+    },
+    canEditPlan: () => permission('task-planner'), canEditNode, checkNodeRerun, startNodeRerun,
+    historicalPlan: () => state.module === 'workbench' ? state.viewedPlan : null,
+    executionSnapshot:()=>state.module === 'workbench' ? state.viewedPlan || state.runPlan : null,
+    monitorState: () => ({snapshot: state.runPlan || getPlan(), run: state.run}),
+    workbenchWaiting: () => !getPlan() || linkedStageWaiting('workbench'),
+    plannerWaiting: () => !getPlan() || linkedStageWaiting('task-planner'),
+    appendWaitingControls,
+    stageSidebar(module) {
+      const plan = (state.runPlan || getPlan())?.plan;
+      const intake = intakePage();
+      const project = state.project;
+      return {
+        title:project?.requirement.items[0]?.title || '当前项目', parallel:plan?.max_parallel,
+        intake, feedback:state.feedback, group:state.feedbackGroup, selection:state.selection,
+        setFeedback:value => { state.feedback = value; },
+        setGroup:value => { state.feedbackGroup = value; },
+        selectRoute:value => { state.selection = value; },
+        canPauseRace:module === 'intake-race' && !intake.managed && !state.pending,
+        toggleRace() {
+          state.paused = !state.paused;
+          refresh();
+          if (!state.paused) race();
+        },
+        rerunGroup(id, note) {
+          if (intake.managed || intake.busy || !intake.locked || state.paused) return;
+          const group = state.groups.find(row => row.id === id);
+          if (!group) return;
+          group.prompt += '\n负责人补充指令：' + note;
+          group.status = 'idle'; group.result = null; state.feedback = '';
+          return runGroup(group);
+        },
+        drafts:project?.drafts || [],
+        canGenerate:!!project?.evaluations.length && !state.pending && (!linkedJob() || permission('review-synthesis')),
+        generate:() => operate(() => reviewAction('propose', {
+          selection:state.selection, expected_version:project.latest_version,
+        })),
+        rework(note) {
+          const group = state.groups[1] || state.groups[0];
+          if (group && !linkedJob()) {
+            group.prompt += '\n评审退回补充：' + note;
+            group.status = 'idle'; group.result = null;
+          }
+          open('intake-race');
+        },
+      };
+    },
+    workbenchSidebar() {
+      const plan = (state.runPlan || getPlan())?.plan;
+      const run = state.run;
+      return {title:state.project?.requirement.items[0]?.title || '当前项目', version:plan?.version,
+        parallel:plan?.max_parallel, paused:run?.dispatch === 'paused',
+        canPause:run?.state === 'active' && !state.pending && permission('workbench'),
+        togglePause:() => operate(() => runAction(run.dispatch === 'paused' ? 'resume' : 'pause')),
+        configure:() => open('task-planner')};
+    },
+    reviewDashboard, showSteward: container => steward?.show(container),
+    memory: () => memory, updateMemory,
+    profiles: () => profiles,
+    saveProfile,
+    modelRouting() {
+      return { lowCostModel: state.config?.low_cost_model || '', highCapModel: state.config?.high_capability_model || '',
+        budgetLimit: (state.project ? state.modelBudget : null) ?? state.config?.router?.max_cost_usd_per_attempt,
+        canSaveBudget: !!state.project, maxParallel: getPlan()?.plan.max_parallel ?? 2 };
+    },
+    async saveModelBudget(value) {
+      const project = state.project?.id;
+      const result = await write(projectURL('/model-budget'), {model_budget:value});
+      if (state.project?.id === project) state.modelBudget = result.model_budget;
+      return result.model_budget;
+    },
+    showModelSettings() {
+      const {body, close} = dialog('模型 API 配置');
+      renderModelSettings(body);
+      body.append(close);
+    },
+    async saveModelRouting(lowCostModel, highCapModel) {
+      const settings = state.config;
+      if (!settings?.base_url || !settings.discussion_model) throw new Error('请先配置 API 基础地址和赛马模型。');
+      const result = await post('/workspace/model-settings', {action: 'save',
+        base_url: settings.base_url, discussion_model: settings.discussion_model,
+        low_cost_model: lowCostModel, high_capability_model: highCapModel});
+      Object.assign(settings, result);
+      showModelMode();
+      return result;
+    },
+    taskStatusActions(id, {worktree = false} = {}) {
+      const task = state.run?.tasks[id];
+      const {body, close, dismiss} = dialog((worktree ? '纳入上游提交并派发 · ' : '切换任务状态 · ') + id);
+      if (worktree) body.append(text('派发时，执行器会在独立工作区纳入已批准的上游提交，再执行当前任务。'));
+      const label = task ? taskLabels[task.state] || task.state : '未启动';
+      body.append(text('当前状态：' + label));
+      const transition = async (name) => {
+        const buttons = [...body.querySelectorAll('button')];
+        buttons.forEach(button => { button.disabled = true; });
+        try {
+          await runAction(name, {task_id:id, single:true});
+          dismiss();
+          refresh();
+          toast(name === 'retry' ? '任务已重新排队。' : '已派发当前任务。');
+        } catch (error) {
+          body.append(text(error.message, 'text-xs text-red-700'));
+        } finally {
+          buttons.forEach(button => { button.disabled = false; });
+        }
+      };
+      if (task?.state === 'ready' && canStep() && (!worktree || canPrepareWorktree(id))) {
+        body.append(action(worktree ? '纳入上游并派发' : '派发当前任务', () => transition('advance'), true));
+      }
+      if (canRetrySession(id)) body.append(action('重新排队', () => transition('retry'), true));
+      body.append(line(action('查看任务详情', () => { dismiss(); inspect(id); }), close));
+    },
+    retrySession(id) {
+      if (!canRetrySession(id)) return;
+      return operate(() => runAction('retry', {task_id:id}));
+    },
+    storageState() {
+      return {plan: (state.runPlan || getPlan())?.plan, run: state.run,
+        displayStatus: id => taskDisplayStatus[state.run?.tasks[id]?.state] || 'planned',
+        canRetrySession, canPrepareWorktree, worktreeInputs: id => get(projectURL('/runs/' + encodeURIComponent(state.run.id) +
+          '/tasks/' + encodeURIComponent(id) + '/worktree-inputs')),
+        title: state.project?.requirement.items[0]?.title || '当前项目'};
+    },
+    async storageEvents(after) {
+      const project = state.project;
+      const run = state.run;
+      if (!project || !run) return [];
+      const data = await get('/api/v2/projects/' + project.id + '/runs/' + run.id + '/events?after=' + after + '&limit=500');
+      return describeEvents(data.items, (state.runPlan || getPlan())?.plan);
+    },
+    activityRows() {
+      return describeEvents(state.eventTrail, (state.runPlan || getPlan())?.plan);
+    },
+    reworkEdges:()=>state.viewedPlan && state.module === 'workbench' ? [] : state.run?.rework_edges || [],
+    taskStatus:id=>state.module === 'workbench' && state.viewedPlan ? 'planned' : taskDisplayStatus[state.run?.tasks[id]?.state] || 'planned'};
+
+  function describeEvents(events, plan) {
+    const labels = {
+      'run.started':'启动开发', 'run.completed':'开发完成', 'run.stopped':'停止运行',
+      'run.paused':'暂停派发', 'run.resumed':'继续派发', 'task.dispatched':'派发任务',
+      'task.failed':'任务失败', 'task.retry_requested':'任务重新排队',
+      'task.input_required':'等待补充信息', 'task.input_supplied':'已补充信息',
+      'artifact.submitted':'提交产物', 'artifact.approved':'审查放行', 'artifact.rejected':'审查退回',
+    };
+    const names = new Map((plan?.tasks || []).map(task => [task.id, task.title]));
+    return events.map(event => ({
+      seq: event.seq, actor: labels[event.type] || '运行更新',
+      time: event.created_at ? new Date(event.created_at).toLocaleTimeString() : '',
+      text: [names.get(event.task_id) || event.task_id, event.payload?.note ||
+        event.payload?.error?.message].filter(Boolean).join(' · '),
+    }));
+  }
 };

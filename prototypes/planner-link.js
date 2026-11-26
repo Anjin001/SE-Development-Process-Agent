@@ -375,7 +375,12 @@ window.createPlannerLink = function ({ q, el, switchModule, toast, showTask }) {
     const view = extension?.executionSnapshot() || snapshot;
     if (!view || (!extension?.executionSnapshot() && !ready())) return null;
     const layers = new Map();
-    const positions = new Map();
+    const phaseNames = new Map([
+      ['planning', '准备与技术交接'], ['development', '功能开发'],
+      ['review', '代码审查'], ['integration', '集成'],
+      ['verification', '验证'], ['documentation', '交付文档'],
+    ]);
+    const groups = new Map();
     const tasksById = new Map(view.plan.tasks.map(task => [task.id, task]));
     function layer(task) {
       if (!layers.has(task.id)) {
@@ -384,15 +389,22 @@ window.createPlannerLink = function ({ q, el, switchModule, toast, showTask }) {
       return layers.get(task.id);
     }
     for (const task of view.plan.tasks) {
-      const col = layer(task);
-      const items = positions.get(col) || [];
-      items.push(task);
-      positions.set(col, items);
+      const key = task.phase || 'other';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(task);
     }
-    const phases = [...positions].sort(([a], [b]) => a - b).map(([col, items]) => ({
-      id: 'layer-' + col, title: '依赖层级 ' + (col + 1),
-      box: { x: 18 + col * 234, y: 22, w: 214, h: 37 + items.length * 80 },
-      tasks: items.map((task, row) => ({
+    const order = [...phaseNames.keys()];
+    let top = 20;
+    const phases = [...groups].sort(([a], [b]) =>
+      (order.includes(a) ? order.indexOf(a) : order.length) -
+      (order.includes(b) ? order.indexOf(b) : order.length)
+    ).map(([key, items], index) => {
+      items.sort((a, b) => layer(a) - layer(b));
+      const columns = Math.min(4, items.length);
+      const box = { x: 24, y: top, w: 24 + columns * 230, h: 44 + Math.ceil(items.length / columns) * 100 };
+      top += box.h + 34;
+      return { id: key, title: 'Phase ' + (index + 1) + ' · ' + (phaseNames.get(key) || key),
+        box, tasks: items.map((task, position) => ({
         id: task.id, code: task.id, name: task.title, owner: task.role, status: extension?.taskStatus(task.id) || 'planned',
         estimateMin: Number((task.estimate_seconds / 60).toFixed(2)),
         spec: [...task.requirement_ids, ...task.decision_ids, ...task.open_item_ids].join(' · '),
@@ -400,9 +412,11 @@ window.createPlannerLink = function ({ q, el, switchModule, toast, showTask }) {
         reviewRequired: task.review_required,
         testFiles: task.outputs.filter(item=>item.path?.startsWith('tests/')).map(item=>item.path),
         critical: view.schedule?.find(row => row.task_id === task.id)?.critical || false,
-        x: 27 + col * 234, y: 54 + row * 80,
-      })),
-    }));
+        x: box.x + 16 + (position % columns) * 230,
+        y: box.y + 34 + Math.floor(position / columns) * 100,
+        })),
+      };
+    });
     return { phases, badge: '计划 v' + view.plan.version, reworkEdges: extension?.reworkEdges() || [] };
   }
 

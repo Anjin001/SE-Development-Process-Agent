@@ -1066,6 +1066,11 @@ window.createWorkspaceLink = function (hooks) {
   statusBar.append(statusTitle,statusDetail,statusHistory);
   let lastRows = '';
   function renderStatus() {
+    const badge = q('#nav-review-badge');
+    const pendingReviews = Object.values(state.run?.tasks || {}).filter(task => task.state === 'review').length;
+    badge.hidden = pendingReviews === 0;
+    badge.textContent = pendingReviews ? pendingReviews + ' 待审查' : '';
+
     targetButton.textContent = state.target?.path ? '产物位置已选' : '产物位置';
     targetButton.title = state.target?.path || '选择项目的本地保存位置';
     if (!state.project) targetButton.disabled = true;
@@ -1349,7 +1354,7 @@ window.createWorkspaceLink = function (hooks) {
   initialize();
   setInterval(async()=>{
     renderStatus();
-    if(polling || !state.run || state.run.state!=='active' || state.module!=='workbench' || state.pending)return;
+    if(polling || !state.run || state.run.state!=='active' || state.pending)return;
     polling=true;
     try {
       const current = state.run, currentEpoch = epoch;
@@ -1359,7 +1364,8 @@ window.createWorkspaceLink = function (hooks) {
       if (changed) await readRunDetails(run);
       if(epoch !== currentEpoch || state.run !== current) return;
       state.run=run; state.statusError='';
-      if(changed) refresh();
+      if (changed && ['workbench', 'code-review'].includes(state.module)) refresh();
+      else renderStatus();
     }catch(error){state.statusError='状态同步中断，当前画面可能已过时。'; renderStatus();}
     finally{polling=false;}
   },1500);

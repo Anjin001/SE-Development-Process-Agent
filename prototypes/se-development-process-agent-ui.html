@@ -179,7 +179,7 @@
             </button>
             <button type="button" data-module="code-review" data-title="Agent 代码审查中心" class="nav-item w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-slate-600 hover:bg-slate-200/60" title="Agent 代码审查中心">
               <span class="flex items-center gap-2"><span class="text-slate-400 text-xs">🤖</span><span class="sb-hide-on-collapse">Agent 代码审查</span></span>
-              <span id="nav-review-badge" class="mono text-[10px] px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 font-semibold sb-hide-on-collapse">1 审查中</span>
+              <span id="nav-review-badge" hidden aria-live="polite" class="mono text-[10px] px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 font-semibold sb-hide-on-collapse"></span>
             </button>
           </div>
         </div>
@@ -1493,7 +1493,7 @@
         const selBox = el('div', undefined, 'p-3 rounded-xl bg-white border border-slate-200 space-y-1.5');
         selBox.innerHTML = `
           <div class="flex items-center justify-between">
-            <span class="mono font-bold text-indigo-600">${sel.id}</span>
+            <span class="mono font-bold text-indigo-600">${escapeHtml(sel.id)}</span>
             <span class="px-2 py-0.5 rounded border text-[10px] font-semibold ${meta.badgeCls}">${meta.label}</span>
           </div>
           <div class="font-bold text-slate-800">${sel.name}</div>
@@ -2434,13 +2434,7 @@
         paraInp.value = String(modelRouterConfig.maxParallel);
         paraInp.onchange = () => {
           modelRouterConfig.maxParallel = Number(paraInp.value) || 2;
-          const reviewBadge = q('#nav-review-badge');
-      if (reviewBadge) {
-        const revPending = getAllTasks().filter((t) => t.isReviewNode && t.status !== 'completed').length;
-        reviewBadge.textContent = revPending ? `${revPending} 审查中` : '全部通过';
-        reviewBadge.className = `mono text-[10px] px-1.5 py-0.2 rounded font-semibold sb-hide-on-collapse ${revPending ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-700'}`;
-      }
-      renderRightStewardSidebar();
+          renderRightStewardSidebar();
           toast(`已保存全局并发上限 max_parallel = ${modelRouterConfig.maxParallel}`);
         };
         paraBox.append(paraInp);
@@ -2678,6 +2672,12 @@
 
     function renderTwinGraph() {
       const data = getActiveData();
+      const stage = q('#graph-stage');
+      stage.style.width = Math.max(1320, ...data.phases.map(({box}) => box.x + box.w + 32)) + 'px';
+      stage.style.height = Math.max(860, ...data.phases.map(({box}) => box.y + box.h + 32)) + 'px';
+      if (!data.phases.some(phase => phase.tasks.some(task => task.id === selectedTaskId))) {
+        selectedTaskId = data.phases[0]?.tasks[0]?.id;
+      }
       const phasesLayer = q('#graph-phases-layer');
       const nodesLayer = q('#graph-nodes-layer');
       const svg = q('#graph-edges-svg');
@@ -2778,9 +2778,10 @@
       }
 
       // Render live animated rollback edge when Code Review Agent rejects & sends task back to Dev Agent
-      if (autoLoopState.activeRollbackEdge) {
-        const rbFrom = nodeMap.get(autoLoopState.activeRollbackEdge.from);
-        const rbTo = nodeMap.get(autoLoopState.activeRollbackEdge.to);
+      const rollbackEdges = data.reworkEdges || [autoLoopState.activeRollbackEdge].filter(Boolean);
+      for (const edge of rollbackEdges) {
+        const rbFrom = nodeMap.get(edge.from);
+        const rbTo = nodeMap.get(edge.to);
         if (rbFrom && rbTo) {
           const sx = rbFrom.x + NODE_W * 0.25;
           const sy = rbFrom.y;
@@ -2832,18 +2833,27 @@
       inspector.innerHTML = `
         <div class="flex items-center justify-between gap-3">
           <div class="flex items-center gap-2">
-            <span class="mono font-bold text-indigo-600">${sel.id}</span>
-            <strong class="text-slate-800">${sel.name}</strong>
+            <span class="mono font-bold text-indigo-600">${escapeHtml(sel.id)}</span>
+            <strong class="text-slate-800">${escapeHtml(sel.name)}</strong>
           </div>
           <span class="px-2 py-0.5 rounded border text-[10px] font-semibold ${selMeta.badgeCls}">${selMeta.label}</span>
         </div>
         <div class="text-[11px] text-slate-500 flex flex-wrap gap-x-4 gap-y-0.5">
-          <span>执行角色: <strong class="text-slate-700">${sel.owner}</strong></span>
-          <span>来源: <code class="mono text-slate-700">${sel.spec}</code></span>
-          <span>交付物: <code class="mono text-slate-700">${sel.output}</code></span>
+          <span>执行角色: <strong class="text-slate-700">${escapeHtml(sel.owner)}</strong></span>
+          <span>来源: <code class="mono text-slate-700">${escapeHtml(sel.spec)}</code></span>
+          <span>交付物: <code class="mono text-slate-700">${escapeHtml(sel.output)}</code></span>
         </div>
       `;
       const actionRow = el('div', undefined, 'flex items-center gap-2 pt-1');
+      if (data.reworkEdges) {
+        const details = el('button', '查看任务详情 / 审阅产物 →', 'px-2 py-1 rounded text-indigo-600 hover:underline');
+        details.type = 'button';
+        details.onclick = () => plannerLink.inspect(sel.id);
+        actionRow.append(details);
+        inspector.append(actionRow);
+        return;
+      }
+
 
       if (sel.status === 'in_progress' || sel.isReviewNode) {
         const reviewBtn = el('button', '🤖 打开 Agent 审查报告', 'px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-[11px] transition');
@@ -3638,6 +3648,14 @@
     }
 
     function renderAll() {
+      if (!plannerLink?.isFullWorkspace) {
+        const count = getAllTasks().filter(task =>
+          task.isReviewNode && ['running', 'in_progress'].includes(task.status)).length;
+        const badge = q('#nav-review-badge');
+        badge.hidden = count === 0;
+        badge.textContent = count ? count + ' 审查中' : '';
+      }
+
       const dedicatedView = q('#module-dedicated-view');
       const workbenchView = q('#workbench-split-view');
 
